@@ -21,15 +21,16 @@
 use serde::Serialize;
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+    EnumDisplayMonitors, GetMonitorInfoW, MonitorFromWindow, HDC, HMONITOR,
+    MONITORINFOEXW, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowPlacement, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
-    SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, WINDOWPLACEMENT,
+    GetWindowThreadProcessId, SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED,
+    WINDOWPLACEMENT,
 };
 
 /// Windows reports maximized/minimized/normal via GetWindowPlacement's
