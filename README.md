@@ -99,3 +99,4 @@ See "What's honestly still open" and "Later work" in `docs/Roadmap.md` - most im
 ## Next development phase
 
 Get a real 1.0.1 build through `.github/workflows/build-windows.yml`, fix whatever compiler errors turn up (one at a time, as with 1.0.0), then work through `docs/Testing Checklist.md` before calling it done.
+8/2/2026 making a note to create a changed file to push.
