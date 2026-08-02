@@ -250,7 +250,7 @@ fn describe_portion(window: &RECT, monitor: &RECT) -> (bool, Option<String>) {
 pub fn get_capture_context() -> Result<CaptureContext, String> {
     unsafe {
         let hwnd = GetForegroundWindow();
-        if hwnd.0 == 0 {
+        if hwnd.0.is_null() {
             return Err("No active window was found.".to_string());
         }
 
@@ -323,8 +323,8 @@ pub fn get_capture_context() -> Result<CaptureContext, String> {
             window_title,
             state,
             monitor_number,
-            monitor_width: monitor_rect.map(rect_width),
-            monitor_height: monitor_rect.map(rect_height),
+            monitor_width: monitor_rect.as_ref().map(rect_width),
+            monitor_height: monitor_rect.as_ref().map(rect_height),
             window_width: Some(rect_width(&window_rect)),
             window_height: Some(rect_height(&window_rect)),
             fills_screen,
