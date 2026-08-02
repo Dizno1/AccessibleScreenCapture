@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Screen Capture - AccessibleScreenCapture</title>
+<link rel="stylesheet" href="app/styles.css">
+</head>
+<body>
+
+<a class="skip-link" href="#main-content">Skip to main content</a>
+
+<header class="app-header">
+  <h1>AccessibleScreenCapture</h1>
+  <p class="app-tagline">Take screenshots and record your screen using only the keyboard.</p>
+</header>
+
+<!-- Application-generated status announcements are restricted to approved capture, recording, save, cancellation, permission, and failure messages. -->
+<div id="status-announcer" class="visually-hidden" role="status" aria-live="polite"></div>
+
+<main id="main-content">
+
+  <!-- ============ Capture Type ============ -->
+  <section aria-labelledby="capture-type-heading">
+    <h2 id="capture-type-heading">Capture Type</h2>
+    <fieldset id="capture-type-fieldset">
+      <legend>Choose what to capture</legend>
+      <label class="radio-option">
+        <input type="radio" name="capture-type" id="capture-type-screenshot" value="screenshot" checked>
+        Screenshot
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="capture-type" id="capture-type-recording" value="recording">
+        Screen Recording
+      </label>
+    </fieldset>
+  </section>
+
+  <!-- ============ Audio Options (recording only) ============ -->
+  <section aria-labelledby="audio-options-heading" id="audio-options-section" hidden>
+    <h2 id="audio-options-heading">Audio Options</h2>
+    <p class="section-hint">These options apply to screen recordings only.</p>
+
+    <label class="checkbox-option">
+      <input type="checkbox" id="option-system-audio" checked>
+      Include system audio, when available
+    </label>
+
+    <label class="checkbox-option">
+      <input type="checkbox" id="option-microphone">
+      Include microphone audio
+    </label>
+
+    <div id="microphone-select-wrapper" hidden>
+      <label for="microphone-select">Microphone</label>
+      <select id="microphone-select">
+        <option value="">Default microphone</option>
+      </select>
+    </div>
+  </section>
+
+  <!-- ============ Recording Controls ============ -->
+  <section aria-labelledby="controls-heading">
+    <h2 id="controls-heading">Capture Controls</h2>
+
+    <div id="screenshot-controls">
+      <button type="button" id="screenshot-button" class="primary-button">
+        Take Screenshot <span class="shortcut-hint">(Ctrl+Alt+S)</span>
+      </button>
+    </div>
+
+    <div id="recording-controls" hidden>
+      <button type="button" id="record-toggle-button" class="primary-button" aria-pressed="false">
+        Start Recording <span class="shortcut-hint">(Ctrl+Alt+R)</span>
+      </button>
+    </div>
+  </section>
+
+  <!-- ============ Review (appears after a capture, before saving) ============ -->
+  <section aria-labelledby="review-heading" id="review-section" hidden>
+    <h2 id="review-heading" tabindex="-1">Review Capture</h2>
+
+    <div id="review-preview"></div>
+
+    <div class="review-actions">
+      <button type="button" id="save-button" class="primary-button">Save Capture</button>
+      <button type="button" id="discard-button" class="secondary-button">Discard Capture</button>
+    </div>
+  </section>
+
+  <!-- ============ Recent Captures ============ -->
+  <section aria-labelledby="recent-heading">
+    <h2 id="recent-heading">Recent Captures</h2>
+    <p id="recent-empty-message">No captures saved yet this session.</p>
+    <ul id="recent-captures-list" class="recent-list"></ul>
+  </section>
+
+  <!-- ============ Keyboard Shortcuts ============ -->
+  <section aria-labelledby="shortcuts-heading">
+    <h2 id="shortcuts-heading">Keyboard Shortcuts</h2>
+    <dl class="shortcut-list">
+      <div class="shortcut-row">
+        <dt>Ctrl+Alt+S</dt>
+        <dd>Take a screenshot</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Ctrl+Alt+R</dt>
+        <dd>Start or stop screen recording</dd>
+      </div>
+    </dl>
+    <p class="section-hint">Shortcuts are ignored while typing in a text field. Every action here is also available from an ordinary button.</p>
+  </section>
+
+</main>
+
+<script type="module" src="app/app.js"></script>
+</body>
+</html>
