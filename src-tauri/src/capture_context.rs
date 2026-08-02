@@ -258,7 +258,7 @@ pub fn get_capture_context() -> Result<CaptureContext, String> {
         let window_title = window_title(hwnd);
         let show_state = window_show_state(hwnd);
 
-        if show_state == SW_SHOWMINIMIZED {
+        if show_state == SW_SHOWMINIMIZED.0 as u32 {
             return Ok(CaptureContext {
                 app_name,
                 window_title,
@@ -297,7 +297,7 @@ pub fn get_capture_context() -> Result<CaptureContext, String> {
 
         let state = if is_fullscreen_geometry {
             "fullscreen".to_string()
-        } else if show_state == SW_SHOWMAXIMIZED {
+        } else if show_state == SW_SHOWMAXIMIZED.0 as u32 {
             "maximized".to_string()
         } else {
             "restored".to_string()
