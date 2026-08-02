@@ -28,7 +28,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetForegroundWindow, GetWindowPlacement, GetWindowRect, GetWindowTextW,
-    GetWindowThreadProcessId, MonitorFromWindow, MONITOR_DEFAULTTONEAREST, SHOW_WINDOW_CMD,
+    GetWindowThreadProcessId, MonitorFromWindow, MONITOR_DEFAULTTONEAREST,
     SW_SHOWMAXIMIZED, SW_SHOWMINIMIZED, WINDOWPLACEMENT,
 };
 
@@ -135,7 +135,7 @@ unsafe fn process_app_name(hwnd: HWND) -> String {
     friendly_app_name(stem)
 }
 
-unsafe fn window_show_state(hwnd: HWND) -> SHOW_WINDOW_CMD {
+unsafe fn window_show_state(hwnd: HWND) -> u32 {
     let mut placement = WINDOWPLACEMENT {
         length: std::mem::size_of::<WINDOWPLACEMENT>() as u32,
         ..Default::default()
