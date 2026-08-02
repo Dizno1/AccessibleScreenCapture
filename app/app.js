@@ -1,4 +1,4 @@
-import { initAnnouncer, announce } from "./announcer.js";
+import { initAnnouncer, announce, announceRaw } from "./announcer.js";
 import { registerShortcut, initShortcuts } from "./shortcuts.js";
 import { saveBlob, supportsFilePicker } from "./save.js";
 import { formatDuration } from "./duration.js";
@@ -10,6 +10,10 @@ import {
   showMainWindow,
   getShortcuts,
   setShortcut,
+  resetShortcuts,
+  getDescriptorEnabled,
+  setDescriptorEnabled,
+  onDescriptorContextChanged,
 } from "./tauri-bridge.js";
 
 const captureTypeScreenshot = document.getElementById("capture-type-screenshot");
@@ -42,6 +46,12 @@ let recordingChunks = [];
 let recordingStartTime = 0;
 let activeAudioContext = null;
 let captureCounter = 0;
+let descriptorEnabled = false;
+const shortcutDisplay = {
+  screenshot: "Alt+Ctrl+Space",
+  recordToggle: "Alt+Ctrl+R",
+  descriptor: "Alt+Ctrl+D",
+};
 
 initAnnouncer(document.getElementById("status-announcer"));
 initShortcuts();
@@ -72,6 +82,20 @@ function updateCaptureTypeUI() {
 captureTypeScreenshot.addEventListener("change", updateCaptureTypeUI);
 captureTypeRecording.addEventListener("change", updateCaptureTypeUI);
 updateCaptureTypeUI();
+
+function renderScreenshotHint() {
+  const hint = document.getElementById("screenshot-shortcut-hint");
+  if (hint) hint.textContent = `(${shortcutDisplay.screenshot})`;
+}
+
+function renderRecordToggleButton() {
+  const label = isRecording ? "Stop Recording" : "Start Recording";
+  recordToggleButton.innerHTML = `${label} <span class="shortcut-hint" id="record-toggle-shortcut-hint">${shortcutDisplay.recordToggle}</span>`;
+  recordToggleButton.setAttribute("aria-pressed", isRecording ? "true" : "false");
+}
+
+renderScreenshotHint();
+renderRecordToggleButton();
 
 microphoneOption.addEventListener("change", async () => {
   if (!microphoneOption.checked) {
@@ -145,6 +169,62 @@ function base64ToBlob(base64, mimeType) {
     bytes[i] = binary.charCodeAt(i);
   }
   return new Blob([bytes], { type: mimeType });
+}
+
+const STATE_LABELS = {
+  maximized: "Maximized",
+  fullscreen: "Full screen",
+  restored: "Restored",
+};
+
+function capitalize(text) {
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/**
+ * Turns the structured data from a descriptor-context-changed event
+ * into the short, spoken-language description the Capture Context
+ * Descriptor exists to provide. Never announces raw coordinates -
+ * only application, title, state, monitor number, and practical
+ * size/position descriptions. Does not mention capture target or
+ * document/webpage content - see the Important Technical Limitation
+ * note in docs/Screen Reader First Principles.md.
+ */
+function composeContextDescription(context) {
+  const parts = [`${context.appName}.`];
+  if (context.windowTitle) parts.push(`${context.windowTitle}.`);
+
+  if (context.state === "minimized") {
+    parts.push("Minimized.");
+    return parts.join(" ");
+  }
+
+  parts.push(`${STATE_LABELS[context.state] || "Restored"}.`);
+
+  if (context.portion) {
+    const location = context.monitorNumber != null
+      ? `${capitalize(context.portion)} of monitor ${context.monitorNumber}.`
+      : `${capitalize(context.portion)}.`;
+    parts.push(location);
+  } else if (context.monitorNumber != null) {
+    parts.push(`Monitor ${context.monitorNumber}.`);
+  }
+
+  if (context.state !== "fullscreen") {
+    parts.push(
+      context.fillsScreen
+        ? "The window fills the available screen."
+        : "The window does not fill the screen."
+    );
+  }
+
+  if (context.extendsBeyondMonitor) {
+    parts.push(
+      "The active window extends beyond the visible desktop. Part of the window may not appear in the capture."
+    );
+  }
+
+  return parts.join(" ");
 }
 
 function revokeReviewObjectUrl() {
@@ -365,7 +445,7 @@ async function captureScreenshot() {
 }
 
 screenshotButton.addEventListener("click", captureScreenshot);
-registerShortcut({ ctrl: true, alt: true, key: "s", action: captureScreenshot });
+registerShortcut({ ctrl: true, alt: true, key: " ", action: captureScreenshot });
 
 function pickRecorderMimeType() {
   const candidates = [
@@ -473,8 +553,7 @@ async function startRecording() {
     recordingStartTime = Date.now();
     isRecording = true;
     recordToggleButton.disabled = false;
-    recordToggleButton.innerHTML = 'Stop Recording <span class="shortcut-hint">Ctrl+Alt+R</span>';
-    recordToggleButton.setAttribute("aria-pressed", "true");
+    renderRecordToggleButton();
     announce("recordingStarted");
   } catch (error) {
     console.error("Recording start error:", error);
@@ -493,8 +572,7 @@ async function startRecording() {
 function stopRecording() {
   if (!isRecording) return;
   isRecording = false;
-  recordToggleButton.innerHTML = 'Start Recording <span class="shortcut-hint">Ctrl+Alt+R</span>';
-  recordToggleButton.setAttribute("aria-pressed", "false");
+  renderRecordToggleButton();
   recordToggleButton.disabled = true;
   announce("recordingStopped");
 
@@ -550,48 +628,98 @@ if (isTauri) {
     toggleRecording();
   });
 
+  onGlobalShortcut("descriptor", () => {
+    toggleDescriptor();
+  });
+
+  onDescriptorContextChanged((context) => {
+    announceRaw(composeContextDescription(context));
+  });
+
   initShortcutSettings();
+  initDescriptorSettings();
 }
 
+/**
+ * Displays a combo string as "Alt+Ctrl+Space" / "Alt+Ctrl+R" - a fixed
+ * Alt, Ctrl, Shift, key order, regardless of how the combo happens to
+ * be stored internally, so every message and label reads consistently.
+ */
 function comboToDisplayText(combo) {
-  return combo
-    .split("+")
-    .map((part) => (part.length === 1 ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)))
-    .join("+");
+  const tokens = combo.split("+").map((part) => part.trim().toLowerCase());
+  const ordered = [];
+  if (tokens.includes("alt")) ordered.push("Alt");
+  if (tokens.includes("ctrl") || tokens.includes("control")) ordered.push("Ctrl");
+  if (tokens.includes("shift")) ordered.push("Shift");
+  const key = tokens.find((token) => !["alt", "ctrl", "control", "shift", "super", "win", "windows"].includes(token));
+  if (key === "space") ordered.push("Space");
+  else if (key) ordered.push(key.toUpperCase());
+  return ordered.join("+");
+}
+
+/** Turns a keydown event into a combo string like "ctrl+alt+space". */
+function comboFromKeydownEvent(event) {
+  const parts = [];
+  if (event.ctrlKey) parts.push("ctrl");
+  if (event.altKey) parts.push("alt");
+  if (event.shiftKey) parts.push("shift");
+  if (event.key === " ") parts.push("space");
+  else parts.push(event.key.toLowerCase());
+  return parts.join("+");
 }
 
 async function initShortcutSettings() {
   const settingsSection = document.getElementById("shortcut-settings");
   const statusEl = document.getElementById("shortcut-editor-status");
+  const restoreDefaultsButton = document.getElementById("shortcut-restore-defaults");
   const rows = {
     screenshot: {
       summaryLabel: document.getElementById("screenshot-shortcut-label"),
       currentLabel: document.getElementById("screenshot-shortcut-current"),
       changeButton: document.getElementById("screenshot-shortcut-change"),
       actionName: "Take Screenshot",
+      messageName: "Screenshot",
     },
     recordToggle: {
       summaryLabel: document.getElementById("record-toggle-shortcut-label"),
       currentLabel: document.getElementById("record-toggle-shortcut-current"),
       changeButton: document.getElementById("record-toggle-shortcut-change"),
       actionName: "Start or Stop Recording",
+      messageName: "Recording",
+    },
+    descriptor: {
+      summaryLabel: document.getElementById("descriptor-shortcut-label"),
+      currentLabel: document.getElementById("descriptor-shortcut-current"),
+      changeButton: document.getElementById("descriptor-shortcut-change"),
+      actionName: "Toggle Capture Context Descriptor",
+      messageName: "Capture Context Descriptor",
     },
   };
 
   function applyBindings(bindings) {
-    const displayScreenshot = comboToDisplayText(bindings.screenshot);
-    const displayRecordToggle = comboToDisplayText(bindings.recordToggle);
-    rows.screenshot.summaryLabel.textContent = displayScreenshot;
-    rows.screenshot.currentLabel.textContent = displayScreenshot;
-    rows.recordToggle.summaryLabel.textContent = displayRecordToggle;
-    rows.recordToggle.currentLabel.textContent = displayRecordToggle;
+    for (const [action, row] of Object.entries(rows)) {
+      const display = comboToDisplayText(bindings[action]);
+      row.summaryLabel.textContent = display;
+      row.currentLabel.textContent = display;
+      shortcutDisplay[action] = display;
+    }
+    renderScreenshotHint();
+    renderRecordToggleButton();
   }
 
-  function reportFailures(failures) {
+  // Startup-only: a previously-saved shortcut that can no longer be
+  // registered (usually another application has since claimed it).
+  // Named per shortcut, per the requirement that a vague catch-all
+  // message is not an adequate substitute for the real shortcut.
+  function reportStartupFailures(failures) {
     if (!failures || failures.length === 0) return;
-    announce("shortcutUnavailable");
-    statusEl.textContent =
-      "One or more global shortcuts could not be registered. Use the on-screen buttons instead.";
+    for (const [actionKey, _reason] of failures) {
+      const row = rows[actionKey];
+      if (!row) continue;
+      const message = `${row.messageName} shortcut could not be registered because another application is already using it. The on-screen button still works.`;
+      announceRaw(message);
+      statusEl.textContent = message;
+    }
   }
 
   let initial;
@@ -604,7 +732,21 @@ async function initShortcutSettings() {
 
   settingsSection.hidden = false;
   applyBindings(initial.bindings);
-  reportFailures(initial.failures);
+  reportStartupFailures(initial.failures);
+
+  function messageForOutcome(row, combo, response) {
+    const display = comboToDisplayText(combo);
+    if (response.ok) {
+      return `${row.messageName} shortcut ${display} registered.`;
+    }
+    if (response.reason === "duplicate") {
+      return `${row.messageName} shortcut could not be registered because it is already assigned to another shortcut. The previous ${row.messageName.toLowerCase()} shortcut remains active.`;
+    }
+    if (response.reason === "conflict") {
+      return `${row.messageName} shortcut could not be registered because another application is already using it. The previous ${row.messageName.toLowerCase()} shortcut remains active.`;
+    }
+    return `${row.messageName} shortcut could not be registered. The previous ${row.messageName.toLowerCase()} shortcut remains active.`;
+  }
 
   for (const [action, row] of Object.entries(rows)) {
     row.changeButton.addEventListener("click", () => {
@@ -620,26 +762,22 @@ async function initShortcutSettings() {
           return;
         }
         if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) return;
-        if (!/^[a-zA-Z]$/.test(event.key)) {
-          statusEl.textContent = "Please choose a letter key, held with Ctrl and/or Alt.";
+        const isLetter = /^[a-zA-Z]$/.test(event.key);
+        const isSpace = event.key === " ";
+        if (!isLetter && !isSpace) {
+          statusEl.textContent = "Please choose a letter or space key, held with Ctrl and/or Alt.";
           return;
         }
 
-        const parts = [];
-        if (event.ctrlKey) parts.push("ctrl");
-        if (event.altKey) parts.push("alt");
-        if (event.shiftKey) parts.push("shift");
-        parts.push(event.key.toLowerCase());
-        const combo = parts.join("+");
+        const combo = comboFromKeydownEvent(event);
         cleanup();
 
         try {
           const response = await setShortcut(action, combo);
           applyBindings(response.bindings);
-          reportFailures(response.failures);
-          if (!response.failures || response.failures.length === 0) {
-            statusEl.textContent = `${row.actionName} is now ${comboToDisplayText(combo)}.`;
-          }
+          const message = messageForOutcome(row, combo, response);
+          announceRaw(message);
+          statusEl.textContent = message;
         } catch (error) {
           console.error("Could not set shortcut:", error);
           statusEl.textContent = `Could not change the ${row.actionName} shortcut.`;
@@ -655,4 +793,62 @@ async function initShortcutSettings() {
       row.changeButton.textContent = "Press new keys now, or Escape to cancel";
     });
   }
+
+  if (restoreDefaultsButton) {
+    restoreDefaultsButton.addEventListener("click", async () => {
+      try {
+        const response = await resetShortcuts();
+        applyBindings(response.bindings);
+        reportStartupFailures(response.failures);
+        const message = `Shortcuts restored to defaults: Screenshot ${comboToDisplayText(response.bindings.screenshot)}, Recording ${comboToDisplayText(response.bindings.recordToggle)}, Capture Context Descriptor ${comboToDisplayText(response.bindings.descriptor)}.`;
+        announceRaw(message);
+        statusEl.textContent = message;
+      } catch (error) {
+        console.error("Could not restore default shortcuts:", error);
+        statusEl.textContent = "Could not restore default shortcuts.";
+      }
+    });
+  }
+}
+
+/**
+ * Turns the descriptor on or off. Shared by the settings checkbox and
+ * the global shortcut handler so both paths stay in sync and only one
+ * place ever composes the on/off announcement. Never moves focus.
+ */
+async function setDescriptorState(enabled) {
+  try {
+    descriptorEnabled = await setDescriptorEnabled(enabled);
+  } catch (error) {
+    console.error("Could not change Capture Context Descriptor state:", error);
+    return;
+  }
+
+  const checkbox = document.getElementById("descriptor-toggle");
+  if (checkbox) checkbox.checked = descriptorEnabled;
+
+  announceRaw(`Capture Context Descriptor ${descriptorEnabled ? "on" : "off"}.`);
+}
+
+function toggleDescriptor() {
+  setDescriptorState(!descriptorEnabled);
+}
+
+async function initDescriptorSettings() {
+  const checkbox = document.getElementById("descriptor-toggle");
+  const section = document.getElementById("descriptor-settings");
+  if (!checkbox || !section) return;
+
+  try {
+    descriptorEnabled = await getDescriptorEnabled();
+  } catch (error) {
+    console.error("Could not load Capture Context Descriptor state:", error);
+  }
+
+  section.hidden = false;
+  checkbox.checked = descriptorEnabled;
+
+  checkbox.addEventListener("change", () => {
+    setDescriptorState(checkbox.checked);
+  });
 }

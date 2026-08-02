@@ -40,6 +40,32 @@ export async function setShortcut(action, combo) {
   return invoke("set_shortcut", { action, combo });
 }
 
+export async function resetShortcuts() {
+  return invoke("reset_shortcuts");
+}
+
+export async function getCaptureContext() {
+  return invoke("get_capture_context");
+}
+
+export async function getDescriptorEnabled() {
+  return invoke("get_descriptor_enabled");
+}
+
+export async function setDescriptorEnabled(enabled) {
+  return invoke("set_descriptor_enabled", { enabled });
+}
+
+/**
+ * Subscribes to the background watcher's context-change events, which
+ * only fire while the Capture Context Descriptor is turned on.
+ * @param {(context: object) => void} handler
+ */
+export async function onDescriptorContextChanged(handler) {
+  if (!isTauri) return;
+  await window.__TAURI__.event.listen("descriptor-context-changed", (event) => handler(event.payload));
+}
+
 export async function hideToTray() {
   return invoke("hide_to_tray");
 }
@@ -63,9 +89,12 @@ export async function setAutostart(enabled) {
  */
 export async function onGlobalShortcut(action, handler) {
   if (!isTauri) return;
-  const eventName =
-    action === "screenshot" ? "global-shortcut-screenshot" : "global-shortcut-record-toggle";
-  await window.__TAURI__.event.listen(eventName, handler);
+  const eventNames = {
+    screenshot: "global-shortcut-screenshot",
+    recordToggle: "global-shortcut-record-toggle",
+    descriptor: "global-shortcut-descriptor",
+  };
+  await window.__TAURI__.event.listen(eventNames[action], handler);
 }
 
 /** True while the main window is hidden (minimized to tray). */

@@ -8,7 +8,6 @@
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::io::Cursor;
 use std::sync::Mutex;
@@ -19,28 +18,60 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
+mod capture_context;
+mod descriptor;
+
+use capture_context::get_capture_context;
+use descriptor::{get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
+
 const SHORTCUTS_FILE: &str = "shortcuts.json";
 
-/// The two shortcut actions Phase 2 defines. More actions can be added
-/// here later without changing how registration, persistence, or the
-/// frontend bridge work.
+/// The three shortcut actions Phase 2 defines. More actions can be
+/// added here later without changing how registration, persistence,
+/// or the frontend bridge work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 enum ShortcutAction {
     #[serde(rename = "screenshot")]
     Screenshot,
     #[serde(rename = "recordToggle")]
     RecordToggle,
+    #[serde(rename = "descriptor")]
+    Descriptor,
 }
 
 impl ShortcutAction {
-    fn all() -> [ShortcutAction; 2] {
-        [ShortcutAction::Screenshot, ShortcutAction::RecordToggle]
+    fn all() -> [ShortcutAction; 3] {
+        [
+            ShortcutAction::Screenshot,
+            ShortcutAction::RecordToggle,
+            ShortcutAction::Descriptor,
+        ]
     }
 
     fn default_combo(&self) -> &'static str {
         match self {
-            ShortcutAction::Screenshot => "ctrl+alt+s",
+            ShortcutAction::Screenshot => "ctrl+alt+space",
             ShortcutAction::RecordToggle => "ctrl+alt+r",
+            ShortcutAction::Descriptor => "ctrl+alt+d",
+        }
+    }
+
+    /// The JSON/JS-facing key for this action - matches the serde
+    /// rename above and app/tauri-bridge.js's action names.
+    fn key(&self) -> &'static str {
+        match self {
+            ShortcutAction::Screenshot => "screenshot",
+            ShortcutAction::RecordToggle => "recordToggle",
+            ShortcutAction::Descriptor => "descriptor",
+        }
+    }
+
+    fn from_key(key: &str) -> Result<ShortcutAction, String> {
+        match key {
+            "screenshot" => Ok(ShortcutAction::Screenshot),
+            "recordToggle" => Ok(ShortcutAction::RecordToggle),
+            "descriptor" => Ok(ShortcutAction::Descriptor),
+            other => Err(format!("Unknown shortcut action: {other}")),
         }
     }
 }
@@ -50,6 +81,12 @@ struct ShortcutBindings {
     screenshot: String,
     #[serde(rename = "recordToggle")]
     record_toggle: String,
+    #[serde(default = "default_descriptor_combo")]
+    descriptor: String,
+}
+
+fn default_descriptor_combo() -> String {
+    ShortcutAction::Descriptor.default_combo().to_string()
 }
 
 impl Default for ShortcutBindings {
@@ -57,6 +94,7 @@ impl Default for ShortcutBindings {
         ShortcutBindings {
             screenshot: ShortcutAction::Screenshot.default_combo().to_string(),
             record_toggle: ShortcutAction::RecordToggle.default_combo().to_string(),
+            descriptor: ShortcutAction::Descriptor.default_combo().to_string(),
         }
     }
 }
@@ -66,6 +104,7 @@ impl ShortcutBindings {
         match action {
             ShortcutAction::Screenshot => &self.screenshot,
             ShortcutAction::RecordToggle => &self.record_toggle,
+            ShortcutAction::Descriptor => &self.descriptor,
         }
     }
 
@@ -73,6 +112,7 @@ impl ShortcutBindings {
         match action {
             ShortcutAction::Screenshot => self.screenshot = combo,
             ShortcutAction::RecordToggle => self.record_toggle = combo,
+            ShortcutAction::Descriptor => self.descriptor = combo,
         }
     }
 }
@@ -121,6 +161,7 @@ fn parse_combo(combo: &str) -> Result<Shortcut, String> {
             "alt" => modifiers |= Modifiers::ALT,
             "shift" => modifiers |= Modifiers::SHIFT,
             "super" | "win" | "windows" => modifiers |= Modifiers::SUPER,
+            "space" => code = Some(Code::Space),
             letter if letter.len() == 1 => {
                 let upper = letter.to_uppercase();
                 code = Some(match upper.as_str() {
@@ -148,37 +189,42 @@ fn action_event_name(action: ShortcutAction) -> &'static str {
     match action {
         ShortcutAction::Screenshot => "global-shortcut-screenshot",
         ShortcutAction::RecordToggle => "global-shortcut-record-toggle",
+        ShortcutAction::Descriptor => "global-shortcut-descriptor",
     }
 }
 
-/// (Re)registers every shortcut action from the given bindings. Returns
-/// the list of actions that failed to register, with a reason for each,
-/// so the frontend can announce "Global shortcut unavailable" per
-/// action rather than only knowing something, somewhere, failed.
-fn register_all(app: &AppHandle, bindings: &ShortcutBindings) -> Vec<(String, String)> {
-    let mut failures = Vec::new();
-    let gs = app.global_shortcut();
-    let _ = gs.unregister_all();
-
-    for action in ShortcutAction::all() {
-        let combo = bindings.get(action);
-        let shortcut = match parse_combo(combo) {
-            Ok(shortcut) => shortcut,
-            Err(reason) => {
-                failures.push((format!("{action:?}"), reason));
-                continue;
-            }
-        };
-
-        let app_handle = app.clone();
-        let result = gs.on_shortcut(shortcut, move |_app, _shortcut, event| {
+fn register_one(app: &AppHandle, action: ShortcutAction, combo: &str) -> Result<(), String> {
+    let shortcut = parse_combo(combo)?;
+    let app_handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, _shortcut, event| {
             if event.state() == ShortcutState::Pressed {
                 let _ = app_handle.emit(action_event_name(action), ());
             }
-        });
+        })
+        .map_err(|e| e.to_string())
+}
 
-        if let Err(error) = result {
-            failures.push((format!("{action:?}"), error.to_string()));
+fn unregister_one(app: &AppHandle, combo: &str) {
+    if let Ok(shortcut) = parse_combo(combo) {
+        let _ = app.global_shortcut().unregister(shortcut);
+    }
+}
+
+/// (Re)registers every shortcut action from the given bindings. Used at
+/// startup and whenever the frontend asks for the current shortcuts.
+/// Returns the actions that failed to register, keyed the same way the
+/// frontend names them ("screenshot" / "recordToggle"), with a reason
+/// for each, so a specific message can be shown per shortcut rather
+/// than one generic warning.
+fn register_all(app: &AppHandle, bindings: &ShortcutBindings) -> Vec<(String, String)> {
+    let mut failures = Vec::new();
+    let _ = app.global_shortcut().unregister_all();
+
+    for action in ShortcutAction::all() {
+        let combo = bindings.get(action);
+        if let Err(reason) = register_one(app, action, combo) {
+            failures.push((action.key().to_string(), reason));
         }
     }
 
@@ -198,31 +244,91 @@ fn get_shortcuts(app: AppHandle, state: State<ShortcutState_>) -> ShortcutsRespo
     ShortcutsResponse { bindings, failures }
 }
 
+#[derive(Serialize)]
+struct SetShortcutResponse {
+    ok: bool,
+    /// "invalid" | "duplicate" | "conflict" - the frontend (the single
+    /// source of truth for exact wording, per app/announcer.js) maps
+    /// this to the specific approved message, never a generic one.
+    reason: Option<String>,
+    bindings: ShortcutBindings,
+}
+
 #[tauri::command]
 fn set_shortcut(
     app: AppHandle,
     state: State<ShortcutState_>,
     action: String,
     combo: String,
-) -> Result<ShortcutsResponse, String> {
-    let action = match action.as_str() {
-        "screenshot" => ShortcutAction::Screenshot,
-        "recordToggle" => ShortcutAction::RecordToggle,
-        other => return Err(format!("Unknown shortcut action: {other}")),
-    };
+) -> Result<SetShortcutResponse, String> {
+    let action = ShortcutAction::from_key(&action)?;
 
-    // Validate before committing so a bad combo never overwrites a
-    // working one.
-    parse_combo(&combo)?;
+    if parse_combo(&combo).is_err() {
+        let bindings = state.bindings.lock().unwrap().clone();
+        return Ok(SetShortcutResponse {
+            ok: false,
+            reason: Some("invalid".to_string()),
+            bindings,
+        });
+    }
 
     let mut bindings = state.bindings.lock().unwrap();
-    bindings.set(action, combo);
-    save_bindings(&app, &bindings)?;
+
+    // Prevent any two commands from sharing a shortcut. Checked before
+    // touching any OS-level registration, so nothing is unregistered
+    // on a rejected attempt.
+    let is_duplicate = ShortcutAction::all()
+        .into_iter()
+        .filter(|other| *other != action)
+        .any(|other| bindings.get(other) == combo);
+
+    if is_duplicate {
+        return Ok(SetShortcutResponse {
+            ok: false,
+            reason: Some("duplicate".to_string()),
+            bindings: bindings.clone(),
+        });
+    }
+
+    let previous_combo = bindings.get(action).to_string();
+    if previous_combo != combo {
+        unregister_one(&app, &previous_combo);
+    }
+
+    match register_one(&app, action, &combo) {
+        Ok(()) => {
+            bindings.set(action, combo);
+            save_bindings(&app, &bindings)?;
+            Ok(SetShortcutResponse {
+                ok: true,
+                reason: None,
+                bindings: bindings.clone(),
+            })
+        }
+        Err(_reason) => {
+            // Restore the previous shortcut so the action is never
+            // left unregistered because a new combo didn't work out.
+            let _ = register_one(&app, action, &previous_combo);
+            Ok(SetShortcutResponse {
+                ok: false,
+                reason: Some("conflict".to_string()),
+                bindings: bindings.clone(),
+            })
+        }
+    }
+}
+
+#[tauri::command]
+fn reset_shortcuts(app: AppHandle, state: State<ShortcutState_>) -> ShortcutsResponse {
+    let defaults = ShortcutBindings::default();
+    let mut bindings = state.bindings.lock().unwrap();
+    *bindings = defaults;
+    let _ = save_bindings(&app, &bindings);
     let failures = register_all(&app, &bindings);
-    Ok(ShortcutsResponse {
+    ShortcutsResponse {
         bindings: bindings.clone(),
         failures,
-    })
+    }
 }
 
 /// Captures the primary monitor and returns PNG bytes as base64. The
@@ -368,6 +474,7 @@ pub fn run() {
         .manage(ShortcutState_ {
             bindings: Mutex::new(ShortcutBindings::default()),
         })
+        .manage(DescriptorState::default())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -379,6 +486,11 @@ pub fn run() {
                 *state.bindings.lock().unwrap() = bindings.clone();
             }
             register_all(&handle, &bindings);
+
+            // Capture Context Descriptor watcher: runs for the life of
+            // the app, but only does anything while the descriptor is
+            // turned on (off by default - see descriptor.rs).
+            descriptor::spawn_watcher(handle.clone());
 
             // System tray: left-click or "Show" restores the window;
             // "Quit" is the only way to actually exit, since closing
@@ -430,6 +542,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_shortcuts,
             set_shortcut,
+            reset_shortcuts,
             take_native_screenshot,
             save_capture_native,
             notify,
@@ -437,6 +550,9 @@ pub fn run() {
             show_main_window,
             get_autostart,
             set_autostart,
+            get_capture_context,
+            get_descriptor_enabled,
+            set_descriptor_enabled,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AccessibleScreenCapture");
