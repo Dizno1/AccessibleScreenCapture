@@ -41,3 +41,11 @@ A new capture cannot replace a capture that is still waiting in Review.
 Recording time is not announced continuously. Duration is presented after the recording stops.
 
 Status messages are short and event-based. Silence between meaningful events is intentional.
+
+## Background operation (Phase 2, desktop only)
+
+Closing the window minimizes to the system tray rather than quitting the application, so a recording in progress is never interrupted by an accidental window close. Quitting is only available from the tray menu.
+
+Global shortcuts (Ctrl+Alt+S, Ctrl+Alt+R by default, user-changeable) work even when the application window does not have focus, using Windows' own global hotkey registration rather than an in-page key listener. If a shortcut cannot be registered - most often because another application already claims that combination - the application says so plainly ("Global shortcut unavailable. Use the on-screen button instead.") and the ordinary button keeps working regardless.
+
+When the window is hidden, the same approved status message that would otherwise go to the in-page live region is sent instead as a native Windows notification, so a background screenshot or a recording stopped from the tray still gets a clear, concise confirmation. Only one channel is ever used for a given announcement, never both.

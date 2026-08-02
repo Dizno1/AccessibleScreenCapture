@@ -98,17 +98,31 @@
   <!-- ============ Keyboard Shortcuts ============ -->
   <section aria-labelledby="shortcuts-heading">
     <h2 id="shortcuts-heading">Keyboard Shortcuts</h2>
-    <dl class="shortcut-list">
+    <dl class="shortcut-list" id="shortcut-summary-list">
       <div class="shortcut-row">
-        <dt>Ctrl+Alt+S</dt>
+        <dt id="screenshot-shortcut-label">Ctrl+Alt+S</dt>
         <dd>Take a screenshot</dd>
       </div>
       <div class="shortcut-row">
-        <dt>Ctrl+Alt+R</dt>
+        <dt id="record-toggle-shortcut-label">Ctrl+Alt+R</dt>
         <dd>Start or stop screen recording</dd>
       </div>
     </dl>
     <p class="section-hint">Shortcuts are ignored while typing in a text field. Every action here is also available from an ordinary button.</p>
+
+    <div id="shortcut-settings" hidden>
+      <h3>Change shortcuts</h3>
+      <p class="section-hint">These shortcuts work anywhere on Windows, even when another application has focus.</p>
+      <div class="shortcut-editor-row">
+        <span>Take Screenshot: <span id="screenshot-shortcut-current">Ctrl+Alt+S</span></span>
+        <button type="button" id="screenshot-shortcut-change" class="secondary-button">Change Take Screenshot shortcut</button>
+      </div>
+      <div class="shortcut-editor-row">
+        <span>Start or Stop Recording: <span id="record-toggle-shortcut-current">Ctrl+Alt+R</span></span>
+        <button type="button" id="record-toggle-shortcut-change" class="secondary-button">Change Start or Stop Recording shortcut</button>
+      </div>
+      <p id="shortcut-editor-status" role="status" aria-live="polite" class="section-hint"></p>
+    </div>
   </section>
 
 </main>

@@ -2,6 +2,15 @@ import { initAnnouncer, announce } from "./announcer.js";
 import { registerShortcut, initShortcuts } from "./shortcuts.js";
 import { saveBlob, supportsFilePicker } from "./save.js";
 import { formatDuration } from "./duration.js";
+import {
+  isTauri,
+  nativeScreenshot,
+  nativeSave,
+  onGlobalShortcut,
+  showMainWindow,
+  getShortcuts,
+  setShortcut,
+} from "./tauri-bridge.js";
 
 const captureTypeScreenshot = document.getElementById("capture-type-screenshot");
 const captureTypeRecording = document.getElementById("capture-type-recording");
@@ -116,6 +125,28 @@ function readableTimestamp() {
   });
 }
 
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      // reader.result is "data:<mime>;base64,<data>" - keep only the data.
+      const commaIndex = reader.result.indexOf(",");
+      resolve(reader.result.slice(commaIndex + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
+
+function base64ToBlob(base64, mimeType) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mimeType });
+}
+
 function revokeReviewObjectUrl() {
   if (reviewObjectUrl) {
     URL.revokeObjectURL(reviewObjectUrl);
@@ -155,15 +186,25 @@ function hideReview() {
   pendingCapture = null;
 }
 
-saveButton.addEventListener("click", async () => {
-  if (!pendingCapture) return;
-  const capture = pendingCapture;
+async function saveCapture(capture) {
+  if (isTauri) {
+    const extension = capture.kind === "screenshot" ? "png" : "webm";
+    const filterName = capture.kind === "screenshot" ? "PNG image" : "WebM video";
+    const dataBase64 = await blobToBase64(capture.blob);
+    return nativeSave(dataBase64, capture.suggestedName, extension, filterName);
+  }
+
   const typeInfo =
     capture.kind === "screenshot"
       ? { description: "PNG image", accept: { "image/png": [".png"] } }
       : { description: "WebM video", accept: { "video/webm": [".webm"] } };
+  return saveBlob(capture.blob, capture.suggestedName, typeInfo);
+}
 
-  const result = await saveBlob(capture.blob, capture.suggestedName, typeInfo);
+saveButton.addEventListener("click", async () => {
+  if (!pendingCapture) return;
+  const capture = pendingCapture;
+  const result = await saveCapture(capture);
 
   if (result.ok) {
     announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
@@ -219,11 +260,7 @@ function addRecentCapture(capture) {
   downloadAgainButton.className = "secondary-button";
   downloadAgainButton.textContent = `Save ${capture.suggestedName} again`;
   downloadAgainButton.addEventListener("click", async () => {
-    const typeInfo =
-      capture.kind === "screenshot"
-        ? { description: "PNG image", accept: { "image/png": [".png"] } }
-        : { description: "WebM video", accept: { "video/webm": [".webm"] } };
-    const result = await saveBlob(capture.blob, capture.suggestedName, typeInfo);
+    const result = await saveCapture(capture);
     if (result.ok) {
       announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
     } else if (!result.canceled) {
@@ -257,10 +294,18 @@ function captureWasCanceled(error) {
   return error && (error.name === "NotAllowedError" || error.name === "AbortError");
 }
 
-async function captureScreenshot() {
-  if (isStartingCapture || isRecording || pendingCapture) return;
-  isStartingCapture = true;
-  setWorkflowLocked(true);
+async function captureScreenshotNative() {
+  const dataBase64 = await nativeScreenshot();
+  const blob = base64ToBlob(dataBase64, "image/png");
+  announce("screenshotCaptured");
+  showReview({
+    kind: "screenshot",
+    blob,
+    suggestedName: `Screenshot - ${timestampForFilename()}.png`,
+  });
+}
+
+async function captureScreenshotBrowser() {
   let displayStream = null;
 
   try {
@@ -294,11 +339,26 @@ async function captureScreenshot() {
       blob,
       suggestedName: `Screenshot - ${timestampForFilename()}.png`,
     });
+  } finally {
+    if (displayStream) displayStream.getTracks().forEach((track) => track.stop());
+  }
+}
+
+async function captureScreenshot() {
+  if (isStartingCapture || isRecording || pendingCapture) return;
+  isStartingCapture = true;
+  setWorkflowLocked(true);
+
+  try {
+    if (isTauri) {
+      await captureScreenshotNative();
+    } else {
+      await captureScreenshotBrowser();
+    }
   } catch (error) {
     console.error("Screenshot capture error:", error);
     announce(captureWasCanceled(error) ? "captureCanceled" : "screenshotCaptureFailed");
   } finally {
-    if (displayStream) displayStream.getTracks().forEach((track) => track.stop());
     isStartingCapture = false;
     setWorkflowLocked(false);
   }
@@ -455,20 +515,144 @@ recordToggleButton.addEventListener("click", toggleRecording);
 registerShortcut({ ctrl: true, alt: true, key: "r", action: toggleRecording });
 
 if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
-  screenshotButton.disabled = true;
   recordToggleButton.disabled = true;
+  if (!isTauri) screenshotButton.disabled = true;
   const notice = document.createElement("p");
   notice.setAttribute("role", "alert");
   notice.className = "error-notice";
-  notice.textContent =
-    "This browser does not support screen capture. Please use a current version of Chrome or Edge on Windows.";
+  notice.textContent = isTauri
+    ? "This installation's WebView cannot record the screen. Screenshots still work normally."
+    : "This browser does not support screen capture. Please use a current version of Chrome or Edge on Windows.";
   document.getElementById("controls-heading").insertAdjacentElement("afterend", notice);
 }
 
-if (!supportsFilePicker) {
+if (!isTauri && !supportsFilePicker) {
   const notice = document.createElement("p");
   notice.className = "section-hint";
   notice.textContent =
     "This browser will save captures to its normal downloads location rather than letting you choose a folder each time.";
   document.getElementById("controls-heading").insertAdjacentElement("afterend", notice);
+}
+
+// ---------- Desktop-only: global shortcuts, tray, background readiness ----------
+
+if (isTauri) {
+  onGlobalShortcut("screenshot", () => {
+    captureScreenshot();
+  });
+
+  onGlobalShortcut("recordToggle", async () => {
+    if (!isRecording && document.hidden) {
+      // Starting a recording needs the screen-share picker, which
+      // needs a visible window. Stopping an active recording does not.
+      await showMainWindow();
+    }
+    toggleRecording();
+  });
+
+  initShortcutSettings();
+}
+
+function comboToDisplayText(combo) {
+  return combo
+    .split("+")
+    .map((part) => (part.length === 1 ? part.toUpperCase() : part[0].toUpperCase() + part.slice(1)))
+    .join("+");
+}
+
+async function initShortcutSettings() {
+  const settingsSection = document.getElementById("shortcut-settings");
+  const statusEl = document.getElementById("shortcut-editor-status");
+  const rows = {
+    screenshot: {
+      summaryLabel: document.getElementById("screenshot-shortcut-label"),
+      currentLabel: document.getElementById("screenshot-shortcut-current"),
+      changeButton: document.getElementById("screenshot-shortcut-change"),
+      actionName: "Take Screenshot",
+    },
+    recordToggle: {
+      summaryLabel: document.getElementById("record-toggle-shortcut-label"),
+      currentLabel: document.getElementById("record-toggle-shortcut-current"),
+      changeButton: document.getElementById("record-toggle-shortcut-change"),
+      actionName: "Start or Stop Recording",
+    },
+  };
+
+  function applyBindings(bindings) {
+    const displayScreenshot = comboToDisplayText(bindings.screenshot);
+    const displayRecordToggle = comboToDisplayText(bindings.recordToggle);
+    rows.screenshot.summaryLabel.textContent = displayScreenshot;
+    rows.screenshot.currentLabel.textContent = displayScreenshot;
+    rows.recordToggle.summaryLabel.textContent = displayRecordToggle;
+    rows.recordToggle.currentLabel.textContent = displayRecordToggle;
+  }
+
+  function reportFailures(failures) {
+    if (!failures || failures.length === 0) return;
+    announce("shortcutUnavailable");
+    statusEl.textContent =
+      "One or more global shortcuts could not be registered. Use the on-screen buttons instead.";
+  }
+
+  let initial;
+  try {
+    initial = await getShortcuts();
+  } catch (error) {
+    console.error("Could not load shortcuts:", error);
+    return;
+  }
+
+  settingsSection.hidden = false;
+  applyBindings(initial.bindings);
+  reportFailures(initial.failures);
+
+  for (const [action, row] of Object.entries(rows)) {
+    row.changeButton.addEventListener("click", () => {
+      const originalLabel = row.changeButton.textContent;
+      statusEl.textContent = `Press a new key combination for ${row.actionName}, or Escape to cancel.`;
+
+      const handleKeydown = async (event) => {
+        event.preventDefault();
+
+        if (event.key === "Escape") {
+          cleanup();
+          statusEl.textContent = "Shortcut change canceled.";
+          return;
+        }
+        if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) return;
+        if (!/^[a-zA-Z]$/.test(event.key)) {
+          statusEl.textContent = "Please choose a letter key, held with Ctrl and/or Alt.";
+          return;
+        }
+
+        const parts = [];
+        if (event.ctrlKey) parts.push("ctrl");
+        if (event.altKey) parts.push("alt");
+        if (event.shiftKey) parts.push("shift");
+        parts.push(event.key.toLowerCase());
+        const combo = parts.join("+");
+        cleanup();
+
+        try {
+          const response = await setShortcut(action, combo);
+          applyBindings(response.bindings);
+          reportFailures(response.failures);
+          if (!response.failures || response.failures.length === 0) {
+            statusEl.textContent = `${row.actionName} is now ${comboToDisplayText(combo)}.`;
+          }
+        } catch (error) {
+          console.error("Could not set shortcut:", error);
+          statusEl.textContent = `Could not change the ${row.actionName} shortcut.`;
+        }
+      };
+
+      function cleanup() {
+        window.removeEventListener("keydown", handleKeydown, true);
+        row.changeButton.textContent = originalLabel;
+      }
+
+      window.addEventListener("keydown", handleKeydown, true);
+      row.changeButton.textContent = "Press new keys now, or Escape to cancel";
+    });
+  }
 }

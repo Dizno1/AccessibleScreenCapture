@@ -44,3 +44,13 @@ Phase 1 performs exactly two primary tasks:
    message.
 
 No editing, annotation, or cloud features are part of Phase 1.
+
+## Phase 2
+
+The production target moved to a native Windows application (see
+`docs/Roadmap.md`). Phase 1's browser implementation is preserved as
+the reference for workflow and accessibility behavior; Phase 2 wraps
+the same frontend rather than redesigning it, and adds the native
+capabilities a background, keyboard-driven Windows utility needs:
+global shortcuts, native screenshot capture, native save, native
+notifications, and system tray / background operation.
