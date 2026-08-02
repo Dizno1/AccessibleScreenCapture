@@ -237,7 +237,7 @@ fn take_native_screenshot() -> Result<String, String> {
     let monitors = xcap::Monitor::all().map_err(|e| format!("Could not list monitors: {e}"))?;
     let monitor = monitors
         .into_iter()
-        .find(|m| m.is_primary().unwrap_or(false))
+        .find(|m| m.is_primary())
         .ok_or_else(|| "No primary monitor was found.".to_string())?;
 
     let image = monitor
