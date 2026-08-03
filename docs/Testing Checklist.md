@@ -1,8 +1,21 @@
-# Testing Checklist - 1.0.2 (Focus-Aware Confirmation + Recording Workflow Stabilization)
+# Testing Checklist - 1.0.3 (Recording Save + Native Notification Reliability Repair)
 
-1.0.1 built successfully via GitHub Actions and was installed and verified on Windows. 1.0.2 changed no Rust code, so its native layer is identical to that verified build - but the behavior it's meant to fix (reliable feedback while unfocused, and reliable recording saves) genuinely needs real testing to confirm. None of the items below have been run yet.
+1.0.1 built successfully via GitHub Actions and was installed and verified on Windows. 1.0.2's frontend-only fixes were tested and found incomplete - recording save still failed, and native notifications (including the Capture Context Descriptor) still didn't reliably reach the user outside the app. 1.0.3 targets the two Rust-level causes most likely responsible. None of the items below have been run yet.
+
+## 1.0.3 priority: the three defects this pass targets
+
+- [ ] Save a recording; confirm the file actually exists on disk and plays correctly - not just that "Recording saved." was announced. This is the actual test of the `save_capture_native` rewrite, since 1.0.2 already fixed the announcement but not (apparently) the underlying save.
+- [ ] Save several recordings of different lengths, including at least one longer one, to check whether the previous failure was more likely to occur with larger data (consistent with the deadlock-prone pattern this pass removed) or was unrelated to size.
+- [ ] Take a screenshot via Alt+Ctrl+Space from another application (Chrome, Outlook, Word) and confirm an actual Windows toast notification appears and is announced by the screen reader - not just that no error occurred.
+- [ ] Trigger a pending-capture-blocked message (press Alt+Ctrl+Space again with a capture already in Review) from another application and confirm the notification reaches you there.
+- [ ] Turn the Capture Context Descriptor on via Alt+Ctrl+D from another application, move between two or three other applications, and confirm each context change is actually announced outside the app - not just that the descriptor doesn't error.
+- [ ] If notifications still don't reliably appear after this pass, check Windows Focus Assist/Do Not Disturb status during testing before concluding the code fix didn't work - see `docs/Roadmap.md`, "What's honestly still open," for other things worth checking in that case.
+- [ ] If the descriptor still doesn't work reliably outside the app after this pass, that's the signal to invoke the fallback and remove it from the release, per the original directive's explicit permission to do so.
+
+## Previous checklist items (still relevant, not yet re-verified against 1.0.3)
 
 ## Global shortcut confirmation while unfocused
+
 
 - [ ] Alt+Ctrl+Space from Chrome: screenshot is captured, and a native Windows notification reads "Screenshot captured from the primary monitor. Return to AccessibleScreenCapture to review or save it."
 - [ ] Alt+Ctrl+Space from Outlook: same as above.
@@ -88,9 +101,10 @@
 - [ ] Installing the 1.0.2 MSI over an existing 1.0.1 installation upgrades cleanly (Windows recognizes it as an update, not a conflicting separate install).
 - [ ] Existing shortcut customizations from 1.0.1 are still in effect after the 1.0.2 upgrade.
 
-## Regression (should be unaffected by this pass - no Rust changed)
+## Regression (should be unaffected by this pass - only save_capture_native and startup AUMID registration changed)
 
-- [ ] Screenshot and recording Review/Save/Discard workflow is unchanged.
+- [ ] Screenshot capture, Review/Discard workflow, and native screenshot save (the dialog itself, not just the underlying command) are unchanged.
 - [ ] Recent Captures is unchanged.
 - [ ] Shortcut rebinding, duplicate prevention, and Restore Defaults are unchanged.
 - [ ] System tray, minimize-to-tray, and Quit are unchanged.
+- [ ] Screenshot save (which goes through the same rewritten `save_capture_native` command as recording save) still works correctly - confirms the rewrite didn't regress the case that was already working.

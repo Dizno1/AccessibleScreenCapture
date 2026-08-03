@@ -367,8 +367,21 @@ struct SaveResult {
 /// Opens a native "Save As" dialog and writes the given base64-encoded
 /// bytes to the chosen path. Mirrors app/save.js's return shape so the
 /// frontend can share its existing success/cancel/failure handling.
+///
+/// This was previously an `async fn` that bridged the dialog plugin's
+/// callback-based `save_file()` into synchronous code via a
+/// `std::sync::mpsc::channel` and a blocking `rx.recv()` - a
+/// known-risky pattern: blocking an async command's executor thread
+/// while waiting for a callback that may be scheduled on that same
+/// executor can hang indefinitely, especially under any real load,
+/// and a video recording is exactly the case most likely to take long
+/// enough to expose that. Rewritten as a genuinely synchronous (non-
+/// async) command using the dialog plugin's own blocking API instead -
+/// Tauri already runs non-async commands off the main/async-executor
+/// thread automatically, so there is no callback-vs-blocking-thread
+/// contention here at all.
 #[tauri::command]
-async fn save_capture_native(
+fn save_capture_native(
     app: AppHandle,
     data_base64: String,
     suggested_name: String,
@@ -379,18 +392,19 @@ async fn save_capture_native(
         .decode(&data_base64)
         .map_err(|e| format!("Could not decode capture data: {e}"))?;
 
-    let (tx, rx) = std::sync::mpsc::channel();
-    app.dialog()
+    if bytes.is_empty() {
+        // Never silently "succeed" at writing a 0-byte file - this
+        // would previously have reported ok:true for genuinely empty
+        // capture data reaching this command.
+        return Err("No capture data was received to save.".to_string());
+    }
+
+    let chosen = app
+        .dialog()
         .file()
         .set_file_name(&suggested_name)
         .add_filter(&filter_name, &[extension.as_str()])
-        .save_file(move |path| {
-            let _ = tx.send(path);
-        });
-
-    let chosen = rx
-        .recv()
-        .map_err(|e| format!("Save dialog did not respond: {e}"))?;
+        .blocking_save_file();
 
     match chosen {
         Some(path) => {
@@ -477,6 +491,21 @@ pub fn run() {
         .manage(DescriptorState::default())
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // Windows toast notifications are known to be unreliable
+            // for a plain Win32 (non-MSIX) app that hasn't explicitly
+            // registered an AppUserModelID - Windows can silently drop
+            // or fail to attribute the notification without one. This
+            // must happen before any notification is shown. The
+            // identifier matches tauri.conf.json's "identifier" so it
+            // lines up with what the installer registers.
+            unsafe {
+                use windows::core::HSTRING;
+                use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+                let _ = SetCurrentProcessExplicitAppUserModelID(&HSTRING::from(
+                    "org.opendoordesign.accessiblescreencapture",
+                ));
+            }
 
             // Load persisted shortcut bindings (or defaults) and
             // register them for real before the window is usable.
