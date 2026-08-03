@@ -97,7 +97,15 @@ export async function onGlobalShortcut(action, handler) {
   await window.__TAURI__.event.listen(eventNames[action], handler);
 }
 
-/** True while the main window is hidden (minimized to tray). */
-export function isWindowHidden() {
-  return document.hidden;
+/**
+ * True when AccessibleScreenCapture currently has keyboard focus.
+ * Deliberately NOT based on document.hidden alone - a window can be
+ * fully visible (not hidden) but still not focused (e.g. sitting
+ * behind Chrome or Outlook), and document.hidden misses that case
+ * entirely. document.hasFocus() correctly covers both "hidden/
+ * minimized" and "visible but unfocused" as the same "can't be heard
+ * via the in-page live region" condition.
+ */
+export function isAppFocused() {
+  return document.hasFocus();
 }

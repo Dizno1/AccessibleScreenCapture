@@ -4,6 +4,7 @@ import { saveBlob, supportsFilePicker } from "./save.js";
 import { formatDuration } from "./duration.js";
 import {
   isTauri,
+  isAppFocused,
   nativeScreenshot,
   nativeSave,
   onGlobalShortcut,
@@ -47,11 +48,69 @@ let recordingStartTime = 0;
 let activeAudioContext = null;
 let captureCounter = 0;
 let descriptorEnabled = false;
+let playCaptureSound = true;
 const shortcutDisplay = {
   screenshot: "Alt+Ctrl+Space",
   recordToggle: "Alt+Ctrl+R",
   descriptor: "Alt+Ctrl+D",
 };
+
+// Diagnostics: plain visible text a user can navigate to when
+// troubleshooting, never spoken automatically (no aria-live). See
+// docs/Screen Reader First Principles.md, "Diagnostics."
+const diagnostics = {
+  screenshotShortcutStatus: "Not checked yet",
+  recordingShortcutStatus: "Not checked yet",
+  descriptorShortcutStatus: "Not checked yet",
+  lastGlobalShortcut: "None received yet",
+  lastScreenshotResult: "None yet",
+  lastDescriptorToggle: "None yet",
+  recordingRequestReceived: "None yet",
+  sharingDialogRequested: "No",
+  recordingStartedDiag: "No",
+  recordingStoppedDiag: "No",
+  recordingBlobSize: "N/A",
+  recordingMimeType: "N/A",
+  saveDialogOpened: "No",
+  saveSucceeded: "No",
+  saveFailed: "No",
+  savedFilePath: "Not available (native save does not report the chosen path back to the app)",
+  recentCapturesUpdated: "No",
+  currentMicSelection: "Default microphone",
+  resolvedMicDevice: "N/A",
+};
+
+function nowText() {
+  return new Date().toLocaleTimeString();
+}
+
+function renderDiagnostics() {
+  const ids = {
+    screenshotShortcutStatus: "diag-screenshot-shortcut",
+    recordingShortcutStatus: "diag-recording-shortcut",
+    descriptorShortcutStatus: "diag-descriptor-shortcut",
+    lastGlobalShortcut: "diag-last-shortcut",
+    lastScreenshotResult: "diag-last-screenshot",
+    lastDescriptorToggle: "diag-last-descriptor",
+    recordingRequestReceived: "diag-recording-request",
+    sharingDialogRequested: "diag-sharing-dialog",
+    recordingStartedDiag: "diag-recording-started",
+    recordingStoppedDiag: "diag-recording-stopped",
+    recordingBlobSize: "diag-blob-size",
+    recordingMimeType: "diag-mime-type",
+    saveDialogOpened: "diag-save-dialog",
+    saveSucceeded: "diag-save-succeeded",
+    saveFailed: "diag-save-failed",
+    savedFilePath: "diag-saved-path",
+    recentCapturesUpdated: "diag-recent-updated",
+    currentMicSelection: "diag-mic-selection",
+    resolvedMicDevice: "diag-mic-resolved",
+  };
+  for (const [key, id] of Object.entries(ids)) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = diagnostics[key];
+  }
+}
 
 initAnnouncer(document.getElementById("status-announcer"));
 initShortcuts();
@@ -96,6 +155,40 @@ function renderRecordToggleButton() {
 
 renderScreenshotHint();
 renderRecordToggleButton();
+
+/**
+ * A short, nonverbal confirmation tone - supplements the spoken/
+ * notification confirmation, never replaces it. Deliberately simple
+ * (Web Audio API, no audio files) to avoid adding any dependency or
+ * risk to the build.
+ */
+function playScreenshotSound() {
+  if (!playCaptureSound) return;
+  try {
+    const context = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.value = 880;
+    gain.gain.setValueAtTime(0.15, context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.15);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start();
+    oscillator.stop(context.currentTime + 0.15);
+    oscillator.addEventListener("ended", () => context.close().catch(() => {}));
+  } catch (error) {
+    console.error("Could not play capture sound:", error);
+  }
+}
+
+const captureSoundToggle = document.getElementById("capture-sound-toggle");
+if (captureSoundToggle) {
+  playCaptureSound = captureSoundToggle.checked;
+  captureSoundToggle.addEventListener("change", () => {
+    playCaptureSound = captureSoundToggle.checked;
+  });
+}
 
 microphoneOption.addEventListener("change", async () => {
   if (!microphoneOption.checked) {
@@ -224,6 +317,8 @@ function composeContextDescription(context) {
     );
   }
 
+  parts.push("Screenshot target is the entire primary monitor.");
+
   return parts.join(" ");
 }
 
@@ -281,17 +376,53 @@ async function saveCapture(capture) {
   return saveBlob(capture.blob, capture.suggestedName, typeInfo);
 }
 
+/**
+ * Wraps saveCapture() so a save attempt can never fail silently. Any
+ * thrown/rejected error (a native IPC problem, a browser API error,
+ * anything) is caught here and turned into the same explicit
+ * save-failed announcement a normal {ok:false} result would produce -
+ * this was the most likely cause of "recording appeared saved but
+ * wasn't, with no announcement either way": an unhandled promise
+ * rejection from saveCapture() silently skipped the rest of the click
+ * handler with nothing ever reaching the live region or a
+ * notification.
+ */
+async function performSave(capture) {
+  diagnostics.saveDialogOpened = `Yes, for ${capture.kind} at ${nowText()}`;
+  renderDiagnostics();
+  try {
+    const result = await saveCapture(capture);
+    if (result.ok) {
+      diagnostics.saveSucceeded = `Yes at ${nowText()}`;
+      diagnostics.saveFailed = "No";
+    } else if (result.canceled) {
+      diagnostics.saveFailed = `Canceled at ${nowText()}`;
+    } else {
+      diagnostics.saveFailed = `Yes (reported failure) at ${nowText()}`;
+    }
+    renderDiagnostics();
+    return result;
+  } catch (error) {
+    console.error("Save error:", error);
+    diagnostics.saveFailed = `Yes (unexpected error) at ${nowText()}`;
+    renderDiagnostics();
+    return { ok: false, canceled: false };
+  }
+}
+
 saveButton.addEventListener("click", async () => {
   if (!pendingCapture) return;
   const capture = pendingCapture;
-  const result = await saveCapture(capture);
+  const result = await performSave(capture);
 
   if (result.ok) {
     announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
     hideReview();
     addRecentCapture(capture);
+    diagnostics.recentCapturesUpdated = `Yes at ${nowText()}`;
+    renderDiagnostics();
   } else if (result.canceled) {
-    announce("captureCanceled");
+    announce("saveCanceled");
   } else {
     announce(capture.kind === "screenshot" ? "screenshotSaveFailed" : "recordingSaveFailed");
   }
@@ -340,10 +471,12 @@ function addRecentCapture(capture) {
   downloadAgainButton.className = "secondary-button";
   downloadAgainButton.textContent = `Save ${capture.suggestedName} again`;
   downloadAgainButton.addEventListener("click", async () => {
-    const result = await saveCapture(capture);
+    const result = await performSave(capture);
     if (result.ok) {
       announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
-    } else if (!result.canceled) {
+    } else if (result.canceled) {
+      announce("saveCanceled");
+    } else {
       announce(capture.kind === "screenshot" ? "screenshotSaveFailed" : "recordingSaveFailed");
     }
   });
@@ -374,10 +507,34 @@ function captureWasCanceled(error) {
   return error && (error.name === "NotAllowedError" || error.name === "AbortError");
 }
 
+/**
+ * Confirms a successful screenshot. When AccessibleScreenCapture has
+ * focus, the normal short whitelist message is enough (the user is
+ * already looking at the app). When it doesn't - most commonly after
+ * using the global shortcut from another application - a short
+ * confirmation alone leaves the user unsure whether anything
+ * happened, since they can't see the Review panel appear. In that
+ * case a more explicit, specific message is used instead, routed to a
+ * native notification the same way any other unfocused announcement is.
+ */
+function announceScreenshotCaptured() {
+  playScreenshotSound();
+  if (isTauri && !isAppFocused()) {
+    announceRaw(
+      "Screenshot captured from the primary monitor. Return to AccessibleScreenCapture to review or save it."
+    );
+    diagnostics.lastScreenshotResult = `Captured (unfocused) at ${nowText()}`;
+  } else {
+    announce("screenshotCaptured");
+    diagnostics.lastScreenshotResult = `Captured at ${nowText()}`;
+  }
+  renderDiagnostics();
+}
+
 async function captureScreenshotNative() {
   const dataBase64 = await nativeScreenshot();
   const blob = base64ToBlob(dataBase64, "image/png");
-  announce("screenshotCaptured");
+  announceScreenshotCaptured();
   showReview({
     kind: "screenshot",
     blob,
@@ -413,7 +570,7 @@ async function captureScreenshotBrowser() {
     const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
     if (!blob) throw new Error("Screenshot image could not be created.");
 
-    announce("screenshotCaptured");
+    announceScreenshotCaptured();
     showReview({
       kind: "screenshot",
       blob,
@@ -424,8 +581,27 @@ async function captureScreenshotBrowser() {
   }
 }
 
+function announcePendingCaptureBlocked() {
+  // A capture is already waiting in Review - keep it, don't overwrite
+  // it, and say so specifically rather than silently ignoring the
+  // repeat press (this is the most likely moment for that to be
+  // confusing: pressing a global shortcut again from another
+  // application with no visible feedback either way). Says "capture"
+  // rather than "screenshot" or "recording" since the pending item
+  // may be either kind.
+  announceRaw(
+    "A capture is already waiting for review. Save or discard it before starting another capture."
+  );
+}
+
 async function captureScreenshot() {
-  if (isStartingCapture || isRecording || pendingCapture) return;
+  if (pendingCapture) {
+    announcePendingCaptureBlocked();
+    diagnostics.lastScreenshotResult = `Blocked - a capture is already waiting for review at ${nowText()}`;
+    renderDiagnostics();
+    return;
+  }
+  if (isStartingCapture || isRecording) return;
   isStartingCapture = true;
   setWorkflowLocked(true);
 
@@ -437,7 +613,12 @@ async function captureScreenshot() {
     }
   } catch (error) {
     console.error("Screenshot capture error:", error);
-    announce(captureWasCanceled(error) ? "captureCanceled" : "screenshotCaptureFailed");
+    const canceled = captureWasCanceled(error);
+    announce(canceled ? "captureCanceled" : "screenshotCaptureFailed");
+    diagnostics.lastScreenshotResult = canceled
+      ? `Canceled at ${nowText()}`
+      : `Failed at ${nowText()}`;
+    renderDiagnostics();
   } finally {
     isStartingCapture = false;
     setWorkflowLocked(false);
@@ -488,24 +669,95 @@ function stopActiveStreams() {
   }
 }
 
+async function refreshMicrophoneOptions() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const microphones = devices.filter((device) => device.kind === "audioinput");
+    const previousSelection = microphoneSelect.value;
+
+    microphoneSelect.innerHTML = '<option value="">Default microphone</option>';
+    microphones.forEach((device, index) => {
+      const option = document.createElement("option");
+      option.value = device.deviceId;
+      option.textContent = device.label || `Microphone ${index + 1}`;
+      microphoneSelect.appendChild(option);
+    });
+
+    // Keep the previous selection only if that device still exists;
+    // otherwise fall back to Default rather than silently keeping a
+    // reference to hardware that's no longer there.
+    const stillPresent = microphones.some((device) => device.deviceId === previousSelection);
+    microphoneSelect.value = stillPresent ? previousSelection : "";
+  } catch (error) {
+    console.error("Could not refresh microphone list:", error);
+  }
+}
+
 async function startRecording() {
-  if (isStartingCapture || isRecording || pendingCapture) return;
+  if (pendingCapture) {
+    announcePendingCaptureBlocked();
+    return;
+  }
+  if (isStartingCapture || isRecording) return;
   isStartingCapture = true;
   setWorkflowLocked(true);
+  diagnostics.recordingRequestReceived = `Yes at ${nowText()}`;
+  renderDiagnostics();
+
+  // Immediate feedback before the sharing dialog even appears - the
+  // global shortcut previously gave no indication anything happened
+  // until the user returned to the app and saw (or didn't see) the
+  // dialog themselves.
+  announceRaw("Recording requested. Complete the screen sharing dialog to begin.");
+
+  if (systemAudioOption.checked) {
+    announceRaw(
+      'Windows will ask whether to share system audio. Turn on "Also share system audio" to include JAWS and other computer audio.'
+    );
+  }
+
   let displayStream = null;
   let micStream = null;
 
   try {
+    diagnostics.sharingDialogRequested = `Yes at ${nowText()}`;
+    renderDiagnostics();
     displayStream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
       audio: systemAudioOption.checked,
     });
 
     if (microphoneOption.checked) {
+      // Refresh the device list right before requesting the stream,
+      // not just whenever the checkbox was first checked, so a
+      // headset plugged in after the app opened is actually available
+      // to choose from and "Default microphone" resolves to whatever
+      // Windows currently considers default, not a stale snapshot.
+      await refreshMicrophoneOptions();
       const deviceId = microphoneSelect.value;
-      micStream = await navigator.mediaDevices.getUserMedia({
-        audio: deviceId ? { deviceId: { exact: deviceId } } : true,
-      });
+      diagnostics.currentMicSelection = deviceId
+        ? microphoneSelect.options[microphoneSelect.selectedIndex]?.textContent || deviceId
+        : "Default microphone";
+
+      try {
+        micStream = await navigator.mediaDevices.getUserMedia({
+          audio: deviceId ? { deviceId: { exact: deviceId } } : true,
+        });
+        const resolvedTrack = micStream.getAudioTracks()[0];
+        diagnostics.resolvedMicDevice = resolvedTrack
+          ? resolvedTrack.label || resolvedTrack.getSettings().deviceId || "Unknown device"
+          : "N/A";
+      } catch (micError) {
+        console.error("Microphone acquisition error:", micError);
+        diagnostics.resolvedMicDevice = "Unavailable";
+        renderDiagnostics();
+        announce("microphoneUnavailable");
+        if (displayStream) displayStream.getTracks().forEach((track) => track.stop());
+        setWorkflowLocked(false);
+        isStartingCapture = false;
+        return;
+      }
+      renderDiagnostics();
     }
 
     activeStreams = micStream ? [displayStream, micStream] : [displayStream];
@@ -526,6 +778,10 @@ async function startRecording() {
       const blob = new Blob(recordingChunks, { type: recorderMimeType });
       const durationSeconds = (Date.now() - recordingStartTime) / 1000;
 
+      diagnostics.recordingBlobSize = `${blob.size} bytes`;
+      diagnostics.recordingMimeType = recorderMimeType;
+      renderDiagnostics();
+
       stopActiveStreams();
       activeRecorder = null;
       recordingChunks = [];
@@ -540,7 +796,7 @@ async function startRecording() {
       showReview({
         kind: "recording",
         blob,
-        suggestedName: `Screen Recording - ${timestampForFilename()}.webm`,
+        suggestedName: `Recording - ${timestampForFilename()}.webm`,
         durationSeconds,
       });
     });
@@ -554,6 +810,8 @@ async function startRecording() {
     isRecording = true;
     recordToggleButton.disabled = false;
     renderRecordToggleButton();
+    diagnostics.recordingStartedDiag = `Yes at ${nowText()}`;
+    renderDiagnostics();
     announce("recordingStarted");
   } catch (error) {
     console.error("Recording start error:", error);
@@ -562,7 +820,7 @@ async function startRecording() {
     stopActiveStreams();
     activeRecorder = null;
     recordingChunks = [];
-    announce(captureWasCanceled(error) ? "captureCanceled" : "recordingFailed");
+    announce(captureWasCanceled(error) ? "recordingCanceled" : "recordingCouldNotStart");
     setWorkflowLocked(false);
   } finally {
     isStartingCapture = false;
@@ -574,7 +832,16 @@ function stopRecording() {
   isRecording = false;
   renderRecordToggleButton();
   recordToggleButton.disabled = true;
-  announce("recordingStopped");
+  diagnostics.recordingStoppedDiag = `Yes at ${nowText()}`;
+  renderDiagnostics();
+
+  if (isTauri && !isAppFocused()) {
+    announceRaw(
+      "Recording stopped. Return to AccessibleScreenCapture to review, save, or discard it."
+    );
+  } else {
+    announce("recordingStopped");
+  }
 
   if (activeRecorder && activeRecorder.state !== "inactive") {
     activeRecorder.stop();
@@ -616,10 +883,14 @@ if (!isTauri && !supportsFilePicker) {
 
 if (isTauri) {
   onGlobalShortcut("screenshot", () => {
+    diagnostics.lastGlobalShortcut = `Screenshot at ${nowText()}`;
+    renderDiagnostics();
     captureScreenshot();
   });
 
   onGlobalShortcut("recordToggle", async () => {
+    diagnostics.lastGlobalShortcut = `Recording at ${nowText()}`;
+    renderDiagnostics();
     if (!isRecording && document.hidden) {
       // Starting a recording needs the screen-share picker, which
       // needs a visible window. Stopping an active recording does not.
@@ -629,6 +900,8 @@ if (isTauri) {
   });
 
   onGlobalShortcut("descriptor", () => {
+    diagnostics.lastGlobalShortcut = `Capture Context Descriptor at ${nowText()}`;
+    renderDiagnostics();
     toggleDescriptor();
   });
 
@@ -638,6 +911,7 @@ if (isTauri) {
 
   initShortcutSettings();
   initDescriptorSettings();
+  initDiagnostics();
 }
 
 /**
@@ -696,15 +970,23 @@ async function initShortcutSettings() {
     },
   };
 
+  const diagnosticsKeyForAction = {
+    screenshot: "screenshotShortcutStatus",
+    recordToggle: "recordingShortcutStatus",
+    descriptor: "descriptorShortcutStatus",
+  };
+
   function applyBindings(bindings) {
     for (const [action, row] of Object.entries(rows)) {
       const display = comboToDisplayText(bindings[action]);
       row.summaryLabel.textContent = display;
       row.currentLabel.textContent = display;
       shortcutDisplay[action] = display;
+      diagnostics[diagnosticsKeyForAction[action]] = `Registered: ${display}`;
     }
     renderScreenshotHint();
     renderRecordToggleButton();
+    renderDiagnostics();
   }
 
   // Startup-only: a previously-saved shortcut that can no longer be
@@ -821,6 +1103,8 @@ async function setDescriptorState(enabled) {
     descriptorEnabled = await setDescriptorEnabled(enabled);
   } catch (error) {
     console.error("Could not change Capture Context Descriptor state:", error);
+    diagnostics.lastDescriptorToggle = `Failed to change at ${nowText()}`;
+    renderDiagnostics();
     return;
   }
 
@@ -828,10 +1112,19 @@ async function setDescriptorState(enabled) {
   if (checkbox) checkbox.checked = descriptorEnabled;
 
   announceRaw(`Capture Context Descriptor ${descriptorEnabled ? "on" : "off"}.`);
+  diagnostics.lastDescriptorToggle = `Turned ${descriptorEnabled ? "on" : "off"} at ${nowText()}`;
+  renderDiagnostics();
 }
 
 function toggleDescriptor() {
   setDescriptorState(!descriptorEnabled);
+}
+
+function initDiagnostics() {
+  const section = document.getElementById("diagnostics-settings");
+  if (!section) return;
+  section.hidden = false;
+  renderDiagnostics();
 }
 
 async function initDescriptorSettings() {

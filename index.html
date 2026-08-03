@@ -45,6 +45,7 @@
       <input type="checkbox" id="option-system-audio" checked>
       Include system audio, when available
     </label>
+    <p class="section-hint">Windows will separately ask whether to share system audio when the sharing dialog opens. Turn on "Also share system audio" there to include JAWS and other computer audio - this checkbox alone does not guarantee it.</p>
 
     <label class="checkbox-option">
       <input type="checkbox" id="option-microphone">
@@ -62,6 +63,7 @@
   <!-- ============ Recording Controls ============ -->
   <section aria-labelledby="controls-heading">
     <h2 id="controls-heading">Capture Controls</h2>
+    <p class="section-hint">Screenshot target: Primary monitor</p>
 
     <div id="screenshot-controls">
       <button type="button" id="screenshot-button" class="primary-button">
@@ -74,6 +76,11 @@
         Start Recording <span class="shortcut-hint" id="record-toggle-shortcut-hint">Alt+Ctrl+R</span>
       </button>
     </div>
+
+    <label class="checkbox-option">
+      <input type="checkbox" id="capture-sound-toggle" checked>
+      Play a sound when a screenshot is captured
+    </label>
   </section>
 
   <!-- ============ Review (appears after a capture, before saving) ============ -->
@@ -142,6 +149,91 @@
       <input type="checkbox" id="descriptor-toggle">
       Capture Context Descriptor on
     </label>
+  </section>
+
+  <!-- ============ Diagnostics (desktop only) ============ -->
+  <!-- Plain visible text, never in a live region - navigate here manually when troubleshooting; nothing here is spoken automatically. -->
+  <section aria-labelledby="diagnostics-heading" id="diagnostics-settings" hidden>
+    <h2 id="diagnostics-heading">Diagnostics</h2>
+    <p class="section-hint">For troubleshooting only. Nothing in this section is announced automatically - navigate here to check it.</p>
+    <dl class="shortcut-list">
+      <div class="shortcut-row">
+        <dt>Screenshot shortcut</dt>
+        <dd id="diag-screenshot-shortcut">Not checked yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recording shortcut</dt>
+        <dd id="diag-recording-shortcut">Not checked yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Capture Context Descriptor shortcut</dt>
+        <dd id="diag-descriptor-shortcut">Not checked yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Last global shortcut received</dt>
+        <dd id="diag-last-shortcut">None received yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Last screenshot result</dt>
+        <dd id="diag-last-screenshot">None yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Last descriptor toggle</dt>
+        <dd id="diag-last-descriptor">None yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recording request received</dt>
+        <dd id="diag-recording-request">None yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Sharing dialog requested</dt>
+        <dd id="diag-sharing-dialog">No</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recording started</dt>
+        <dd id="diag-recording-started">No</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recording stopped</dt>
+        <dd id="diag-recording-stopped">No</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recording data size</dt>
+        <dd id="diag-blob-size">N/A</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recording file type</dt>
+        <dd id="diag-mime-type">N/A</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Save dialog opened</dt>
+        <dd id="diag-save-dialog">No</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Save succeeded</dt>
+        <dd id="diag-save-succeeded">No</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Save failed</dt>
+        <dd id="diag-save-failed">No</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Saved file path</dt>
+        <dd id="diag-saved-path">Not available (native save does not report the chosen path back to the app)</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recent Captures updated</dt>
+        <dd id="diag-recent-updated">No</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Current microphone selection</dt>
+        <dd id="diag-mic-selection">Default microphone</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Resolved microphone device</dt>
+        <dd id="diag-mic-resolved">N/A</dd>
+      </div>
+    </dl>
   </section>
 
 </main>

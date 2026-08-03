@@ -52,7 +52,49 @@ Closing the window minimizes to the system tray rather than quitting the applica
 
 Global shortcuts work even when the application window does not have focus, using Windows' own global hotkey registration rather than an in-page key listener.
 
-When the window is hidden, the same approved status message that would otherwise go to the in-page live region is sent instead as a native Windows notification, so a background screenshot, a recording stopped from the tray, or a descriptor context change still gets a clear, concise confirmation. Only one channel is ever used for a given announcement, never both.
+Announcement routing is based on whether AccessibleScreenCapture actually has keyboard focus (`document.hasFocus()`), not merely whether it's hidden. A window that's fully visible but sitting behind another application - Chrome, Outlook, Excel, Word, whatever the user switched to - is just as unable to be heard through the in-page live region as a minimized one, and is treated the same way: the same approved message that would otherwise go to the live region is sent instead as a native Windows notification. Only one channel is ever used for a given announcement, never both. An earlier version of this check used `document.hidden` alone, which misses the "visible but unfocused" case entirely - fixed in 1.0.2.
+
+## Focus-aware capture confirmation
+
+A screenshot or recording started via a global shortcut while another application has focus produces no visible change the user can see - the Review panel (or the sharing dialog) appears in a window they aren't looking at. A short confirmation alone is not enough feedback in that situation. When AccessibleScreenCapture doesn't have focus:
+
+- A successful screenshot sends a longer, specific native notification instead of the short in-app confirmation: "Screenshot captured from the primary monitor. Return to AccessibleScreenCapture to review or save it."
+- Requesting a recording immediately confirms the request before the sharing dialog even appears: "Recording requested. Complete the screen sharing dialog to begin." - this exists specifically because the previous behavior gave no indication anything happened until the user manually switched back and either saw the dialog or didn't.
+- Stopping a recording sends "Recording stopped. Return to AccessibleScreenCapture to review, save, or discard it." instead of the short in-app version.
+
+When the app does have focus, the normal short confirmations are used ("Screenshot captured.", "Recording stopped."), since the user is already looking at the interface. None of these paths move focus or raise the application window.
+
+If a capture is already waiting in Review and another screenshot or recording is requested, the existing pending capture is kept - never silently overwritten - and the attempt is announced: "A capture is already waiting for review. Save or discard it before starting another capture." The wording says "capture," not "screenshot" or "recording," because the pending item may be either kind, and this same check now applies to starting a recording, not only taking a screenshot.
+
+## Recording save reliability
+
+Saving a screenshot or recording is wrapped so a failure can never pass by unannounced. Earlier code awaited the save operation directly inside a click handler with no error handling; if the underlying save call threw or rejected for any reason, the rest of the handler - including every announcement - was silently skipped, which was the most likely explanation for a recording appearing to save with no confirmation either way and nothing showing up in Recent Captures. Save attempts are now caught explicitly and always resolve to an explicit outcome:
+
+- "Recording saved." / "Screenshot saved." on success, and Recent Captures is only updated after this confirmed success - never in anticipation of it.
+- "Recording could not be saved." / "Screenshot save failed." on failure, whether the failure came back as an ordinary result or as an unexpected error.
+- "Save canceled." if the save dialog itself was dismissed - distinct from a capture being canceled.
+
+A failed or canceled save never discards the pending capture from memory; the user can simply try saving again.
+
+## System audio guidance
+
+Windows/WebView2's own screen-sharing dialog has its own separate "Also share system audio" option, which the application's "Include system audio, when available" checkbox does not control or guarantee by itself. When system audio is requested and a recording is about to start, the application says so before the sharing dialog opens: "Windows will ask whether to share system audio. Turn on 'Also share system audio' to include JAWS and other computer audio." The same guidance is also shown as static visible text next to the checkbox. Native WASAPI-level system audio recording is not implemented - this is guidance for using the existing OS dialog correctly, not a new capture path.
+
+## Microphone device refresh
+
+The list of available microphones is refreshed immediately before each recording request that has microphone audio enabled, not only when the checkbox was first checked - so a headset connected after the app opened is actually selectable. "Default microphone" resolves to whatever Windows currently considers the default at the moment recording starts, not a cached value from earlier. If the specifically selected microphone is no longer available (unplugged, disabled), the application does not silently fall back to a different device - it stops the attempt and announces "The selected microphone is unavailable. Choose another microphone or turn microphone audio off."
+
+## Capture target accuracy
+
+Every screenshot captures the entire primary monitor - there is no active-window-only or region-only capture mode yet (see the Roadmap). "Screenshot target: Primary monitor" is shown as plain visible text near the capture controls, and every Capture Context Descriptor description ends with "Screenshot target is the entire primary monitor." so a description of the active window is never mistaken for a description of what will actually be captured.
+
+## Diagnostics
+
+A Diagnostics section (plain visible text, not a live region, nothing in it announced automatically) reports: registration status for all three global shortcuts, the last global shortcut received, the last screenshot result, the last Capture Context Descriptor toggle result, and - new in this pass - recording request/sharing-dialog/start/stop status, the last recording's data size and file type, save-dialog/success/failure status, whether Recent Captures was updated, and the current and resolved microphone selection. It exists for troubleshooting - a user navigates to it deliberately when something seems wrong, rather than having it interrupt normal use. The saved file's actual path is not available here, since the native save command doesn't currently return it to the frontend - noted honestly rather than guessed at.
+
+## Capture sound
+
+An optional short, nonverbal tone plays when a screenshot is captured (on by default, a plain checkbox to turn off). It supplements the spoken/notification confirmation - it never replaces it, and carries no information on its own beyond "something happened just now."
 
 ## Configurable shortcuts
 
@@ -85,6 +127,6 @@ The descriptor is a completely independent, on-demand mode. It is not triggered 
 
 **Stays on** until explicitly turned off or the application exits - it is not a persisted preference; each new session starts with it off.
 
-Descriptions stay in short, practical, spoken sentences: "Word. Accessibility Report. Restored. Left half of monitor 1." / "Firefox. Full screen. Monitor 2." Raw pixel coordinates are never announced.
+Descriptions stay in short, practical, spoken sentences: "Word. Accessibility Report. Restored. Left half of monitor 1. Screenshot target is the entire primary monitor." / "Firefox. Full screen. Monitor 2. Screenshot target is the entire primary monitor." Raw pixel coordinates are never announced.
 
 **Important technical limitation:** the descriptor reports the visible window's application, title, state, size, and monitor. It does not and cannot know whether a document or webpage's full content exists within that visible frame - content below the fold, outside the viewport, hidden behind another window, or not currently rendered is never described as present.

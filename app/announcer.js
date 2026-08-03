@@ -2,24 +2,27 @@
 // Only approved messages are written to the live region. Browser dialogs,
 // native controls, and focus changes may still be announced by a screen reader.
 //
-// On the desktop build, when the window is hidden (minimized to tray -
-// see docs/Screen Reader First Principles.md, Background Operation),
-// the same approved message is sent as a native Windows notification
-// instead of the in-page live region, since a hidden window's live
-// region cannot be heard. Only one channel fires per announcement,
-// never both, to avoid a duplicate announcement.
+// On the desktop build, whenever AccessibleScreenCapture does not have
+// keyboard focus - hidden/minimized to tray, OR simply visible but
+// sitting behind another application - the same approved message is
+// sent as a native Windows notification instead of the in-page live
+// region, since neither case can reliably be heard through the live
+// region. Only one channel fires per announcement, never both, to
+// avoid a duplicate announcement.
 //
 // announce(key) covers the fixed set of event messages below.
 // announceRaw(message) exists for the small set of call sites whose
 // wording is necessarily specific/parameterized rather than fixed -
 // shortcut registration results ("Screenshot shortcut Alt+Ctrl+Space
-// registered.") and capture context descriptions ("Chrome. GitHub
-// Actions. Maximized on monitor 1..."). Both go through the same
-// routing (live region vs. native notification) and the same timing,
-// so there is still exactly one announcement channel, one whitelist
-// of call sites, and no free-text announcements from arbitrary code.
+// registered."), capture context descriptions ("Chrome. GitHub
+// Actions. Maximized on monitor 1..."), and the global-shortcut
+// confirmation messages used when the app isn't focused. All go
+// through the same routing (live region vs. native notification) and
+// the same timing, so there is still exactly one announcement
+// channel, one whitelist of call sites, and no free-text
+// announcements from arbitrary code.
 
-import { isTauri, nativeNotify, isWindowHidden } from "./tauri-bridge.js";
+import { isTauri, nativeNotify, isAppFocused } from "./tauri-bridge.js";
 
 const MESSAGES = {
   screenshotCaptured: "Screenshot captured.",
@@ -29,8 +32,12 @@ const MESSAGES = {
   recordingStarted: "Recording started.",
   recordingStopped: "Recording stopped.",
   recordingSaved: "Recording saved.",
-  recordingSaveFailed: "Recording save failed.",
+  recordingSaveFailed: "Recording could not be saved.",
   recordingFailed: "Recording failed.",
+  recordingCanceled: "Recording canceled.",
+  recordingCouldNotStart: "Recording could not start.",
+  saveCanceled: "Save canceled.",
+  microphoneUnavailable: "The selected microphone is unavailable. Choose another microphone or turn microphone audio off.",
   captureDiscarded: "Capture discarded.",
   captureCanceled: "Capture canceled.",
   permissionDenied: "Permission denied.",
@@ -43,7 +50,7 @@ export function initAnnouncer(element) {
 }
 
 function deliver(message) {
-  if (isTauri && isWindowHidden()) {
+  if (isTauri && !isAppFocused()) {
     nativeNotify(message).catch((error) => {
       console.error("Native notification failed:", error);
     });
