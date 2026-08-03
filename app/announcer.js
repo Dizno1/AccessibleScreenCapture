@@ -43,6 +43,7 @@ const MESSAGES = {
   recordingStopped: "Recording stopped.",
   recordingSaved: "Recording saved.",
   recordingSaveFailed: "Recording could not be saved.",
+  savingRecording: "Saving recording.",
   recordingFailed: "Recording failed.",
   recordingCanceled: "Recording canceled.",
   recordingCouldNotStart: "Recording could not start.",
@@ -84,16 +85,16 @@ export function setOutputSettingsCache({ speakOutsideApp: speak, showNotificatio
   if (typeof notify === "boolean") showNotifications = notify;
 }
 
-function deliver(message) {
+function deliver(message, isDescriptor = false) {
   const focused = isTauri ? isAppFocused() : null;
 
   if (isTauri && !focused) {
     logDebug(
-      `announcer: deliver() unfocused, message="${message}", speakOutsideApp=${speakOutsideApp}, showNotifications=${showNotifications}`
+      `announcer: deliver() unfocused, message="${message}", isDescriptor=${isDescriptor}, speakOutsideApp=${speakOutsideApp}, showNotifications=${showNotifications}`
     );
 
     if (speakOutsideApp) {
-      speakStatus(message)
+      speakStatus(message, isDescriptor)
         .then(() => logDebug(`announcer: speak_status resolved OK for "${message}"`))
         .catch((error) => {
           console.error("Native speech failed:", error);
@@ -135,7 +136,10 @@ export function announce(key) {
  * Announces a specific, pre-composed sentence for call sites where the
  * approved wording is templated rather than fixed (which shortcut, or
  * what the capture context is). Not for arbitrary/free-form text.
+ * Pass isDescriptor=true for Capture Context Descriptor announcements
+ * specifically - the native-speech layer applies a short cooldown to
+ * those so rapid task-switching can't call SAPI in fast succession.
  */
-export function announceRaw(message) {
-  deliver(message);
+export function announceRaw(message, isDescriptor = false) {
+  deliver(message, isDescriptor);
 }

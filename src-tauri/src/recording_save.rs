@@ -1,24 +1,42 @@
 // Chunked recording save.
 //
 // 1.0.3/1.0.4 sent an entire recording as one base64 string in a
-// single Tauri IPC command argument - the same path screenshots use,
-// which works fine for a small PNG but is a poor transport for a
-// multi-megabyte video (Tauri commands pass one serialized JSON
-// message; a giant base64 string is exactly the kind of payload that
-// serializes and transmits badly). This module replaces that, for
-// recordings only - screenshots keep the existing, working
-// save_capture_native path unchanged.
+// single Tauri IPC command argument - a poor transport for a
+// multi-megabyte video. 1.0.5 replaced that with this chunked
+// pipeline, and it worked: a real ~82-second, 3.1MB recording saved
+// successfully. Real testing also found the application reported
+// "Not Responding" during saving, though. The single most likely
+// cause is the Save As dialog itself - a genuinely modal, OS-level UI
+// call - so this version specifically:
 //
-// Flow: begin_recording_save() opens the native Save As dialog first
-// and creates the destination file. The frontend then sends the
-// recording in small, bounded chunks via append_recording_chunk(),
-// which appends each to the open file. finish_recording_save()
+//   - Runs the dialog call (and the file-creation that follows it)
+//     inside `tauri::async_runtime::spawn_blocking`, guaranteeing it
+//     never runs on whatever thread is handling IPC dispatch,
+//     regardless of Tauri's internal default for plain commands.
+//   - Associates the dialog with the app's main window (`set_parent`)
+//     so Windows attributes the open dialog to the application
+//     instead of a background thread with no window - a known source
+//     of a main window being misreported as "Not Responding" while a
+//     legitimate modal dialog is simply waiting on the user.
+//
+// The chunk-transfer commands (append/finish/abort) are unchanged
+// from 1.0.5's working, non-async form - each chunk is small (bounded
+// at 512KB by the frontend) and Tauri already dispatches plain
+// commands off its main thread by default, so there's no evidence
+// these specifically needed to change, and a State<'_, T> reference
+// can't safely be moved into spawn_blocking's 'static closure anyway
+// (the mutex would need to be re-acquired via the AppHandle inside
+// the closure to do that correctly, which is more complexity than
+// this pass's actual evidence justifies).
+//
+// Flow: begin_recording_save() opens the dialog first and creates the
+// destination file. The frontend then sends the recording in small,
+// bounded chunks via append_recording_chunk(). finish_recording_save()
 // closes the file and verifies the byte count actually written to
-// disk matches what the frontend says it sent, rather than trusting
-// success silently. abort_recording_save() cleans up a partial file
-// if a save is canceled or fails partway through - the pending
-// recording in the app's own Review panel is never touched by any of
-// this; only the on-disk file is.
+// disk matches what the frontend says it sent. abort_recording_save()
+// cleans up a partial file if a save is canceled or fails partway
+// through. The pending recording in the app's own Review panel is
+// never touched by any of this - only the on-disk file is.
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use serde::Serialize;
@@ -27,7 +45,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -58,19 +76,35 @@ pub struct FinishSaveResult {
 }
 
 #[tauri::command]
-pub fn begin_recording_save(
+pub async fn begin_recording_save(
     app: AppHandle,
-    state: State<RecordingSaveState>,
+    state: State<'_, RecordingSaveState>,
     suggested_name: String,
 ) -> Result<BeginSaveResult, String> {
     crate::debug_log::log(&app, &format!("recording save: begin, name={suggested_name}"));
+    crate::native_speech::mark_save_dialog_open(&app, true);
 
-    let chosen = app
-        .dialog()
-        .file()
-        .set_file_name(&suggested_name)
-        .add_filter("WebM video", &["webm"])
-        .blocking_save_file();
+    let dialog_app = app.clone();
+    let dialog_result = tauri::async_runtime::spawn_blocking(move || {
+        let mut builder = dialog_app
+            .dialog()
+            .file()
+            .set_file_name(&suggested_name)
+            .add_filter("WebM video", &["webm"]);
+        if let Some(window) = dialog_app.get_webview_window("main") {
+            builder = builder.set_parent(&window);
+        }
+        builder.blocking_save_file()
+    })
+    .await;
+
+    let chosen = match dialog_result {
+        Ok(chosen) => chosen,
+        Err(e) => {
+            crate::native_speech::mark_save_dialog_open(&app, false);
+            return Err(format!("Save dialog task failed: {e}"));
+        }
+    };
 
     let path = match chosen {
         Some(path) => match path.into_path() {
@@ -78,11 +112,13 @@ pub fn begin_recording_save(
             Err(e) => {
                 let error = format!("Invalid save path: {e}");
                 crate::debug_log::log(&app, &format!("recording save: into_path FAILED: {error}"));
+                crate::native_speech::mark_save_dialog_open(&app, false);
                 return Err(error);
             }
         },
         None => {
             crate::debug_log::log(&app, "recording save: dialog was canceled");
+            crate::native_speech::mark_save_dialog_open(&app, false);
             return Ok(BeginSaveResult {
                 session_id: None,
                 canceled: true,
@@ -90,12 +126,20 @@ pub fn begin_recording_save(
         }
     };
 
-    let file = match File::create(&path) {
-        Ok(file) => file,
-        Err(e) => {
+    let create_path = path.clone();
+    let file_result = tauri::async_runtime::spawn_blocking(move || File::create(&create_path)).await;
+
+    let file = match file_result {
+        Ok(Ok(file)) => file,
+        Ok(Err(e)) => {
             let error = format!("Could not create file: {e}");
             crate::debug_log::log(&app, &format!("recording save: File::create FAILED: {error}"));
+            crate::native_speech::mark_save_dialog_open(&app, false);
             return Err(error);
+        }
+        Err(e) => {
+            crate::native_speech::mark_save_dialog_open(&app, false);
+            return Err(format!("File creation task failed: {e}"));
         }
     };
 
@@ -112,6 +156,12 @@ pub fn begin_recording_save(
             bytes_written: 0,
         },
     );
+
+    // The dialog itself is closed by now; chunk transfer doesn't
+    // involve any further dialog, so the "no speech while a save
+    // dialog is open" gate is lifted here rather than held for the
+    // whole transfer.
+    crate::native_speech::mark_save_dialog_open(&app, false);
 
     Ok(BeginSaveResult {
         session_id: Some(session_id),
@@ -202,5 +252,7 @@ pub fn abort_recording_save(app: AppHandle, state: State<RecordingSaveState>, se
         let _ = fs::remove_file(&session.path);
         crate::debug_log::log(&app, &format!("recording save: session {session_id} aborted, partial file removed"));
     }
+    drop(sessions);
+    crate::native_speech::mark_save_dialog_open(&app, false);
     Ok(())
 }

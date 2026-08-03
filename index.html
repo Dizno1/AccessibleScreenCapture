@@ -81,6 +81,9 @@
       <input type="checkbox" id="capture-sound-toggle" checked>
       Play a sound when a screenshot is captured
     </label>
+
+    <button type="button" id="capture-readiness-button" class="secondary-button" hidden>Check Capture Readiness</button>
+    <p id="capture-readiness-output" class="section-hint" role="status" aria-live="polite"></p>
   </section>
 
   <!-- ============ Review (appears after a capture, before saving) ============ -->
@@ -144,7 +147,7 @@
   <!-- ============ Capture Context Descriptor (desktop only) ============ -->
   <section aria-labelledby="descriptor-heading" id="descriptor-settings" hidden>
     <h2 id="descriptor-heading">Capture Context Descriptor</h2>
-    <p class="section-hint">An independent, on-demand mode - not tied to taking a screenshot or recording. While on, it briefly announces the active application, window, and monitor whenever they meaningfully change, so you can understand your visual surroundings before deciding to capture anything. Off by default; stays on until you turn it off or exit the application.</p>
+    <p class="section-hint">An independent, on-demand mode - not tied to taking a screenshot or recording. The Capture Context Descriptor announces the active application, window title, window state, monitor, and approximate screen coverage whenever they meaningfully change. It does not identify the focused control inside an application or webpage - that remains your screen reader's job. Off by default; stays on until you turn it off or exit the application.</p>
     <label class="checkbox-option">
       <input type="checkbox" id="descriptor-toggle">
       Capture Context Descriptor on
@@ -154,15 +157,28 @@
   <!-- ============ Output Settings (desktop only) ============ -->
   <section aria-labelledby="output-settings-heading" id="output-settings" hidden>
     <h2 id="output-settings-heading">Output Settings</h2>
-    <p class="section-hint">Windows toast notifications are a visual channel and are not guaranteed to be read by a screen reader. When AccessibleScreenCapture doesn't have focus, native speech is the reliable spoken channel; the notification is optional visual reinforcement alongside it. These two settings are independent of each other.</p>
+    <p class="section-hint">Windows toast notifications are a visual channel and are not guaranteed to be read by a screen reader. Native speech is the reliable spoken channel when AccessibleScreenCapture doesn't have focus - but real testing found that using it was followed by JAWS losing speech and needing a restart. The exact cause hasn't been confirmed yet, so speech defaults off until repeated testing confirms it's safe. Turn it on to help test it; turn it off immediately if JAWS stops responding, and restart JAWS. The two settings below are independent of each other.</p>
     <label class="checkbox-option">
-      <input type="checkbox" id="speak-outside-app-toggle" checked>
+      <input type="checkbox" id="speak-outside-app-toggle">
       Speak status outside AccessibleScreenCapture
     </label>
     <label class="checkbox-option">
       <input type="checkbox" id="show-notifications-toggle" checked>
       Show Windows notifications
     </label>
+
+    <h3>Speech voice and rate</h3>
+    <label for="speech-voice-select">Speech voice</label>
+    <select id="speech-voice-select">
+      <option value="">Use Windows default voice</option>
+    </select>
+
+    <label for="speech-rate-slider">Speech rate</label>
+    <input type="range" id="speech-rate-slider" min="-10" max="10" step="1" value="2">
+    <p id="speech-rate-value" class="section-hint">Speech rate: 2, faster</p>
+
+    <button type="button" id="speech-rate-reset" class="secondary-button">Reset Speech Rate</button>
+    <button type="button" id="speech-voice-test" class="secondary-button">Test Speech Voice</button>
   </section>
 
   <!-- ============ Diagnostics (desktop only) ============ -->

@@ -1,6 +1,36 @@
-# Testing Checklist - 1.0.5 (Native Speech, Chunked Recording Save, Custom Playback Controls)
+# Testing Checklist - 1.0.6 (JAWS Safety, Voice/Rate, Save Responsiveness)
 
-1.0.4's debug log proved the descriptor detects external applications correctly and that toast notifications report success but aren't heard. This version replaces the notification-only delivery with native speech, replaces the base64 recording-save transport with a chunked pipeline, and replaces the native video controls with custom persistent ones. None of this has been tested on a real machine yet.
+1.0.5 proved the core architecture works (a real recording saved successfully, speech was heard outside the app) but caused JAWS to stop producing speech, and the app reported "Not Responding" during saves. **The single most important thing to test in 1.0.6 is JAWS safety - everything else is secondary.**
+
+## JAWS safety - test this first, above everything else
+
+- [ ] With "Speak status outside AccessibleScreenCapture" left at its new default (Off), confirm no native speech occurs and JAWS is completely unaffected during normal use.
+- [ ] Turn native speech ON deliberately. Trigger several status messages (screenshot, recording start/stop, pending-capture block) while unfocused. After each one, confirm JAWS is still speaking normally - don't wait until the end of a long session to check.
+- [ ] Turn the Capture Context Descriptor on and move rapidly between several applications (fast Alt+Tab). Confirm JAWS remains responsive throughout, not just after the session ends.
+- [ ] Leave native speech on for an extended session (several minutes, many status messages). Confirm JAWS never stops or needs a restart.
+- [ ] If JAWS stops responding at any point during testing: turn "Speak status outside AccessibleScreenCapture" off immediately, restart JAWS, and note exactly what action preceded the failure (which message, how soon after a previous one, whether a save dialog was open, etc.) - that detail is far more valuable than a general "it happened again" report.
+- [ ] Confirm turning native speech off stops all AccessibleScreenCapture speech immediately, with nothing still queued or playing.
+- [ ] Exit the application while speech might be mid-utterance; confirm no crash, hang, or leftover audio artifact.
+
+## Save responsiveness
+
+- [ ] Save a recording; confirm the app does not show "Not Responding" at any point, including while the Save As dialog is open.
+- [ ] Save a screenshot; confirm the same.
+- [ ] Confirm "Saving recording." is announced/spoken at the start of a recording save.
+
+## Voice and rate
+
+- [ ] Confirm the Speech Voice combo box lists real installed voices, not a hardcoded or empty list.
+- [ ] Select a different voice, use Test Speech Voice, and confirm the test phrase uses that voice.
+- [ ] Adjust the rate slider and confirm Test Speech Voice reflects the new rate.
+- [ ] Restart the app and confirm the selected voice and rate are still in effect.
+- [ ] Reset Speech Rate and confirm it returns to +2.
+
+## Descriptor and capture readiness
+
+- [ ] Confirm the descriptor's own settings text now describes window-level context and explicitly does not claim control-level focus detection.
+- [ ] Use Check Capture Readiness with a window partially off-screen; confirm it reports that plainly without moving or resizing anything.
+
 
 ## Native speech (Repair 1)
 

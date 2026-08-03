@@ -25,6 +25,11 @@ import {
   appendRecordingChunk,
   finishRecordingSave,
   abortRecordingSave,
+  getCaptureContext,
+  getSpeechVoices,
+  setSpeechVoice,
+  setSpeechRate,
+  testSpeechVoice,
 } from "./tauri-bridge.js";
 
 const captureTypeScreenshot = document.getElementById("capture-type-screenshot");
@@ -589,6 +594,9 @@ async function saveCapture(capture) {
  * notification.
  */
 async function performSave(capture) {
+  if (capture.kind === "recording") {
+    announce("savingRecording");
+  }
   diagnostics.saveDialogOpened = `Yes, for ${capture.kind} at ${nowText()}`;
   renderDiagnostics();
   try {
@@ -1119,7 +1127,7 @@ if (isTauri) {
     logDebug(`app.js: descriptor-context-changed received: app=${context.appName}, title=${context.windowTitle}`);
     diagnostics.lastDescriptorContext = `${context.appName} - ${context.windowTitle || "(no title)"} at ${nowText()}`;
     renderDiagnostics();
-    announceRaw(composeContextDescription(context));
+    announceRaw(composeContextDescription(context), true);
   });
 
   initShortcutSettings();
@@ -1127,6 +1135,7 @@ if (isTauri) {
   initDiagnostics();
   initOutputSettingsCache();
   initOutputChannelSettings();
+  initCaptureReadiness();
 }
 
 /**
@@ -1410,6 +1419,11 @@ async function initOutputChannelSettings() {
   const section = document.getElementById("output-settings");
   const speakCheckbox = document.getElementById("speak-outside-app-toggle");
   const notifyCheckbox = document.getElementById("show-notifications-toggle");
+  const voiceSelect = document.getElementById("speech-voice-select");
+  const rateSlider = document.getElementById("speech-rate-slider");
+  const rateValue = document.getElementById("speech-rate-value");
+  const rateResetButton = document.getElementById("speech-rate-reset");
+  const testButton = document.getElementById("speech-voice-test");
   if (!section || !speakCheckbox || !notifyCheckbox) return;
 
   let settings;
@@ -1441,4 +1455,107 @@ async function initOutputChannelSettings() {
       console.error("Could not save show-notifications setting:", error);
     }
   });
+
+  if (voiceSelect && rateSlider && rateValue && rateResetButton && testButton) {
+    try {
+      const voices = await getSpeechVoices();
+      for (const voice of voices) {
+        const option = document.createElement("option");
+        option.value = voice.id;
+        option.textContent = voice.description;
+        voiceSelect.appendChild(option);
+      }
+    } catch (error) {
+      console.error("Could not load speech voices:", error);
+      logDebug(`initOutputChannelSettings: get_speech_voices failed: ${error}`);
+    }
+
+    voiceSelect.value = settings.speechVoiceId || "";
+    rateSlider.value = String(settings.speechRate);
+    updateRateValueText(settings.speechRate);
+
+    voiceSelect.addEventListener("change", async () => {
+      try {
+        await setSpeechVoice(voiceSelect.value || null);
+      } catch (error) {
+        console.error("Could not save speech voice:", error);
+      }
+    });
+
+    rateSlider.addEventListener("change", async () => {
+      const rate = Number(rateSlider.value);
+      try {
+        const clamped = await setSpeechRate(rate);
+        rateSlider.value = String(clamped);
+        updateRateValueText(clamped);
+      } catch (error) {
+        console.error("Could not save speech rate:", error);
+      }
+    });
+
+    rateResetButton.addEventListener("click", async () => {
+      rateSlider.value = "2";
+      try {
+        const clamped = await setSpeechRate(2);
+        updateRateValueText(clamped);
+      } catch (error) {
+        console.error("Could not reset speech rate:", error);
+      }
+    });
+
+    testButton.addEventListener("click", async () => {
+      try {
+        await testSpeechVoice();
+      } catch (error) {
+        console.error("Could not test speech voice:", error);
+      }
+    });
+  }
+}
+
+function updateRateValueText(rate) {
+  const rateValue = document.getElementById("speech-rate-value");
+  if (!rateValue) return;
+  const descriptor = rate === 0 ? "normal" : rate > 0 ? "faster" : "slower";
+  rateValue.textContent = `Speech rate: ${rate}, ${descriptor}`;
+}
+
+/**
+ * Reports whether the active window appears to fit within the current
+ * screenshot target (the primary monitor), without altering anything -
+ * an on-demand check the user requests, not automatic feedback.
+ */
+async function checkCaptureReadiness() {
+  const output = document.getElementById("capture-readiness-output");
+  if (!output) return;
+
+  try {
+    const context = await getCaptureContext();
+    const parts = [`${context.appName}.`];
+    if (context.monitorNumber != null) parts.push(`Monitor ${context.monitorNumber}.`);
+    parts.push(`${context.state === "minimized" ? "Minimized." : `${context.state[0].toUpperCase()}${context.state.slice(1)}.`}`);
+
+    if (context.state !== "minimized") {
+      if (context.extendsBeyondMonitor) {
+        parts.push(`${context.appName} may extend outside the captured area. Maximize or reposition it before capturing.`);
+      } else if (context.fillsScreen) {
+        parts.push("The window fits entirely within the captured area.");
+      } else {
+        parts.push("The visible window appears to fit within the captured area.");
+      }
+    }
+
+    parts.push("Screenshot target: entire primary monitor.");
+    output.textContent = parts.join(" ");
+  } catch (error) {
+    console.error("Could not check capture readiness:", error);
+    output.textContent = "Could not check capture readiness.";
+  }
+}
+
+function initCaptureReadiness() {
+  const button = document.getElementById("capture-readiness-button");
+  if (!button) return;
+  button.hidden = false;
+  button.addEventListener("click", checkCaptureReadiness);
 }

@@ -138,8 +138,24 @@ export async function logDebug(message) {
  * Never moves focus or shows the window; interrupts/replaces
  * whatever this app was already saying rather than queuing behind it.
  */
-export async function speakStatus(message) {
-  return invoke("speak_status", { message });
+export async function speakStatus(message, isDescriptor = false) {
+  return invoke("speak_status", { message, isDescriptor });
+}
+
+export async function getSpeechVoices() {
+  return invoke("get_speech_voices");
+}
+
+export async function setSpeechVoice(voiceId) {
+  return invoke("set_speech_voice", { voiceId });
+}
+
+export async function setSpeechRate(rate) {
+  return invoke("set_speech_rate", { rate });
+}
+
+export async function testSpeechVoice() {
+  return invoke("test_speech_voice");
 }
 
 export async function getOutputSettings() {

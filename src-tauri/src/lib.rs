@@ -28,8 +28,8 @@ mod recording_save;
 use capture_context::get_capture_context;
 use debug_log::{clear_debug_log, get_debug_log, log_debug_message};
 use descriptor::{get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
-use native_speech::speak_status;
-use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app};
+use native_speech::{get_speech_voices, speak_status, test_speech_voice};
+use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice};
 use recording_save::{
     abort_recording_save, append_recording_chunk, begin_recording_save, finish_recording_save,
     RecordingSaveState,
@@ -396,7 +396,7 @@ struct SaveResult {
 /// thread automatically, so there is no callback-vs-blocking-thread
 /// contention here at all.
 #[tauri::command]
-fn save_capture_native(
+async fn save_capture_native(
     app: AppHandle,
     data_base64: String,
     suggested_name: String,
@@ -427,12 +427,31 @@ fn save_capture_native(
     }
 
     debug_log::log(&app, "save_capture_native: opening blocking_save_file dialog");
-    let chosen = app
-        .dialog()
-        .file()
-        .set_file_name(&suggested_name)
-        .add_filter(&filter_name, &[extension.as_str()])
-        .blocking_save_file();
+    native_speech::mark_save_dialog_open(&app, true);
+
+    let dialog_app = app.clone();
+    let dialog_result = tauri::async_runtime::spawn_blocking(move || {
+        let mut builder = dialog_app
+            .dialog()
+            .file()
+            .set_file_name(&suggested_name)
+            .add_filter(&filter_name, &[extension.as_str()]);
+        if let Some(window) = dialog_app.get_webview_window("main") {
+            builder = builder.set_parent(&window);
+        }
+        builder.blocking_save_file()
+    })
+    .await;
+
+    let chosen = match dialog_result {
+        Ok(chosen) => chosen,
+        Err(e) => {
+            native_speech::mark_save_dialog_open(&app, false);
+            return Err(format!("Save dialog task failed: {e}"));
+        }
+    };
+
+    native_speech::mark_save_dialog_open(&app, false);
 
     match chosen {
         Some(path) => {
@@ -446,7 +465,11 @@ fn save_capture_native(
                 }
             };
             debug_log::log(&app, &format!("save_capture_native: writing {} bytes to {}", bytes.len(), path.display()));
-            match fs::write(&path, &bytes) {
+            let write_path = path.clone();
+            let write_result = tauri::async_runtime::spawn_blocking(move || fs::write(&write_path, &bytes))
+                .await
+                .map_err(|e| format!("Write task failed: {e}"))?;
+            match write_result {
                 Ok(()) => {
                     let exists = path.exists();
                     debug_log::log(
@@ -534,7 +557,7 @@ async fn set_autostart(app: AppHandle, enabled: bool) -> Result<bool, String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
@@ -566,8 +589,9 @@ pub fn run() {
                 ));
             }
 
-            debug_log::log(&handle, "=== app started, version 1.0.5, AUMID set ===");
-            native_speech::init_speech_worker();
+            debug_log::log(&handle, "=== app started, version 1.0.6, AUMID set ===");
+            native_speech::init_speech_worker(handle.clone());
+            output_settings::apply_persisted_speech_settings(&handle);
             debug_log::log(&handle, "=== native speech worker starting ===");
 
             // Load persisted shortcut bindings (or defaults) and
@@ -652,11 +676,23 @@ pub fn run() {
             get_output_settings,
             set_speak_outside_app,
             set_show_notifications,
+            set_speech_voice,
+            set_speech_rate,
+            get_speech_voices,
+            test_speech_voice,
             begin_recording_save,
             append_recording_chunk,
             finish_recording_save,
             abort_recording_save,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running AccessibleScreenCapture");
+        .build(tauri::generate_context!())
+        .expect("error while building AccessibleScreenCapture");
+
+    app.run(|app_handle, event| {
+        if let tauri::RunEvent::Exit = event {
+            // Release SAPI/COM resources deliberately on exit rather
+            // than leaving them to process teardown.
+            native_speech::shutdown_speech_worker(app_handle);
+        }
+    });
 }

@@ -4,10 +4,14 @@ A screen-reader-first Windows tool for taking screenshots and recording the scre
 
 ## Status
 
-**Native Windows application, version 1.0.5. Phase 2 is active and is the production target.**
+**Native Windows application, version 1.0.6. Phase 2 is active and is the production target.**
 
-- **1.0.0** built and installed successfully on Windows via GitHub Actions.
-- **1.0.1** reached a verified green build after six scoped compiler-error rounds - see `docs/Roadmap.md`.
+**1.0.5 was a real success**: a genuine ~82-second, 3.1MB recording saved as a valid WebM (VP9 video, Opus audio), native SAPI speech was heard outside the app, and the descriptor correctly spoke external applications. It also surfaced two release-blocking problems: **JAWS stopped producing speech** after the app's native speech was used (had to be restarted), and the app reported **"Not Responding"** during both recording and screenshot saves.
+
+**1.0.6 (this version)** treats the JAWS problem as a genuine safety issue, not a routine bug. The exact mechanism was not reproduced or proven in this environment (no Windows machine, no JAWS available) - said honestly rather than guessed at. Rather than ship one guess and hope: **"Speak status outside AccessibleScreenCapture" now defaults to Off**, and several concrete defensive measures were added alongside it (save-dialog gating, a descriptor speech cooldown, deliberate resource cleanup on exit). Also added: SAPI voice selection and speech rate control, a fix for the "Not Responding" reports (dialog calls now run via `spawn_blocking` and are properly parented to the main window), descriptor terminology clarification, and an on-demand capture-readiness check. See "What changed in 1.0.6" below.
+
+1.0.6 has **not** itself been through a build yet. The voice-enumeration COM code is the least-certain code in this project so far - see `docs/Roadmap.md`, "What's honestly still open."
+
 - **1.0.2/1.0.3** attempted fixes for recording save and notification reliability that real testing found incomplete.
 - **1.0.4** stopped guessing and instrumented the pipeline instead - a shared, file-based debug log covering the save path, the notification path, and the descriptor's foreground-window detection. That log produced real evidence: the descriptor correctly detects external applications, and `notify()`'s underlying Windows API call reliably reports success - but the user still hears nothing through JAWS. A Windows toast succeeding is a visual event, not a spoken one.
 - **1.0.5 (this version)** replaces two mechanisms rather than repairing them again, based on that evidence, plus fixes an unrelated playback-accessibility defect found during testing:
@@ -20,7 +24,17 @@ A screen-reader-first Windows tool for taking screenshots and recording the scre
 
 Phase 1 (the browser prototype) is complete and frozen except for bug fixes - see `docs/Vision.md`, `docs/Screen Reader First Principles.md`, and `docs/Roadmap.md` for the full picture.
 
-## What changed in 1.0.5
+## What changed in 1.0.6
+
+Full detail in `docs/Roadmap.md`, "1.0.6." Summary:
+
+1. **JAWS safety** (the priority of this pass): "Speak status outside AccessibleScreenCapture" now defaults **Off**. Speech is skipped while a native Save As dialog is open (except failure messages), descriptor speech has a 600ms cooldown against rapid task-switching, and SAPI/COM resources are released deliberately on app exit.
+2. **Voice selection and speech rate**: a combo box enumerating installed SAPI voices (`get_speech_voices`), a rate slider (-10 to +10, default +2), a Test Speech Voice button, both persisted.
+3. **Save responsiveness**: both Save As dialog calls now run via `tauri::async_runtime::spawn_blocking` and are parented to the main window - addressing the likely cause of "Not Responding" reports during saving.
+4. **Descriptor terminology clarified**: its own description now states it reports window-level context, not focused-control-level detail.
+5. **Capture readiness**: an on-demand "Check Capture Readiness" button reports whether the active window fits within the screenshot target.
+
+## What changed in 1.0.5 (previous version, for context)
 
 This pass replaces architecture rather than repairing it again, per explicit direction after 1.0.4's debug log provided real evidence of where the previous approach fell short.
 
@@ -161,8 +175,8 @@ New in 1.0.5 (architecture replacements, not yet built/verified - see "What chan
 
 ## Remaining work
 
-See "What's honestly still open" and "Later work" in `docs/Roadmap.md`. Most notably: none of 1.0.5's three replacements have been tested on a real machine yet, and the SAPI/COM interop in particular is the least-certain code written this project so far.
+See "What's honestly still open" and "Later work" in `docs/Roadmap.md`. Most notably: none of 1.0.6 has been tested on a real machine yet, and the SAPI voice-enumeration COM code is the least-certain code written in this project so far.
 
 ## Next development phase
 
-Get a real 1.0.5 build through `.github/workflows/build-windows.yml` - expect the SAPI interop to be the most likely source of a compiler error this round; send it over the same way as every previous round if so. Then work through `docs/Testing Checklist.md`: confirm speech is actually heard while unfocused, confirm a recording save produces a correct, playable file, and confirm the custom playback controls work with a screen reader. Native Windows recording architecture remains the phase after this, gated on all three of this pass's repairs being confirmed.
+Get a real 1.0.6 build through `.github/workflows/build-windows.yml` - expect the voice-enumeration COM code to be the most likely source of a compiler error this round. Then work through `docs/Testing Checklist.md`, with real, repeated JAWS testing of native speech as the single most important item - that's the actual safety confirmation this pass can't provide on its own. Native Windows recording architecture remains the phase after this, gated on JAWS safety being genuinely confirmed.
