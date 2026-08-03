@@ -49,7 +49,11 @@ pub fn init_speech_worker() {
 
         while let Ok(text) = rx.recv() {
             let flags = (SPF_ASYNC.0 | SPF_PURGEBEFORESPEAK.0) as u32;
-            let _ = voice.Speak(&BSTR::from(text.as_str()), flags, std::ptr::null_mut());
+            let _ = voice.Speak(
+                &BSTR::from(text.as_str()),
+                flags,
+                std::ptr::null_mut::<u32>(),
+            );
         }
     });
 }
