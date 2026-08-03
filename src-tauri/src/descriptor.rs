@@ -45,8 +45,9 @@ pub fn get_descriptor_enabled(state: State<DescriptorState>) -> bool {
 }
 
 #[tauri::command]
-pub fn set_descriptor_enabled(state: State<DescriptorState>, enabled: bool) -> bool {
+pub fn set_descriptor_enabled(app: AppHandle, state: State<DescriptorState>, enabled: bool) -> bool {
     state.enabled.store(enabled, Ordering::SeqCst);
+    crate::debug_log::log(&app, &format!("descriptor: set_descriptor_enabled({enabled})"));
     if enabled {
         // Forget what was last announced so turning the descriptor
         // back on always describes the current window fresh, rather
@@ -72,8 +73,25 @@ pub fn spawn_watcher(app: AppHandle) {
 
         let context = match get_capture_context() {
             Ok(context) => context,
-            Err(_) => continue, // no foreground window right now - stay quiet, not an error worth surfacing
+            Err(e) => {
+                crate::debug_log::log(&app, &format!("descriptor poll: get_capture_context FAILED: {e}"));
+                continue; // no foreground window right now - stay quiet, not an error worth surfacing to the user
+            }
         };
+
+        // Logged every poll while enabled (not only on a reported
+        // change) specifically so "does this always say
+        // AccessibleScreenCapture, or does it correctly see Chrome/
+        // Outlook/Word/Excel and just fail to announce the change" can
+        // be answered directly from the log file, independent of
+        // whether the notification path is working.
+        crate::debug_log::log(
+            &app,
+            &format!(
+                "descriptor poll: app={}, title={}, state={}, monitor={:?}",
+                context.app_name, context.window_title, context.state, context.monitor_number
+            ),
+        );
 
         let key = context_key(&context);
         let mut last_key = state.last_key.lock().unwrap();
@@ -83,6 +101,7 @@ pub fn spawn_watcher(app: AppHandle) {
         *last_key = Some(key);
         drop(last_key);
 
+        crate::debug_log::log(&app, &format!("descriptor: CHANGE detected, emitting descriptor-context-changed (app={})", context.app_name));
         let _ = app.emit("descriptor-context-changed", context);
     });
 }

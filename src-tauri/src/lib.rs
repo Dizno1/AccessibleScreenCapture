@@ -19,9 +19,11 @@ use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut,
 use tauri_plugin_notification::NotificationExt;
 
 mod capture_context;
+mod debug_log;
 mod descriptor;
 
 use capture_context::get_capture_context;
+use debug_log::{clear_debug_log, get_debug_log, log_debug_message};
 use descriptor::{get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
 
 const SHORTCUTS_FILE: &str = "shortcuts.json";
@@ -199,6 +201,10 @@ fn register_one(app: &AppHandle, action: ShortcutAction, combo: &str) -> Result<
     app.global_shortcut()
         .on_shortcut(shortcut, move |_app, _shortcut, event| {
             if event.state() == ShortcutState::Pressed {
+                debug_log::log(
+                    &app_handle,
+                    &format!("global shortcut RECEIVED: {}, dispatching event {}", action.key(), action_event_name(action)),
+                );
                 let _ = app_handle.emit(action_event_name(action), ());
             }
         })
@@ -388,17 +394,30 @@ fn save_capture_native(
     extension: String,
     filter_name: String,
 ) -> Result<SaveResult, String> {
-    let bytes = BASE64
-        .decode(&data_base64)
-        .map_err(|e| format!("Could not decode capture data: {e}"))?;
+    debug_log::log(
+        &app,
+        &format!(
+            "save_capture_native: invoked, name={suggested_name}, extension={extension}, base64_len={}",
+            data_base64.len()
+        ),
+    );
+
+    let bytes = match BASE64.decode(&data_base64) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            let error = format!("Could not decode capture data: {e}");
+            debug_log::log(&app, &format!("save_capture_native: base64 decode FAILED: {error}"));
+            return Err(error);
+        }
+    };
+    debug_log::log(&app, &format!("save_capture_native: decoded {} bytes", bytes.len()));
 
     if bytes.is_empty() {
-        // Never silently "succeed" at writing a 0-byte file - this
-        // would previously have reported ok:true for genuinely empty
-        // capture data reaching this command.
+        debug_log::log(&app, "save_capture_native: decoded bytes are EMPTY, aborting before dialog");
         return Err("No capture data was received to save.".to_string());
     }
 
+    debug_log::log(&app, "save_capture_native: opening blocking_save_file dialog");
     let chosen = app
         .dialog()
         .file()
@@ -408,19 +427,42 @@ fn save_capture_native(
 
     match chosen {
         Some(path) => {
-            let path = path
-                .into_path()
-                .map_err(|e| format!("Invalid save path: {e}"))?;
-            fs::write(&path, bytes).map_err(|e| format!("Could not write file: {e}"))?;
+            debug_log::log(&app, &format!("save_capture_native: dialog returned a path: {path:?}"));
+            let path = match path.into_path() {
+                Ok(path) => path,
+                Err(e) => {
+                    let error = format!("Invalid save path: {e}");
+                    debug_log::log(&app, &format!("save_capture_native: into_path FAILED: {error}"));
+                    return Err(error);
+                }
+            };
+            debug_log::log(&app, &format!("save_capture_native: writing {} bytes to {}", bytes.len(), path.display()));
+            match fs::write(&path, &bytes) {
+                Ok(()) => {
+                    let exists = path.exists();
+                    debug_log::log(
+                        &app,
+                        &format!("save_capture_native: write OK, file exists on disk: {exists}"),
+                    );
+                    Ok(SaveResult {
+                        ok: true,
+                        canceled: false,
+                    })
+                }
+                Err(e) => {
+                    let error = format!("Could not write file: {e}");
+                    debug_log::log(&app, &format!("save_capture_native: fs::write FAILED: {error}"));
+                    Err(error)
+                }
+            }
+        }
+        None => {
+            debug_log::log(&app, "save_capture_native: dialog was canceled (no path chosen)");
             Ok(SaveResult {
-                ok: true,
-                canceled: false,
+                ok: false,
+                canceled: true,
             })
         }
-        None => Ok(SaveResult {
-            ok: false,
-            canceled: true,
-        }),
     }
 }
 
@@ -430,12 +472,19 @@ fn save_capture_native(
 /// whitelist here.
 #[tauri::command]
 fn notify(app: AppHandle, message: String) -> Result<(), String> {
-    app.notification()
+    debug_log::log(&app, &format!("notify: attempting to show notification: \"{message}\""));
+    let result = app
+        .notification()
         .builder()
         .title("AccessibleScreenCapture")
-        .body(message)
+        .body(&message)
         .show()
-        .map_err(|e| format!("Could not show notification: {e}"))
+        .map_err(|e| format!("Could not show notification: {e}"));
+    match &result {
+        Ok(()) => debug_log::log(&app, "notify: show() returned Ok"),
+        Err(e) => debug_log::log(&app, &format!("notify: show() returned Err: {e}")),
+    }
+    result
 }
 
 #[tauri::command]
@@ -506,6 +555,8 @@ pub fn run() {
                     "org.opendoordesign.accessiblescreencapture",
                 ));
             }
+
+            debug_log::log(&handle, "=== app started, version 1.0.4, AUMID set ===");
 
             // Load persisted shortcut bindings (or defaults) and
             // register them for real before the window is usable.
@@ -582,6 +633,9 @@ pub fn run() {
             get_capture_context,
             get_descriptor_enabled,
             set_descriptor_enabled,
+            get_debug_log,
+            clear_debug_log,
+            log_debug_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AccessibleScreenCapture");

@@ -15,6 +15,9 @@ import {
   getDescriptorEnabled,
   setDescriptorEnabled,
   onDescriptorContextChanged,
+  getDebugLog,
+  clearDebugLog,
+  logDebug,
 } from "./tauri-bridge.js";
 
 const captureTypeScreenshot = document.getElementById("capture-type-screenshot");
@@ -78,6 +81,9 @@ const diagnostics = {
   recentCapturesUpdated: "No",
   currentMicSelection: "Default microphone",
   resolvedMicDevice: "N/A",
+  lastSaveError: "N/A",
+  lastDescriptorContext: "None yet",
+  pendingCaptureState: "Empty",
 };
 
 function nowText() {
@@ -105,6 +111,9 @@ function renderDiagnostics() {
     recentCapturesUpdated: "diag-recent-updated",
     currentMicSelection: "diag-mic-selection",
     resolvedMicDevice: "diag-mic-resolved",
+    lastSaveError: "diag-save-error",
+    lastDescriptorContext: "diag-descriptor-context",
+    pendingCaptureState: "diag-pending-state",
   };
   for (const [key, id] of Object.entries(ids)) {
     const el = document.getElementById(id);
@@ -331,6 +340,8 @@ function revokeReviewObjectUrl() {
 
 function showReview(capture) {
   pendingCapture = capture;
+  diagnostics.pendingCaptureState = `${capture.kind} waiting since ${nowText()}`;
+  renderDiagnostics();
   revokeReviewObjectUrl();
   reviewPreview.innerHTML = "";
   reviewObjectUrl = URL.createObjectURL(capture.blob);
@@ -359,14 +370,23 @@ function hideReview() {
   reviewPreview.innerHTML = "";
   revokeReviewObjectUrl();
   pendingCapture = null;
+  diagnostics.pendingCaptureState = "Empty";
+  renderDiagnostics();
 }
 
 async function saveCapture(capture) {
+  logDebug(
+    `saveCapture: kind=${capture.kind}, blobSize=${capture.blob.size}, blobType=${capture.blob.type}, filename=${capture.suggestedName}`
+  );
+
   if (isTauri) {
     const extension = capture.kind === "screenshot" ? "png" : "webm";
     const filterName = capture.kind === "screenshot" ? "PNG image" : "WebM video";
     const dataBase64 = await blobToBase64(capture.blob);
-    return nativeSave(dataBase64, capture.suggestedName, extension, filterName);
+    logDebug(`saveCapture: base64-encoded, length=${dataBase64.length}, invoking save_capture_native`);
+    const result = await nativeSave(dataBase64, capture.suggestedName, extension, filterName);
+    logDebug(`saveCapture: save_capture_native returned ${JSON.stringify(result)}`);
+    return result;
   }
 
   const typeInfo =
@@ -395,16 +415,21 @@ async function performSave(capture) {
     if (result.ok) {
       diagnostics.saveSucceeded = `Yes at ${nowText()}`;
       diagnostics.saveFailed = "No";
+      diagnostics.lastSaveError = "N/A";
     } else if (result.canceled) {
       diagnostics.saveFailed = `Canceled at ${nowText()}`;
     } else {
       diagnostics.saveFailed = `Yes (reported failure) at ${nowText()}`;
+      diagnostics.lastSaveError = "Save command returned ok:false - see debug log for the exact Rust-side error";
+      logDebug("performSave: saveCapture resolved with ok:false (see save_capture_native's own log lines above for the exact reason)");
     }
     renderDiagnostics();
     return result;
   } catch (error) {
     console.error("Save error:", error);
     diagnostics.saveFailed = `Yes (unexpected error) at ${nowText()}`;
+    diagnostics.lastSaveError = String(error && error.message ? error.message : error);
+    logDebug(`performSave: saveCapture THREW/REJECTED: ${diagnostics.lastSaveError}`);
     renderDiagnostics();
     return { ok: false, canceled: false };
   }
@@ -589,8 +614,9 @@ function announcePendingCaptureBlocked() {
   // application with no visible feedback either way). Says "capture"
   // rather than "screenshot" or "recording" since the pending item
   // may be either kind.
+  logDebug(`announcePendingCaptureBlocked: a ${pendingCapture ? pendingCapture.kind : "?"} is pending, blocking new capture`);
   announceRaw(
-    "A capture is already waiting for review. Save or discard it before starting another capture."
+    "A capture is waiting for review. Save or discard it before taking another."
   );
 }
 
@@ -883,12 +909,14 @@ if (!isTauri && !supportsFilePicker) {
 
 if (isTauri) {
   onGlobalShortcut("screenshot", () => {
+    logDebug("app.js: global-shortcut-screenshot event received by JS listener");
     diagnostics.lastGlobalShortcut = `Screenshot at ${nowText()}`;
     renderDiagnostics();
     captureScreenshot();
   });
 
   onGlobalShortcut("recordToggle", async () => {
+    logDebug("app.js: global-shortcut-record-toggle event received by JS listener");
     diagnostics.lastGlobalShortcut = `Recording at ${nowText()}`;
     renderDiagnostics();
     if (!isRecording && document.hidden) {
@@ -900,12 +928,16 @@ if (isTauri) {
   });
 
   onGlobalShortcut("descriptor", () => {
+    logDebug("app.js: global-shortcut-descriptor event received by JS listener");
     diagnostics.lastGlobalShortcut = `Capture Context Descriptor at ${nowText()}`;
     renderDiagnostics();
     toggleDescriptor();
   });
 
   onDescriptorContextChanged((context) => {
+    logDebug(`app.js: descriptor-context-changed received: app=${context.appName}, title=${context.windowTitle}`);
+    diagnostics.lastDescriptorContext = `${context.appName} - ${context.windowTitle || "(no title)"} at ${nowText()}`;
+    renderDiagnostics();
     announceRaw(composeContextDescription(context));
   });
 
@@ -1125,6 +1157,46 @@ function initDiagnostics() {
   if (!section) return;
   section.hidden = false;
   renderDiagnostics();
+  initDebugLogViewer();
+}
+
+/**
+ * Wires the "View Debug Log" / "Refresh" / "Clear" controls. The log
+ * itself (src-tauri/src/debug_log.rs) is a plain text file in the
+ * app's config directory - this just surfaces it in-app so it can be
+ * read and copied without leaving the app or needing file-system
+ * navigation. Not a live region: the log can update many times a
+ * second while the descriptor is on, and none of that should be
+ * spoken automatically.
+ */
+function initDebugLogViewer() {
+  const viewButton = document.getElementById("debug-log-view");
+  const clearButton = document.getElementById("debug-log-clear");
+  const output = document.getElementById("debug-log-output");
+  const status = document.getElementById("debug-log-status");
+  if (!viewButton || !clearButton || !output) return;
+
+  viewButton.addEventListener("click", async () => {
+    try {
+      const contents = await getDebugLog();
+      output.textContent = contents;
+      if (status) status.textContent = `Log refreshed at ${nowText()}.`;
+    } catch (error) {
+      console.error("Could not load debug log:", error);
+      if (status) status.textContent = "Could not load the debug log.";
+    }
+  });
+
+  clearButton.addEventListener("click", async () => {
+    try {
+      await clearDebugLog();
+      output.textContent = "";
+      if (status) status.textContent = `Log cleared at ${nowText()}.`;
+    } catch (error) {
+      console.error("Could not clear debug log:", error);
+      if (status) status.textContent = "Could not clear the debug log.";
+    }
+  });
 }
 
 async function initDescriptorSettings() {

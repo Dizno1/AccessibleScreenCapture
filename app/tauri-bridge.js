@@ -109,3 +109,25 @@ export async function onGlobalShortcut(action, handler) {
 export function isAppFocused() {
   return document.hasFocus();
 }
+
+/**
+ * The shared runtime diagnostic log (see src-tauri/src/debug_log.rs).
+ * JS writes into the same file Rust does, so the whole pipeline for a
+ * given problem - shortcut received, event dispatched, save/notify
+ * attempted, result - reads back in one ordered trail.
+ */
+export async function getDebugLog() {
+  return invoke("get_debug_log");
+}
+
+export async function clearDebugLog() {
+  return invoke("clear_debug_log");
+}
+
+export async function logDebug(message) {
+  try {
+    await invoke("log_debug_message", { message });
+  } catch (error) {
+    console.error("Could not write to debug log:", error);
+  }
+}

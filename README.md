@@ -4,17 +4,29 @@ A screen-reader-first Windows tool for taking screenshots and recording the scre
 
 ## Status
 
-**Native Windows application, version 1.0.3. Phase 2 is active and is the production target.**
+**Native Windows application, version 1.0.4. Phase 2 is active and is the production target.**
 
-- **1.0.0** built successfully through GitHub Actions on a real `windows-latest` runner, produced an MSI installer, and was installed and verified on Windows.
-- **1.0.1** went through several real compiler-error rounds on that same CI pipeline (six scoped fixes - see `docs/Roadmap.md`) and reached a **verified green build**.
-- **1.0.2** changed no Rust code - reasoned-through frontend fixes for focus-aware notification routing and recording-save error handling. Real testing found this only partly worked: recording save still failed, and native notifications (including the Capture Context Descriptor's) still didn't reliably reach the user outside the app.
-- **1.0.3 (this version)** is a targeted repair limited to exactly those two remaining defects, this time going into the Rust layer where the actual causes most likely live: a rewritten `save_capture_native` (the previous version had a genuine deadlock-prone pattern bridging a callback-based dialog into an async command via a blocking channel), and an explicit Windows AppUserModelID registration at startup (a known cause of unreliable toast notifications for a non-MSIX Win32 app, and the most likely shared explanation for both the notification problem and the descriptor "not working outside the app" - see `docs/Roadmap.md`, "1.0.3," for the full reasoning). Screenshot capture itself was not touched.
-- 1.0.3 has **not** itself been through a build yet, and both Rust changes are best-effort, not verified against live documentation - see `docs/Roadmap.md`, "What's honestly still open."
+- **1.0.0** built and installed successfully on Windows via GitHub Actions.
+- **1.0.1** reached a verified green build after six scoped compiler-error rounds - see `docs/Roadmap.md`.
+- **1.0.2** was a frontend-only pass. Real testing found it only partly worked: recording save still failed, and native notifications (including the Capture Context Descriptor's) still didn't reliably reach the user outside the app.
+- **1.0.3** guessed at the two most likely Rust-layer causes (a rewritten `save_capture_native`, an AppUserModelID registration for notification reliability) and built successfully - but real testing showed both defects persisting, and surfaced a more specific third symptom: the Capture Context Descriptor was found to report AccessibleScreenCapture itself rather than the actual external foreground window.
+- **1.0.4 (this version)** stops guessing. At explicit direction, this pass adds no new fix attempts - it instruments the recording-save path, the notification path, and the descriptor's foreground-window detection with a shared, file-based debug log (viewable in-app under Diagnostics), so the next pass can repair a confirmed failure point instead of reasoning through another hypothesis. One small, unambiguous wording fix was also made (the pending-capture message). See "What changed in 1.0.4" below.
+- 1.0.4 has **not** itself been through a build yet.
 
 Phase 1 (the browser prototype) is complete and frozen except for bug fixes - see `docs/Vision.md`, `docs/Screen Reader First Principles.md`, and `docs/Roadmap.md` for the full picture.
 
-## What changed in 1.0.3
+## What changed in 1.0.4
+
+This pass is deliberately instrumentation, not repair - three real defects were tried twice already (1.0.2 and 1.0.3) with reasoned-through fixes that didn't fully hold up, and the next attempt should be built on actual evidence from your machine rather than a third and fourth guess from this environment, which has no Windows machine, no compiler, and no way to reproduce any of this.
+
+1. **New shared debug log** (`src-tauri/src/debug_log.rs`). A plain text file in the app's config directory, sequence-numbered rather than timestamped (so step order is unambiguous without a time-formatting dependency), size-capped so it can't grow forever. Both Rust and JavaScript write into the same file - JS via a new `log_debug_message` command - so the whole pipeline for a given action shows up as one ordered trail. Viewable and clearable in-app: Diagnostics now has a "View Debug Log" / "Clear Debug Log" panel.
+2. **Recording save instrumented.** `save_capture_native` now logs on invocation, after base64 decode, before/after the save dialog, and the exact result of `fs::write` - including the real OS error text if the write fails. Nothing about its behavior changed from 1.0.3.
+3. **Notifications instrumented.** `notify` logs the message it's attempting and whether `tauri-plugin-notification`'s `.show()` returned `Ok` or `Err`. This directly tests 1.0.3's AppUserModelID hypothesis: if `.show()` reports success but nothing is ever seen, the problem is downstream of this app's code (Windows notification settings, Focus Assist, or similar); if `.show()` itself errors, that's a different and more direct problem.
+4. **Global shortcut dispatch instrumented on both sides.** The Rust handler logs the instant a shortcut is received and an event is dispatched; the JS listener logs the instant it receives that event - so a shortcut that stops working shows exactly which side it reached.
+5. **Capture Context Descriptor's detection instrumented directly**, addressing the newly-specific report that it names AccessibleScreenCapture rather than the real foreground application. Every poll tick while the descriptor is on now logs the raw detected application name, title, state, and monitor - not only when a change is reported. `capture_context.rs` was read carefully again and still shows no logic bug in `GetForegroundWindow()` (which is genuinely system-wide, unaffected by which process calls it) - but this pass doesn't ask that to be taken on faith; the poll log will show directly whether detection is correct.
+6. **Pending-capture message corrected** to the newly specified exact wording: "A capture is waiting for review. Save or discard it before taking another." This was the one genuine, unambiguous fix this pass made - a text change with an exactly specified correct answer, not a hypothesis.
+7. **Diagnostics extended** with the exact last save error, the last descriptor context actually reported, and the current pending-capture state.
+
 
 This pass touched exactly two Rust functions, nothing else - no new user-facing messages or behavior changes, only reliability fixes for messages/behavior that already existed but weren't consistently reaching the user:
 
@@ -22,6 +34,10 @@ This pass touched exactly two Rust functions, nothing else - no new user-facing 
 2. **`SetCurrentProcessExplicitAppUserModelID` added at startup** (`src-tauri/src/lib.rs`, `setup()`). Windows toast notifications are known to be unreliable for a plain Win32 app without an explicitly registered AppUserModelID. Set once, first thing, before any notification could possibly be shown. Required adding the `Win32_UI_Shell` feature to the already-present `windows` crate dependency (same crate, same version - not an upgrade).
 
 The Capture Context Descriptor "not working outside the app" was investigated as a possible third, separate defect and re-diagnosed as the same underlying notification problem: both `GetForegroundWindow()` (system-wide, unaffected by which process calls it) and the descriptor's background watcher's event emission were re-checked carefully and show no logic bug. It was kept in the release rather than pulled, since a concrete shared-cause fix was identified and attempted first - see `docs/Roadmap.md` for what happens if that turns out to be wrong.
+
+**Real testing after 1.0.3 built successfully found this reasoning incomplete.** Recording save still failed the same way, and the descriptor was found to specifically report AccessibleScreenCapture itself, not just "unreliable" - a more concrete symptom than the notification-sharing theory accounted for. That's why 1.0.4 stopped guessing.
+
+## What changed in 1.0.3 (previous version, for context)
 
 ## What changed in 1.0.2 (previous version, for context)
 
@@ -48,7 +64,7 @@ Also added: visible "Screenshot target: Primary monitor" text and a matching tra
 
 ## Installation
 
-Install the produced `.msi` like any other Windows application: run it, follow the installer, launch AccessibleScreenCapture from the Start Menu. Uninstall through Windows Settings > Apps. Because the version number changed from 1.0.1 to 1.0.2 in both `Cargo.toml` and `tauri.conf.json` (and nothing else about the application identity changed), Windows Installer recognizes a 1.0.2 build as an upgrade over an existing 1.0.1 install.
+Install the produced `.msi` like any other Windows application: run it, follow the installer, launch AccessibleScreenCapture from the Start Menu. Uninstall through Windows Settings > Apps. Because the version number changed from 1.0.3 to 1.0.4 in both `Cargo.toml` and `tauri.conf.json` (and nothing else about the application identity changed), Windows Installer recognizes a 1.0.4 build as an upgrade over an existing installation.
 
 ## Running the browser prototype (Phase 1, reference only)
 
@@ -84,46 +100,47 @@ Since 1.0.2 changed no Rust code and no dependency versions, no `Cargo.toml` rec
 
 `index.html` and `app/` are the shared frontend, used by both the browser prototype and the desktop app. The Review / Save / Discard / Recent Captures workflow is unchanged from Phase 1 throughout.
 
-`app/app.js` controls screenshot capture, recording, review, saving, focus management, Recent Captures, all three global shortcut listeners, the shortcut-rebinding settings UI, the Capture Context Descriptor's on/off toggle and change-based announcements, and (new in 1.0.2) focus-aware confirmation for both screenshots and recordings, unified pending-capture protection, a failure-safe save wrapper, recording start/stop feedback, system audio guidance, microphone device refresh, the Diagnostics panel, and the optional capture sound.
+`app/app.js` controls screenshot capture, recording, review, saving, focus management, Recent Captures, all three global shortcut listeners, the shortcut-rebinding settings UI, the Capture Context Descriptor's on/off toggle and change-based announcements, focus-aware confirmation, unified pending-capture protection, a failure-safe save wrapper, recording start/stop feedback, system audio guidance, microphone device refresh, the Diagnostics panel, and the optional capture sound. New in 1.0.4: debug-log calls threaded through the save path and global-shortcut handlers, the corrected pending-capture message, and the Diagnostics debug-log viewer wiring.
 
-`app/announcer.js` limits application-generated live-region messages to an approved set (`announce`) plus a small set of specific, templated messages (`announceRaw`). Routes to a native Windows notification whenever the app doesn't have focus - reworked in 1.0.2 to check real focus state (`isAppFocused()`) instead of only `document.hidden`.
+`app/announcer.js` limits application-generated live-region messages to an approved set (`announce`) plus a small set of specific, templated messages (`announceRaw`). Routes to a native Windows notification whenever the app doesn't have focus. New in 1.0.4: logs its own routing decision and the native-notify outcome to the debug log.
 
-`app/tauri-bridge.js` feature-detects the desktop runtime (`window.__TAURI__`) and wraps the native commands. `isWindowHidden()` was replaced with `isAppFocused()` in 1.0.2 - same file, same role, corrected check.
+`app/tauri-bridge.js` feature-detects the desktop runtime (`window.__TAURI__`) and wraps the native commands. New in 1.0.4: `getDebugLog`, `clearDebugLog`, `logDebug`.
 
-`app/shortcuts.js` is the in-page keyboard shortcut registry Phase 1 introduced; still used as the browser-prototype fallback for screenshot/recording only. Unchanged in 1.0.2.
+`app/shortcuts.js`, `app/save.js`, `app/duration.js` - unchanged.
 
-`app/save.js`, `app/duration.js`, `app/styles.css` - unchanged in 1.0.2.
+`app/styles.css` - new in 1.0.4: styling for the debug log's scrollable output panel.
 
-`src-tauri/` is the native backend - unchanged from 1.0.1 through 1.0.2, with two targeted fixes in 1.0.3:
+`src-tauri/` is the native backend:
 
-- `src/lib.rs` - tray icon and menu, minimize-to-tray, registration/persistence/rebinding for all three global shortcuts, native screenshot capture, native "Save As" (**rewritten in 1.0.3** - see "What changed in 1.0.3"), native notifications (**AppUserModelID registration added in 1.0.3**), optional Windows autostart.
-- `src/capture_context.rs` - reports the active application, window title, window state, monitor, and size/position via Win32. Unchanged in 1.0.3 (re-read carefully, no bug found - see "What changed in 1.0.3").
-- `src/descriptor.rs` - the Capture Context Descriptor's on/off state and background watcher. Unchanged in 1.0.3 for the same reason.
+- `src/lib.rs` - tray icon and menu, minimize-to-tray, registration/persistence/rebinding for all three global shortcuts, native screenshot capture, native "Save As," native notifications, optional Windows autostart. New in 1.0.4: debug-log instrumentation added to `save_capture_native`, `notify`, and the global shortcut dispatch closure - no behavior changed, only logging added.
+- `src/capture_context.rs` - reports the active application, window title, window state, monitor, and size/position via Win32. Unchanged again in 1.0.4 - read carefully a second time, still no logic bug found; see "What changed in 1.0.4."
+- `src/descriptor.rs` - the Capture Context Descriptor's on/off state and background watcher. New in 1.0.4: every poll tick now logs the raw detected window while the descriptor is on, and toggling logs to the debug log too.
+- `src/debug_log.rs` - new in 1.0.4: the shared, file-based diagnostic log both Rust and JS write into.
 - `src/main.rs` - entry point. Unchanged.
-- `tauri.conf.json` - window, bundle, and identity configuration. App identity unchanged: name "AccessibleScreenCapture", publisher "Open Door Design", version now "1.0.3".
-- `Cargo.toml` - one feature flag added (`Win32_UI_Shell`, same `windows` crate, same version) to support the AUMID fix.
+- `tauri.conf.json` - window, bundle, and identity configuration. App identity unchanged: name "AccessibleScreenCapture", publisher "Open Door Design", version now "1.0.4".
+- `Cargo.toml` - version bump only this pass (no new dependencies or features - `debug_log.rs` uses only `std`).
 - `capabilities/default.json`, `icons/` - unchanged.
 
 `scripts/prepare-dist.js`, `.github/workflows/build-windows.yml` - unchanged.
 
-The `docs/` folder contains the vision, screen-reader-first principles, the roadmap, and a manual testing checklist - all updated for 1.0.2.
+The `docs/` folder contains the vision, screen-reader-first principles, the roadmap, and a manual testing checklist - all updated for 1.0.4.
 
 ## Completed functionality
 
 From Phase 1 and 1.0.0/1.0.1 (verified): screenshot and recording capture, Review/Save/Discard, Recent Captures, Windows-safe filenames, natural-language duration, workflow locking, resource cleanup, native screenshot/save/notifications, three fully reconfigurable global shortcuts with duplicate prevention and preserve-previous-on-failure, system tray, and the independent Capture Context Descriptor.
 
-From 1.0.2 (frontend-only; the messages/behavior below now exist but real testing found two of them weren't reliably reaching the user - see 1.0.3): focus-aware notification routing, specific screenshot/recording confirmation messages, unified pending-capture protection, save-failure error handling, recording start/stop feedback, system audio guidance, microphone device refresh, Diagnostics section, optional capture-confirmation sound.
+From 1.0.2/1.0.3 (the messages/behavior below now exist, but real testing found some weren't reliably reaching the user or weren't actually working - see "What changed in 1.0.4"): focus-aware notification routing, specific screenshot/recording confirmation messages, save-failure error handling, recording start/stop feedback, system audio guidance, microphone device refresh, optional capture-confirmation sound, a rewritten native save command, and an AppUserModelID registration for notification reliability.
 
-New in 1.0.3 (not yet built/verified):
+New in 1.0.4 (not a fix pass - see "What changed in 1.0.4"):
 
-- `save_capture_native` rewritten to remove a real deadlock-prone pattern (blocking channel inside an async command) - the most likely actual cause of recording saves still failing after 1.0.2's JS-side fix.
-- An explicit Windows AppUserModelID registered at startup - the most likely actual cause of native notifications (screenshot, recording, pending-capture, and Capture Context Descriptor) not reliably reaching the user outside the app.
-- No new user-facing messages or behaviors - purely a reliability pass for what 1.0.1/1.0.2 already established.
+- A shared, file-based debug log covering the recording-save path, the notification path, global shortcut dispatch, and the descriptor's foreground-window detection - viewable and clearable in-app under Diagnostics.
+- The pending-capture message corrected to the exact newly specified wording.
+- Diagnostics extended with the exact last save error, last descriptor context reported, and pending-capture state.
 
 ## Remaining work
 
-See "What's honestly still open" and "Later work" in `docs/Roadmap.md`. Most notably: 1.0.3 hasn't been through a real build yet, both Rust changes are best-effort against remembered API shapes rather than verified documentation, and if the AUMID fix doesn't resolve the descriptor's outside-the-app reliability, the fallback is to remove the descriptor from the release rather than ship it unreliable - not yet needed, but explicitly available per the directive that requested this pass.
+See "What's honestly still open" and "Later work" in `docs/Roadmap.md`. Most notably: the three defects (recording save, notification reliability, descriptor accuracy) are still unresolved - this pass made them observable, not fixed. The next pass should be a repair based on real debug-log output from a test session that reproduces the problems, not another guess from an environment with no Windows machine or compiler.
 
 ## Next development phase
 
-Get a real 1.0.3 build through `.github/workflows/build-windows.yml` - unlike 1.0.2, this one has real Rust changes and may surface compiler errors; send them over the same way as every previous round. Then work through `docs/Testing Checklist.md`, particularly recording save and notification reliability while genuinely unfocused. Native Windows recording architecture begins only once 1.0.3 is verified, per the directive that requested this pass.
+Run a real test session on Windows that reproduces all three defects, then open Diagnostics → View Debug Log and send the contents back (or paste the relevant lines). That log is what the next repair pass should be built on. Get a real 1.0.4 build through `.github/workflows/build-windows.yml` first, in case the instrumentation itself doesn't compile cleanly - if so, send the specific error the same way as every previous round. Native Windows recording architecture remains the phase after this, gated on the three defects actually being resolved.

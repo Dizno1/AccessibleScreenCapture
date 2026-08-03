@@ -22,7 +22,7 @@
 // channel, one whitelist of call sites, and no free-text
 // announcements from arbitrary code.
 
-import { isTauri, nativeNotify, isAppFocused } from "./tauri-bridge.js";
+import { isTauri, nativeNotify, isAppFocused, logDebug } from "./tauri-bridge.js";
 
 const MESSAGES = {
   screenshotCaptured: "Screenshot captured.",
@@ -50,13 +50,23 @@ export function initAnnouncer(element) {
 }
 
 function deliver(message) {
-  if (isTauri && !isAppFocused()) {
-    nativeNotify(message).catch((error) => {
-      console.error("Native notification failed:", error);
-    });
+  const focused = isTauri ? isAppFocused() : null;
+  if (isTauri) {
+    logDebug(`announcer: deliver() invoked, message="${message}", appFocused=${focused}`);
+  }
+
+  if (isTauri && !focused) {
+    logDebug(`announcer: routing to native notification (unfocused): "${message}"`);
+    nativeNotify(message)
+      .then(() => logDebug(`announcer: nativeNotify resolved OK for "${message}"`))
+      .catch((error) => {
+        console.error("Native notification failed:", error);
+        logDebug(`announcer: nativeNotify REJECTED for "${message}": ${error}`);
+      });
     return;
   }
 
+  if (isTauri) logDebug(`announcer: routing to in-page live region (focused): "${message}"`);
   if (!liveRegion) return;
 
   liveRegion.textContent = "";

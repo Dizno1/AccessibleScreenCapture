@@ -233,7 +233,26 @@
         <dt>Resolved microphone device</dt>
         <dd id="diag-mic-resolved">N/A</dd>
       </div>
+      <div class="shortcut-row">
+        <dt>Last save error</dt>
+        <dd id="diag-save-error">N/A</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Last descriptor context reported</dt>
+        <dd id="diag-descriptor-context">None yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Pending capture state</dt>
+        <dd id="diag-pending-state">Empty</dd>
+      </div>
     </dl>
+
+    <h3>Debug log</h3>
+    <p class="section-hint">A detailed, ordered record of the recording save, notification, and descriptor pipeline - written to a file so it can be reviewed even if notifications themselves aren't working. Not spoken automatically.</p>
+    <button type="button" id="debug-log-view" class="secondary-button">View Debug Log</button>
+    <button type="button" id="debug-log-clear" class="secondary-button">Clear Debug Log</button>
+    <p id="debug-log-status" role="status" aria-live="polite" class="section-hint"></p>
+    <pre id="debug-log-output" class="debug-log-output"></pre>
   </section>
 
 </main>

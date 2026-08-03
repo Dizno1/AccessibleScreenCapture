@@ -1,6 +1,16 @@
-# Testing Checklist - 1.0.3 (Recording Save + Native Notification Reliability Repair)
+# Testing Checklist - 1.0.4 (Instrumentation: Produce a Diagnosable Debug Log)
 
-1.0.1 built successfully via GitHub Actions and was installed and verified on Windows. 1.0.2's frontend-only fixes were tested and found incomplete - recording save still failed, and native notifications (including the Capture Context Descriptor) still didn't reliably reach the user outside the app. 1.0.3 targets the two Rust-level causes most likely responsible. None of the items below have been run yet.
+1.0.3 built successfully but real testing showed recording save and notification reliability still broken, and found the descriptor specifically reports AccessibleScreenCapture itself. 1.0.4 doesn't attempt further fixes - it instruments the pipeline. The goal of testing this version isn't "confirm the defects are fixed" (they aren't expected to be), it's "produce a debug log that shows exactly where each one fails."
+
+## The one thing this version's testing is actually for
+
+- [ ] Turn the Capture Context Descriptor on, then move through Chrome, Outlook, Word, and Excel one at a time, pausing a few seconds in each.
+- [ ] Attempt a screenshot via Alt+Ctrl+Space from another application.
+- [ ] Attempt a recording: start it, let it run a few seconds, stop it, and try to save it.
+- [ ] Trigger a pending-capture block (attempt a second capture while one is waiting in Review).
+- [ ] Open Diagnostics → View Debug Log, and send the contents back (or the relevant portion) - this is the actual deliverable of this testing round. It should show, in order: which shortcuts were received and by which side (Rust/JS), what the descriptor detected on every poll while it was on, exactly what happened at each step of the save attempt, and whether each `notify()` call reported success or failure.
+- [ ] If the log is very long, Clear Debug Log before starting a focused, short reproduction of just one defect at a time, to keep each log easier to read.
+
 
 ## 1.0.3 priority: the three defects this pass targets
 
