@@ -131,3 +131,47 @@ export async function logDebug(message) {
     console.error("Could not write to debug log:", error);
   }
 }
+
+/**
+ * Speaks text via native Windows speech (SAPI), independent of the
+ * toast notification channel - see src-tauri/src/native_speech.rs.
+ * Never moves focus or shows the window; interrupts/replaces
+ * whatever this app was already saying rather than queuing behind it.
+ */
+export async function speakStatus(message) {
+  return invoke("speak_status", { message });
+}
+
+export async function getOutputSettings() {
+  return invoke("get_output_settings");
+}
+
+export async function setSpeakOutsideApp(enabled) {
+  return invoke("set_speak_outside_app", { enabled });
+}
+
+export async function setShowNotifications(enabled) {
+  return invoke("set_show_notifications", { enabled });
+}
+
+/**
+ * Chunked recording save - see src-tauri/src/recording_save.rs.
+ * Replaces sending the whole recording as one base64 IPC argument
+ * (still used for screenshots, which are small) with: open the save
+ * dialog first, then stream bounded chunks, then verify.
+ */
+export async function beginRecordingSave(suggestedName) {
+  return invoke("begin_recording_save", { suggestedName });
+}
+
+export async function appendRecordingChunk(sessionId, chunkBase64) {
+  return invoke("append_recording_chunk", { sessionId, chunkBase64 });
+}
+
+export async function finishRecordingSave(sessionId, expectedBytes) {
+  return invoke("finish_recording_save", { sessionId, expectedBytes });
+}
+
+export async function abortRecordingSave(sessionId) {
+  return invoke("abort_recording_save", { sessionId });
+}

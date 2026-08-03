@@ -1,4 +1,4 @@
-import { initAnnouncer, announce, announceRaw } from "./announcer.js";
+import { initAnnouncer, announce, announceRaw, initOutputSettingsCache, setOutputSettingsCache } from "./announcer.js";
 import { registerShortcut, initShortcuts } from "./shortcuts.js";
 import { saveBlob, supportsFilePicker } from "./save.js";
 import { formatDuration } from "./duration.js";
@@ -18,6 +18,13 @@ import {
   getDebugLog,
   clearDebugLog,
   logDebug,
+  getOutputSettings,
+  setSpeakOutsideApp,
+  setShowNotifications,
+  beginRecordingSave,
+  appendRecordingChunk,
+  finishRecordingSave,
+  abortRecordingSave,
 } from "./tauri-bridge.js";
 
 const captureTypeScreenshot = document.getElementById("capture-type-screenshot");
@@ -82,6 +89,8 @@ const diagnostics = {
   currentMicSelection: "Default microphone",
   resolvedMicDevice: "N/A",
   lastSaveError: "N/A",
+  recordingChunksTransferred: "N/A",
+  recordingFinalFileSize: "N/A",
   lastDescriptorContext: "None yet",
   pendingCaptureState: "Empty",
 };
@@ -112,6 +121,8 @@ function renderDiagnostics() {
     currentMicSelection: "diag-mic-selection",
     resolvedMicDevice: "diag-mic-resolved",
     lastSaveError: "diag-save-error",
+    recordingChunksTransferred: "diag-chunks-transferred",
+    recordingFinalFileSize: "diag-final-size",
     lastDescriptorContext: "diag-descriptor-context",
     pendingCaptureState: "diag-pending-state",
   };
@@ -338,6 +349,105 @@ function revokeReviewObjectUrl() {
   }
 }
 
+/**
+ * Builds a persistent, app-owned set of playback controls for a
+ * recording preview - Play/Pause, Stop, Rewind 5s, Forward 5s, a
+ * plain (non-live-region) time display, and an optional "Announce
+ * Playback Position" button. Built once per capture, then only ever
+ * updated in place (button label/aria-pressed, text content) - never
+ * recreated as playback progresses, so focus is never disturbed.
+ * Ordinary <button> elements are used throughout specifically so
+ * Space/Enter activation works with virtual cursor off, with no
+ * custom key handling needed.
+ */
+function buildRecordingPlaybackControls(video) {
+  const container = document.createElement("div");
+  container.className = "playback-controls";
+
+  const playPauseButton = document.createElement("button");
+  playPauseButton.type = "button";
+  playPauseButton.className = "secondary-button";
+  playPauseButton.textContent = "Play";
+  playPauseButton.setAttribute("aria-pressed", "false");
+
+  const rewindButton = document.createElement("button");
+  rewindButton.type = "button";
+  rewindButton.className = "secondary-button";
+  rewindButton.textContent = "Rewind 5 Seconds";
+
+  const forwardButton = document.createElement("button");
+  forwardButton.type = "button";
+  forwardButton.className = "secondary-button";
+  forwardButton.textContent = "Forward 5 Seconds";
+
+  const stopButton = document.createElement("button");
+  stopButton.type = "button";
+  stopButton.className = "secondary-button";
+  stopButton.textContent = "Stop Playback";
+
+  const announceButton = document.createElement("button");
+  announceButton.type = "button";
+  announceButton.className = "secondary-button";
+  announceButton.textContent = "Announce Playback Position";
+
+  const timeDisplay = document.createElement("p");
+  timeDisplay.className = "playback-time";
+  timeDisplay.textContent = "0 seconds of 0 seconds";
+
+  container.append(playPauseButton, rewindButton, forwardButton, stopButton, announceButton, timeDisplay);
+
+  function currentPositionText() {
+    const current = formatDuration(video.currentTime || 0);
+    const total = formatDuration(video.duration || 0);
+    return `${current} of ${total}`;
+  }
+
+  function updateTimeDisplay() {
+    timeDisplay.textContent = currentPositionText();
+  }
+
+  function setPlayingState(isPlaying) {
+    playPauseButton.textContent = isPlaying ? "Pause" : "Play";
+    playPauseButton.setAttribute("aria-pressed", isPlaying ? "true" : "false");
+  }
+
+  playPauseButton.addEventListener("click", () => {
+    if (video.paused) video.play();
+    else video.pause();
+  });
+  video.addEventListener("play", () => setPlayingState(true));
+  video.addEventListener("pause", () => setPlayingState(false));
+  video.addEventListener("ended", () => setPlayingState(false));
+
+  stopButton.addEventListener("click", () => {
+    video.pause();
+    video.currentTime = 0;
+    setPlayingState(false);
+    updateTimeDisplay();
+  });
+
+  rewindButton.addEventListener("click", () => {
+    video.currentTime = Math.max(0, video.currentTime - 5);
+  });
+
+  forwardButton.addEventListener("click", () => {
+    const duration = video.duration || video.currentTime + 5;
+    video.currentTime = Math.min(duration, video.currentTime + 5);
+  });
+
+  announceButton.addEventListener("click", () => {
+    announceRaw(`${currentPositionText()}.`);
+  });
+
+  // Current-time updates are plain text, never a live-region
+  // announcement - only the explicit "Announce Playback Position"
+  // button ever speaks a position.
+  video.addEventListener("timeupdate", updateTimeDisplay);
+  video.addEventListener("loadedmetadata", updateTimeDisplay);
+
+  return container;
+}
+
 function showReview(capture) {
   pendingCapture = capture;
   diagnostics.pendingCaptureState = `${capture.kind} waiting since ${nowText()}`;
@@ -354,11 +464,14 @@ function showReview(capture) {
   } else {
     const video = document.createElement("video");
     video.src = reviewObjectUrl;
-    video.controls = true;
+    video.controls = false;
+    video.tabIndex = -1;
+    video.setAttribute("aria-hidden", "true");
     const label = document.createElement("p");
     label.textContent = `Recording length: ${formatDuration(capture.durationSeconds)}`;
     reviewPreview.appendChild(video);
     reviewPreview.appendChild(label);
+    reviewPreview.appendChild(buildRecordingPlaybackControls(video));
   }
 
   reviewSection.hidden = false;
@@ -374,10 +487,78 @@ function hideReview() {
   renderDiagnostics();
 }
 
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+// Bounded chunk size for recording transfer - small enough that each
+// individual IPC message stays cheap, however large the recording is
+// overall. This is the "chunked IPC where each chunk has a bounded
+// size" approach: many small, boring messages instead of one giant one.
+const RECORDING_CHUNK_BYTES = 512 * 1024;
+
+/**
+ * Saves a recording via the chunked pipeline (src-tauri/src/recording_save.rs)
+ * instead of converting the whole Blob to one base64 IPC argument -
+ * that was the actual cause of recordings consistently failing to
+ * save while screenshots (much smaller) worked fine. The dialog opens
+ * first; only if the user picks a destination does any data transfer
+ * happen at all.
+ */
+async function saveRecordingChunked(capture) {
+  const begin = await beginRecordingSave(capture.suggestedName);
+  logDebug(`saveRecordingChunked: begin_recording_save returned ${JSON.stringify(begin)}`);
+
+  if (begin.canceled) {
+    return { ok: false, canceled: true };
+  }
+
+  const sessionId = begin.sessionId;
+  const blob = capture.blob;
+  const totalSize = blob.size;
+  let offset = 0;
+  let chunkCount = 0;
+
+  try {
+    while (offset < totalSize) {
+      const end = Math.min(offset + RECORDING_CHUNK_BYTES, totalSize);
+      const chunkBuffer = await blob.slice(offset, end).arrayBuffer();
+      const chunkBase64 = arrayBufferToBase64(chunkBuffer);
+      const totalSent = await appendRecordingChunk(sessionId, chunkBase64);
+      chunkCount += 1;
+      offset = end;
+      diagnostics.recordingChunksTransferred = `${chunkCount} chunks, ${totalSent} of ${totalSize} bytes`;
+      renderDiagnostics();
+    }
+
+    logDebug(`saveRecordingChunked: all ${chunkCount} chunks sent, calling finish_recording_save`);
+    const finished = await finishRecordingSave(sessionId, totalSize);
+    diagnostics.recordingFinalFileSize = `${finished.finalSize} bytes`;
+    renderDiagnostics();
+    logDebug(`saveRecordingChunked: finish_recording_save returned ${JSON.stringify(finished)}`);
+    return { ok: finished.ok, canceled: false };
+  } catch (error) {
+    console.error("Chunked recording save error:", error);
+    logDebug(`saveRecordingChunked: FAILED after ${chunkCount} chunks: ${error}`);
+    await abortRecordingSave(sessionId).catch(() => {});
+    throw error;
+  }
+}
+
 async function saveCapture(capture) {
   logDebug(
     `saveCapture: kind=${capture.kind}, blobSize=${capture.blob.size}, blobType=${capture.blob.type}, filename=${capture.suggestedName}`
   );
+
+  if (isTauri && capture.kind === "recording") {
+    return saveRecordingChunked(capture);
+  }
 
   if (isTauri) {
     const extension = capture.kind === "screenshot" ? "png" : "webm";
@@ -944,6 +1125,8 @@ if (isTauri) {
   initShortcutSettings();
   initDescriptorSettings();
   initDiagnostics();
+  initOutputSettingsCache();
+  initOutputChannelSettings();
 }
 
 /**
@@ -1215,5 +1398,47 @@ async function initDescriptorSettings() {
 
   checkbox.addEventListener("change", () => {
     setDescriptorState(checkbox.checked);
+  });
+}
+
+/**
+ * Wires the two independent output-channel settings. Neither implies
+ * the other - a user can have speech on and notifications off, both
+ * on, both off, or notifications-only.
+ */
+async function initOutputChannelSettings() {
+  const section = document.getElementById("output-settings");
+  const speakCheckbox = document.getElementById("speak-outside-app-toggle");
+  const notifyCheckbox = document.getElementById("show-notifications-toggle");
+  if (!section || !speakCheckbox || !notifyCheckbox) return;
+
+  let settings;
+  try {
+    settings = await getOutputSettings();
+  } catch (error) {
+    console.error("Could not load output channel settings:", error);
+    return;
+  }
+
+  section.hidden = false;
+  speakCheckbox.checked = settings.speakOutsideApp;
+  notifyCheckbox.checked = settings.showNotifications;
+
+  speakCheckbox.addEventListener("change", async () => {
+    try {
+      const enabled = await setSpeakOutsideApp(speakCheckbox.checked);
+      setOutputSettingsCache({ speakOutsideApp: enabled });
+    } catch (error) {
+      console.error("Could not save speak-outside-app setting:", error);
+    }
+  });
+
+  notifyCheckbox.addEventListener("change", async () => {
+    try {
+      const enabled = await setShowNotifications(notifyCheckbox.checked);
+      setOutputSettingsCache({ showNotifications: enabled });
+    } catch (error) {
+      console.error("Could not save show-notifications setting:", error);
+    }
   });
 }

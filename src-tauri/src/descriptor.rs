@@ -73,26 +73,13 @@ pub fn spawn_watcher(app: AppHandle) {
 
         let context = match get_capture_context() {
             Ok(context) => context,
-            Err(e) => {
-                crate::debug_log::log(&app, &format!("descriptor poll: get_capture_context FAILED: {e}"));
-                continue; // no foreground window right now - stay quiet, not an error worth surfacing to the user
-            }
+            Err(_) => continue, // no foreground window right now - stay quiet, not an error worth surfacing to the user
         };
 
-        // Logged every poll while enabled (not only on a reported
-        // change) specifically so "does this always say
-        // AccessibleScreenCapture, or does it correctly see Chrome/
-        // Outlook/Word/Excel and just fail to announce the change" can
-        // be answered directly from the log file, independent of
-        // whether the notification path is working.
-        crate::debug_log::log(
-            &app,
-            &format!(
-                "descriptor poll: app={}, title={}, state={}, monitor={:?}",
-                context.app_name, context.window_title, context.state, context.monitor_number
-            ),
-        );
-
+        // 1.0.4's instrumentation logged every poll tick to prove
+        // detection was correct - it was, so that flood is gone.
+        // Logging now happens only on an actual reported change,
+        // below.
         let key = context_key(&context);
         let mut last_key = state.last_key.lock().unwrap();
         if last_key.as_deref() == Some(key.as_str()) {

@@ -274,3 +274,16 @@ a:focus-visible,
   font-family: monospace;
   font-size: 0.85rem;
 }
+
+.playback-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.5rem;
+}
+
+.playback-time {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}

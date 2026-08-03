@@ -21,10 +21,19 @@ use tauri_plugin_notification::NotificationExt;
 mod capture_context;
 mod debug_log;
 mod descriptor;
+mod native_speech;
+mod output_settings;
+mod recording_save;
 
 use capture_context::get_capture_context;
 use debug_log::{clear_debug_log, get_debug_log, log_debug_message};
 use descriptor::{get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
+use native_speech::speak_status;
+use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app};
+use recording_save::{
+    abort_recording_save, append_recording_chunk, begin_recording_save, finish_recording_save,
+    RecordingSaveState,
+};
 
 const SHORTCUTS_FILE: &str = "shortcuts.json";
 
@@ -538,6 +547,7 @@ pub fn run() {
             bindings: Mutex::new(ShortcutBindings::default()),
         })
         .manage(DescriptorState::default())
+        .manage(RecordingSaveState::default())
         .setup(|app| {
             let handle = app.handle().clone();
 
@@ -556,7 +566,9 @@ pub fn run() {
                 ));
             }
 
-            debug_log::log(&handle, "=== app started, version 1.0.4, AUMID set ===");
+            debug_log::log(&handle, "=== app started, version 1.0.5, AUMID set ===");
+            native_speech::init_speech_worker();
+            debug_log::log(&handle, "=== native speech worker starting ===");
 
             // Load persisted shortcut bindings (or defaults) and
             // register them for real before the window is usable.
@@ -636,6 +648,14 @@ pub fn run() {
             get_debug_log,
             clear_debug_log,
             log_debug_message,
+            speak_status,
+            get_output_settings,
+            set_speak_outside_app,
+            set_show_notifications,
+            begin_recording_save,
+            append_recording_chunk,
+            finish_recording_save,
+            abort_recording_save,
         ])
         .run(tauri::generate_context!())
         .expect("error while running AccessibleScreenCapture");

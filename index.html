@@ -151,6 +151,20 @@
     </label>
   </section>
 
+  <!-- ============ Output Settings (desktop only) ============ -->
+  <section aria-labelledby="output-settings-heading" id="output-settings" hidden>
+    <h2 id="output-settings-heading">Output Settings</h2>
+    <p class="section-hint">Windows toast notifications are a visual channel and are not guaranteed to be read by a screen reader. When AccessibleScreenCapture doesn't have focus, native speech is the reliable spoken channel; the notification is optional visual reinforcement alongside it. These two settings are independent of each other.</p>
+    <label class="checkbox-option">
+      <input type="checkbox" id="speak-outside-app-toggle" checked>
+      Speak status outside AccessibleScreenCapture
+    </label>
+    <label class="checkbox-option">
+      <input type="checkbox" id="show-notifications-toggle" checked>
+      Show Windows notifications
+    </label>
+  </section>
+
   <!-- ============ Diagnostics (desktop only) ============ -->
   <!-- Plain visible text, never in a live region - navigate here manually when troubleshooting; nothing here is spoken automatically. -->
   <section aria-labelledby="diagnostics-heading" id="diagnostics-settings" hidden>
@@ -236,6 +250,14 @@
       <div class="shortcut-row">
         <dt>Last save error</dt>
         <dd id="diag-save-error">N/A</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recording chunks transferred</dt>
+        <dd id="diag-chunks-transferred">N/A</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Recording final file size</dt>
+        <dd id="diag-final-size">N/A</dd>
       </div>
       <div class="shortcut-row">
         <dt>Last descriptor context reported</dt>

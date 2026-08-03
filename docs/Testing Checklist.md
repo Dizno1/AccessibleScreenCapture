@@ -1,18 +1,39 @@
-# Testing Checklist - 1.0.4 (Instrumentation: Produce a Diagnosable Debug Log)
+# Testing Checklist - 1.0.5 (Native Speech, Chunked Recording Save, Custom Playback Controls)
 
-1.0.3 built successfully but real testing showed recording save and notification reliability still broken, and found the descriptor specifically reports AccessibleScreenCapture itself. 1.0.4 doesn't attempt further fixes - it instruments the pipeline. The goal of testing this version isn't "confirm the defects are fixed" (they aren't expected to be), it's "produce a debug log that shows exactly where each one fails."
+1.0.4's debug log proved the descriptor detects external applications correctly and that toast notifications report success but aren't heard. This version replaces the notification-only delivery with native speech, replaces the base64 recording-save transport with a chunked pipeline, and replaces the native video controls with custom persistent ones. None of this has been tested on a real machine yet.
 
-## The one thing this version's testing is actually for
+## Native speech (Repair 1)
 
-- [ ] Turn the Capture Context Descriptor on, then move through Chrome, Outlook, Word, and Excel one at a time, pausing a few seconds in each.
-- [ ] Attempt a screenshot via Alt+Ctrl+Space from another application.
-- [ ] Attempt a recording: start it, let it run a few seconds, stop it, and try to save it.
-- [ ] Trigger a pending-capture block (attempt a second capture while one is waiting in Review).
-- [ ] Open Diagnostics → View Debug Log, and send the contents back (or the relevant portion) - this is the actual deliverable of this testing round. It should show, in order: which shortcuts were received and by which side (Rust/JS), what the descriptor detected on every poll while it was on, exactly what happened at each step of the save attempt, and whether each `notify()` call reported success or failure.
-- [ ] If the log is very long, Clear Debug Log before starting a focused, short reproduction of just one defect at a time, to keep each log easier to read.
+- [ ] With AccessibleScreenCapture unfocused (behind Chrome, Outlook, etc.), take a screenshot via Alt+Ctrl+Space - confirm it's actually spoken, not just shown as a toast.
+- [ ] With a capture already pending, attempt another - confirm the pending-capture message is spoken while unfocused.
+- [ ] Request a recording via Alt+Ctrl+R from another application - confirm "Recording requested," "Recording started," and "Recording stopped" are all spoken while unfocused.
+- [ ] Turn the Capture Context Descriptor on, then move through Chrome, File Explorer, and at least one other application - confirm each context change is spoken, not silent.
+- [ ] Turn the descriptor off - confirm speech stops immediately, with no trailing/queued announcement still playing.
+- [ ] Move quickly between two or three applications - confirm speech interrupts and replaces itself rather than queuing up a backlog of stale messages.
+- [ ] Turn off "Speak status outside AccessibleScreenCapture" (leave notifications on) - confirm speech stops but the toast notification still appears.
+- [ ] Turn off "Show Windows notifications" (leave speech on) - confirm the toast stops but speech still happens. This confirms the two settings are genuinely independent.
+- [ ] With the app focused, confirm behavior is unchanged from before - the in-page live region, JAWS's normal voice, no native-speech calls.
+
+## Chunked recording save (Repair 2)
+
+- [ ] Record something several seconds long, save it, and confirm the resulting `.webm` file exists and plays correctly - this is the core test, since previous versions announced failure or (per this pass's diagnosis) may not have transferred the full file.
+- [ ] Check Diagnostics for "Recording chunks transferred" and "Recording final file size" - confirm the final size matches what you'd expect for the recording's length.
+- [ ] Cancel the Save As dialog during a recording save - confirm "Save canceled." is announced/spoken, the pending recording is still in Review afterward, and no partial file is left on disk.
+- [ ] If a save can be made to fail partway through (e.g. an inaccessible destination), confirm the pending recording is preserved and no corrupt partial file remains.
+- [ ] Confirm screenshot save is completely unaffected - still uses the existing path, still works the same as before.
+
+## Custom playback controls (Repair 3)
+
+- [ ] Play a recording using the new Play/Pause button; confirm it toggles correctly and the label updates without moving focus.
+- [ ] Confirm Space and Enter both activate Play/Pause with virtual cursor off.
+- [ ] Use Rewind 5 Seconds and Forward 5 Seconds during playback; confirm they work and don't recreate the button (focus stays put).
+- [ ] Use Stop Playback; confirm it pauses and resets to the beginning, with the Play/Pause button correctly showing "Play" afterward.
+- [ ] Confirm the time display updates as plain text during playback without any live-region announcement.
+- [ ] Use "Announce Playback Position" and confirm it speaks/announces the current position on demand, only when pressed.
+- [ ] Let a recording play to the end; confirm the control returns to "Play" state automatically.
+- [ ] Confirm the native video element's controls are not reachable or announced at all - only the custom buttons are part of the keyboard/screen-reader experience.
 
 
-## 1.0.3 priority: the three defects this pass targets
 
 - [ ] Save a recording; confirm the file actually exists on disk and plays correctly - not just that "Recording saved." was announced. This is the actual test of the `save_capture_native` rewrite, since 1.0.2 already fixed the announcement but not (apparently) the underlying save.
 - [ ] Save several recordings of different lengths, including at least one longer one, to check whether the previous failure was more likely to occur with larger data (consistent with the deadlock-prone pattern this pass removed) or was unrelated to size.

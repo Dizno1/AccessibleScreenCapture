@@ -52,7 +52,15 @@ Closing the window minimizes to the system tray rather than quitting the applica
 
 Global shortcuts work even when the application window does not have focus, using Windows' own global hotkey registration rather than an in-page key listener.
 
-Announcement routing is based on whether AccessibleScreenCapture actually has keyboard focus (`document.hasFocus()`), not merely whether it's hidden. A window that's fully visible but sitting behind another application - Chrome, Outlook, Excel, Word, whatever the user switched to - is just as unable to be heard through the in-page live region as a minimized one, and is treated the same way: the same approved message that would otherwise go to the live region is sent instead as a native Windows notification. Only one channel is ever used for a given announcement, never both. An earlier version of this check used `document.hidden` alone, which misses the "visible but unfocused" case entirely - fixed in 1.0.2.
+Announcement routing is based on whether AccessibleScreenCapture actually has keyboard focus (`document.hasFocus()`), not merely whether it's hidden. A window that's fully visible but sitting behind another application - Chrome, Outlook, Excel, Word, whatever the user switched to - is just as unable to be heard through the in-page live region as a minimized one, and is treated the same way.
+
+When unfocused, an approved message goes out through up to two independent channels, per the user's own settings (see "Output settings" below): native speech (SAPI) and/or a Windows toast notification. 1.0.4's instrumentation proved these are not equivalent - a toast reliably reports success as a Windows API call, but that's a visual event, not a guarantee a screen reader reads it. Speech, not the toast, is the channel actually relied on for the message to be heard; the toast remains available as optional visual reinforcement. When focused, the in-page live region is used, unaffected by either setting.
+
+## Output settings (desktop only)
+
+Two independent settings control the two channels used when the app is unfocused: "Speak status outside AccessibleScreenCapture" and "Show Windows notifications," both on by default. Neither implies the other - a user can have speech only, notifications only, both, or (if they truly want silence outside the app) neither. Both persist across restarts.
+
+Native speech uses SAPI, the same local, no-cloud, no-screen-reader-scripting-required speech engine Windows itself provides. A single message is spoken at a time - speaking a new message interrupts and replaces whatever was still being said, rather than queuing up a backlog of stale status updates.
 
 ## Focus-aware capture confirmation
 
@@ -95,6 +103,10 @@ A Diagnostics section (plain visible text, not a live region, nothing in it anno
 ## Capture sound
 
 An optional short, nonverbal tone plays when a screenshot is captured (on by default, a plain checkbox to turn off). It supplements the spoken/notification confirmation - it never replaces it, and carries no information on its own beyond "something happened just now."
+
+## Recording playback controls
+
+The recording preview uses app-owned controls instead of the WebView's native `<video>` controls, which testing found became hard to keep reachable once time-elapsed content appeared next to the native Pause button. The native controls are disabled and hidden from the accessibility tree entirely (`aria-hidden`), replaced by ordinary buttons: Play/Pause (one toggle, relabeled in place), Stop Playback, Rewind 5 Seconds, Forward 5 Seconds, and an on-demand Announce Playback Position button. These are built once when a recording is shown for review and never recreated afterward - only their label, pressed state, or displayed text is updated as playback proceeds, so focus is never disturbed by the passage of time. The current-time display is plain visible text, never a live-region announcement; hearing the position at all is something the user asks for explicitly, not something spoken automatically as playback runs.
 
 ## Configurable shortcuts
 
