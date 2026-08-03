@@ -26,6 +26,7 @@ import {
   finishRecordingSave,
   abortRecordingSave,
   getCaptureContext,
+  getContextAndMarkReported,
   getSpeechVoices,
   setSpeechVoice,
   setSpeechRate,
@@ -68,6 +69,7 @@ const shortcutDisplay = {
   screenshot: "Alt+Ctrl+Space",
   recordToggle: "Alt+Ctrl+R",
   descriptor: "Alt+Ctrl+D",
+  captureReadiness: "Alt+Ctrl+C",
 };
 
 // Diagnostics: plain visible text a user can navigate to when
@@ -77,6 +79,7 @@ const diagnostics = {
   screenshotShortcutStatus: "Not checked yet",
   recordingShortcutStatus: "Not checked yet",
   descriptorShortcutStatus: "Not checked yet",
+  captureReadinessShortcutStatus: "Not checked yet",
   lastGlobalShortcut: "None received yet",
   lastScreenshotResult: "None yet",
   lastDescriptorToggle: "None yet",
@@ -109,6 +112,7 @@ function renderDiagnostics() {
     screenshotShortcutStatus: "diag-screenshot-shortcut",
     recordingShortcutStatus: "diag-recording-shortcut",
     descriptorShortcutStatus: "diag-descriptor-shortcut",
+    captureReadinessShortcutStatus: "diag-capture-readiness-shortcut",
     lastGlobalShortcut: "diag-last-shortcut",
     lastScreenshotResult: "diag-last-screenshot",
     lastDescriptorToggle: "diag-last-descriptor",
@@ -397,6 +401,7 @@ function buildRecordingPlaybackControls(video) {
 
   const timeDisplay = document.createElement("p");
   timeDisplay.className = "playback-time";
+  timeDisplay.setAttribute("aria-hidden", "true");
   timeDisplay.textContent = "0 seconds of 0 seconds";
 
   container.append(playPauseButton, rewindButton, forwardButton, stopButton, announceButton, timeDisplay);
@@ -535,6 +540,11 @@ async function saveRecordingChunked(capture) {
       const end = Math.min(offset + RECORDING_CHUNK_BYTES, totalSize);
       const chunkBuffer = await blob.slice(offset, end).arrayBuffer();
       const chunkBase64 = arrayBufferToBase64(chunkBuffer);
+      // Explicit yield after the synchronous base64 conversion above -
+      // the most CPU-heavy synchronous JS work in this loop - so the
+      // browser/webview always gets a chance to process input and
+      // paint between chunks, not just at the IPC await below.
+      await new Promise((resolve) => setTimeout(resolve, 0));
       const totalSent = await appendRecordingChunk(sessionId, chunkBase64);
       chunkCount += 1;
       offset = end;
@@ -547,7 +557,7 @@ async function saveRecordingChunked(capture) {
     diagnostics.recordingFinalFileSize = `${finished.finalSize} bytes`;
     renderDiagnostics();
     logDebug(`saveRecordingChunked: finish_recording_save returned ${JSON.stringify(finished)}`);
-    return { ok: finished.ok, canceled: false };
+    return { ok: finished.ok, canceled: false, savedFileName: finished.savedFileName };
   } catch (error) {
     console.error("Chunked recording save error:", error);
     logDebug(`saveRecordingChunked: FAILED after ${chunkCount} chunks: ${error}`);
@@ -630,6 +640,9 @@ saveButton.addEventListener("click", async () => {
   const result = await performSave(capture);
 
   if (result.ok) {
+    if (result.savedFileName) {
+      capture.suggestedName = result.savedFileName;
+    }
     announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
     hideReview();
     addRecentCapture(capture);
@@ -687,6 +700,12 @@ function addRecentCapture(capture) {
   downloadAgainButton.addEventListener("click", async () => {
     const result = await performSave(capture);
     if (result.ok) {
+      if (result.savedFileName && result.savedFileName !== capture.suggestedName) {
+        capture.suggestedName = result.savedFileName;
+        heading.textContent = capture.suggestedName;
+        downloadAgainButton.textContent = `Save ${capture.suggestedName} again`;
+        removeButton.textContent = `Remove ${capture.suggestedName} from this list`;
+      }
       announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
     } else if (result.canceled) {
       announce("saveCanceled");
@@ -746,6 +765,15 @@ function announceScreenshotCaptured() {
 }
 
 async function captureScreenshotNative() {
+  if (isTauri && descriptorEnabled) {
+    try {
+      const context = await getContextAndMarkReported();
+      announceRaw(composeContextDescription(context), true);
+    } catch (error) {
+      console.error("Could not report descriptor context at capture time:", error);
+    }
+  }
+
   const dataBase64 = await nativeScreenshot();
   const blob = base64ToBlob(dataBase64, "image/png");
   announceScreenshotCaptured();
@@ -1123,6 +1151,16 @@ if (isTauri) {
     toggleDescriptor();
   });
 
+  onGlobalShortcut("captureReadiness", () => {
+    logDebug("app.js: global-shortcut-capture-readiness event received by JS listener");
+    diagnostics.lastGlobalShortcut = `Check Capture Readiness at ${nowText()}`;
+    renderDiagnostics();
+    // Deliberately does not call showMainWindow() or move focus -
+    // checkCaptureReadiness() evaluates whatever is actually the
+    // foreground window and announces through the normal channel.
+    checkCaptureReadiness();
+  });
+
   onDescriptorContextChanged((context) => {
     logDebug(`app.js: descriptor-context-changed received: app=${context.appName}, title=${context.windowTitle}`);
     diagnostics.lastDescriptorContext = `${context.appName} - ${context.windowTitle || "(no title)"} at ${nowText()}`;
@@ -1192,12 +1230,20 @@ async function initShortcutSettings() {
       actionName: "Toggle Capture Context Descriptor",
       messageName: "Capture Context Descriptor",
     },
+    captureReadiness: {
+      summaryLabel: document.getElementById("capture-readiness-shortcut-label"),
+      currentLabel: document.getElementById("capture-readiness-shortcut-current"),
+      changeButton: document.getElementById("capture-readiness-shortcut-change"),
+      actionName: "Check Capture Readiness",
+      messageName: "Check Capture Readiness",
+    },
   };
 
   const diagnosticsKeyForAction = {
     screenshot: "screenshotShortcutStatus",
     recordToggle: "recordingShortcutStatus",
     descriptor: "descriptorShortcutStatus",
+    captureReadiness: "captureReadinessShortcutStatus",
   };
 
   function applyBindings(bindings) {
@@ -1306,7 +1352,7 @@ async function initShortcutSettings() {
         const response = await resetShortcuts();
         applyBindings(response.bindings);
         reportStartupFailures(response.failures);
-        const message = `Shortcuts restored to defaults: Screenshot ${comboToDisplayText(response.bindings.screenshot)}, Recording ${comboToDisplayText(response.bindings.recordToggle)}, Capture Context Descriptor ${comboToDisplayText(response.bindings.descriptor)}.`;
+        const message = `Shortcuts restored to defaults: Screenshot ${comboToDisplayText(response.bindings.screenshot)}, Recording ${comboToDisplayText(response.bindings.recordToggle)}, Capture Context Descriptor ${comboToDisplayText(response.bindings.descriptor)}, Check Capture Readiness ${comboToDisplayText(response.bindings.captureReadiness)}.`;
         announceRaw(message);
         statusEl.textContent = message;
       } catch (error) {
@@ -1525,31 +1571,49 @@ function updateRateValueText(rate) {
  * screenshot target (the primary monitor), without altering anything -
  * an on-demand check the user requests, not automatic feedback.
  */
+function composeReadinessText(context) {
+  const parts = [`${context.appName}.`];
+  if (context.monitorNumber != null) parts.push(`Monitor ${context.monitorNumber}.`);
+  parts.push(`${context.state === "minimized" ? "Minimized." : `${context.state[0].toUpperCase()}${context.state.slice(1)}.`}`);
+
+  if (context.state !== "minimized") {
+    if (context.extendsBeyondMonitor) {
+      parts.push(`${context.appName} may extend outside the captured area. Maximize or reposition it before capturing.`);
+    } else if (context.fillsScreen) {
+      parts.push("The window fits entirely within the captured area.");
+    } else {
+      parts.push("The visible window appears to fit within the captured area.");
+    }
+  }
+
+  parts.push("Screenshot target: entire primary monitor.");
+  return parts.join(" ");
+}
+
+/**
+ * Reports whether the active window appears to fit within the current
+ * screenshot target, without altering anything. Always evaluates
+ * whatever is actually the foreground window at the moment this runs
+ * (get_capture_context uses GetForegroundWindow() fresh every call) -
+ * it only ever describes AccessibleScreenCapture itself if
+ * AccessibleScreenCapture genuinely is the foreground window, since
+ * this never raises or focuses the app first. Always announces
+ * through the normal channel (speech/notification when unfocused, the
+ * in-page live region when focused) as well as updating the visible
+ * text, so the global shortcut version - which may run while another
+ * application has focus - is just as useful as the button.
+ */
 async function checkCaptureReadiness() {
   const output = document.getElementById("capture-readiness-output");
-  if (!output) return;
 
   try {
     const context = await getCaptureContext();
-    const parts = [`${context.appName}.`];
-    if (context.monitorNumber != null) parts.push(`Monitor ${context.monitorNumber}.`);
-    parts.push(`${context.state === "minimized" ? "Minimized." : `${context.state[0].toUpperCase()}${context.state.slice(1)}.`}`);
-
-    if (context.state !== "minimized") {
-      if (context.extendsBeyondMonitor) {
-        parts.push(`${context.appName} may extend outside the captured area. Maximize or reposition it before capturing.`);
-      } else if (context.fillsScreen) {
-        parts.push("The window fits entirely within the captured area.");
-      } else {
-        parts.push("The visible window appears to fit within the captured area.");
-      }
-    }
-
-    parts.push("Screenshot target: entire primary monitor.");
-    output.textContent = parts.join(" ");
+    const text = composeReadinessText(context);
+    if (output) output.textContent = text;
+    announceRaw(text);
   } catch (error) {
     console.error("Could not check capture readiness:", error);
-    output.textContent = "Could not check capture readiness.";
+    if (output) output.textContent = "Could not check capture readiness.";
   }
 }
 

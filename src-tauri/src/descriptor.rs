@@ -39,6 +39,32 @@ impl Default for DescriptorState {
     }
 }
 
+/// Fetches the current foreground-window context immediately and
+/// records it as already-reported in the same dedup state the
+/// background poll loop uses, so the poll loop won't re-announce the
+/// same context moments later. Used at the exact moment a screenshot
+/// is captured (see app.js's captureScreenshotNative) rather than
+/// waiting for the next poll tick - recordings already get correctly-
+/// timed descriptor reports "for free" because the OS's own sharing
+/// picker keeps the true external window in focus for long enough
+/// that the poll loop catches it naturally; a screenshot is instant
+/// and doesn't have that luxury, so this reports the window at the
+/// moment that matters instead of relying on poll timing.
+#[tauri::command]
+pub fn get_context_and_mark_reported(
+    app: AppHandle,
+    state: State<DescriptorState>,
+) -> Result<crate::capture_context::CaptureContext, String> {
+    let context = get_capture_context()?;
+    let key = context_key(&context);
+    *state.last_key.lock().unwrap() = Some(key);
+    crate::debug_log::log(
+        &app,
+        &format!("descriptor: immediate report at capture time (app={})", context.app_name),
+    );
+    Ok(context)
+}
+
 #[tauri::command]
 pub fn get_descriptor_enabled(state: State<DescriptorState>) -> bool {
     state.enabled.load(Ordering::SeqCst)

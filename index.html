@@ -121,6 +121,10 @@
         <dt id="descriptor-shortcut-label">Alt+Ctrl+D</dt>
         <dd>Turn the Capture Context Descriptor on or off</dd>
       </div>
+      <div class="shortcut-row">
+        <dt id="capture-readiness-shortcut-label">Alt+Ctrl+C</dt>
+        <dd>Check capture readiness</dd>
+      </div>
     </dl>
     <p class="section-hint">Shortcuts are ignored while typing in a text field. Every action here is also available from an ordinary button.</p>
 
@@ -138,6 +142,10 @@
       <div class="shortcut-editor-row">
         <span>Toggle Capture Context Descriptor: <span id="descriptor-shortcut-current">Alt+Ctrl+D</span></span>
         <button type="button" id="descriptor-shortcut-change" class="secondary-button">Change Toggle Capture Context Descriptor shortcut</button>
+      </div>
+      <div class="shortcut-editor-row">
+        <span>Check Capture Readiness: <span id="capture-readiness-shortcut-current">Alt+Ctrl+C</span></span>
+        <button type="button" id="capture-readiness-shortcut-change" class="secondary-button">Change Check Capture Readiness shortcut</button>
       </div>
       <button type="button" id="shortcut-restore-defaults" class="secondary-button">Restore Default Shortcuts</button>
       <p id="shortcut-editor-status" role="status" aria-live="polite" class="section-hint"></p>
@@ -157,23 +165,27 @@
   <!-- ============ Output Settings (desktop only) ============ -->
   <section aria-labelledby="output-settings-heading" id="output-settings" hidden>
     <h2 id="output-settings-heading">Output Settings</h2>
-    <p class="section-hint">Windows toast notifications are a visual channel and are not guaranteed to be read by a screen reader. Native speech is the reliable spoken channel when AccessibleScreenCapture doesn't have focus - but real testing found that using it was followed by JAWS losing speech and needing a restart. The exact cause hasn't been confirmed yet, so speech defaults off until repeated testing confirms it's safe. Turn it on to help test it; turn it off immediately if JAWS stops responding, and restart JAWS. The two settings below are independent of each other.</p>
+    <p class="section-hint">Real testing found that using native speech was followed by JAWS losing speech and needing a restart. The exact cause hasn't been confirmed yet, so speech defaults off until repeated testing confirms it's safe. Turn it on to help test it; turn it off immediately if JAWS stops responding, and restart JAWS.</p>
     <label class="checkbox-option">
       <input type="checkbox" id="speak-outside-app-toggle">
       Speak status outside AccessibleScreenCapture
     </label>
+    <p class="section-hint">Enables native spoken announcements while another application has focus - the reliable spoken channel, independent of Windows notifications.</p>
     <label class="checkbox-option">
       <input type="checkbox" id="show-notifications-toggle" checked>
       Show Windows notifications
     </label>
+    <p class="section-hint">Displays a Windows toast notification independently of speech. A toast is a visual channel and is not guaranteed to be read by a screen reader - it supplements speech, it doesn't substitute for it.</p>
 
     <h3>Speech voice and rate</h3>
     <label for="speech-voice-select">Speech voice</label>
+    <p class="section-hint">Used only for spoken status outside AccessibleScreenCapture - has no effect on Windows notifications or on your screen reader's own voice.</p>
     <select id="speech-voice-select">
       <option value="">Use Windows default voice</option>
     </select>
 
     <label for="speech-rate-slider">Speech rate</label>
+    <p class="section-hint">Controls how fast the selected speech voice speaks.</p>
     <input type="range" id="speech-rate-slider" min="-10" max="10" step="1" value="2">
     <p id="speech-rate-value" class="section-hint">Speech rate: 2, faster</p>
 
@@ -198,6 +210,10 @@
       <div class="shortcut-row">
         <dt>Capture Context Descriptor shortcut</dt>
         <dd id="diag-descriptor-shortcut">Not checked yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Check Capture Readiness shortcut</dt>
+        <dd id="diag-capture-readiness-shortcut">Not checked yet</dd>
       </div>
       <div class="shortcut-row">
         <dt>Last global shortcut received</dt>

@@ -48,6 +48,16 @@ export async function getCaptureContext() {
   return invoke("get_capture_context");
 }
 
+/**
+ * Fetches the current foreground-window context immediately and marks
+ * it as already-reported to the descriptor's background watcher, so
+ * it won't announce the same context again moments later. Used at the
+ * exact moment a screenshot is captured.
+ */
+export async function getContextAndMarkReported() {
+  return invoke("get_context_and_mark_reported");
+}
+
 export async function getDescriptorEnabled() {
   return invoke("get_descriptor_enabled");
 }
@@ -93,6 +103,7 @@ export async function onGlobalShortcut(action, handler) {
     screenshot: "global-shortcut-screenshot",
     recordToggle: "global-shortcut-record-toggle",
     descriptor: "global-shortcut-descriptor",
+    captureReadiness: "global-shortcut-capture-readiness",
   };
   await window.__TAURI__.event.listen(eventNames[action], handler);
 }

@@ -73,6 +73,8 @@ pub struct FinishSaveResult {
     ok: bool,
     #[serde(rename = "finalSize")]
     final_size: u64,
+    #[serde(rename = "savedFileName")]
+    saved_file_name: Option<String>,
 }
 
 #[tauri::command]
@@ -237,6 +239,7 @@ pub fn finish_recording_save(
     Ok(FinishSaveResult {
         ok: true,
         final_size: actual_size,
+        saved_file_name: session.path.file_name().map(|n| n.to_string_lossy().to_string()),
     })
 }
 

@@ -53,6 +53,7 @@ static LAST_DESCRIPTOR_SPEECH: Mutex<Option<Instant>> = Mutex::new(None);
 static CURRENT_RATE: AtomicI32 = AtomicI32::new(DEFAULT_RATE);
 static CURRENT_VOICE_ID: Mutex<Option<String>> = Mutex::new(None); // None = Windows default voice
 static WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
+static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
 
 struct SpeechRequest {
     text: String,
@@ -73,6 +74,17 @@ pub fn mark_save_dialog_open(app: &tauri::AppHandle, open: bool) {
 /// will return an error rather than panic, and every other feature in
 /// the app is unaffected either way.
 pub fn init_speech_worker(app: tauri::AppHandle) {
+    // Idempotent: safe to call every time the user turns speech on,
+    // or unconditionally at startup - COM/SAPI is only actually
+    // initialized the first time this genuinely runs. Avoids spinning
+    // up a worker thread and an ISpVoice at all when speech has never
+    // been turned on, per the "avoid unnecessary COM initialization"
+    // requirement.
+    if WORKER_STARTED.swap(true, Ordering::SeqCst) {
+        crate::debug_log::log(&app, "native_speech: init_speech_worker called again, reusing existing worker");
+        return;
+    }
+
     let (tx, rx) = mpsc::channel::<SpeechRequest>();
     let _ = SPEECH_SENDER.set(tx);
 

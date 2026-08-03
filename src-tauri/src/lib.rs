@@ -27,7 +27,7 @@ mod recording_save;
 
 use capture_context::get_capture_context;
 use debug_log::{clear_debug_log, get_debug_log, log_debug_message};
-use descriptor::{get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
+use descriptor::{get_context_and_mark_reported, get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
 use native_speech::{get_speech_voices, speak_status, test_speech_voice};
 use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice};
 use recording_save::{
@@ -48,14 +48,17 @@ enum ShortcutAction {
     RecordToggle,
     #[serde(rename = "descriptor")]
     Descriptor,
+    #[serde(rename = "captureReadiness")]
+    CaptureReadiness,
 }
 
 impl ShortcutAction {
-    fn all() -> [ShortcutAction; 3] {
+    fn all() -> [ShortcutAction; 4] {
         [
             ShortcutAction::Screenshot,
             ShortcutAction::RecordToggle,
             ShortcutAction::Descriptor,
+            ShortcutAction::CaptureReadiness,
         ]
     }
 
@@ -64,6 +67,7 @@ impl ShortcutAction {
             ShortcutAction::Screenshot => "ctrl+alt+space",
             ShortcutAction::RecordToggle => "ctrl+alt+r",
             ShortcutAction::Descriptor => "ctrl+alt+d",
+            ShortcutAction::CaptureReadiness => "ctrl+alt+c",
         }
     }
 
@@ -74,6 +78,7 @@ impl ShortcutAction {
             ShortcutAction::Screenshot => "screenshot",
             ShortcutAction::RecordToggle => "recordToggle",
             ShortcutAction::Descriptor => "descriptor",
+            ShortcutAction::CaptureReadiness => "captureReadiness",
         }
     }
 
@@ -82,6 +87,7 @@ impl ShortcutAction {
             "screenshot" => Ok(ShortcutAction::Screenshot),
             "recordToggle" => Ok(ShortcutAction::RecordToggle),
             "descriptor" => Ok(ShortcutAction::Descriptor),
+            "captureReadiness" => Ok(ShortcutAction::CaptureReadiness),
             other => Err(format!("Unknown shortcut action: {other}")),
         }
     }
@@ -94,10 +100,16 @@ struct ShortcutBindings {
     record_toggle: String,
     #[serde(default = "default_descriptor_combo")]
     descriptor: String,
+    #[serde(rename = "captureReadiness", default = "default_capture_readiness_combo")]
+    capture_readiness: String,
 }
 
 fn default_descriptor_combo() -> String {
     ShortcutAction::Descriptor.default_combo().to_string()
+}
+
+fn default_capture_readiness_combo() -> String {
+    ShortcutAction::CaptureReadiness.default_combo().to_string()
 }
 
 impl Default for ShortcutBindings {
@@ -106,6 +118,7 @@ impl Default for ShortcutBindings {
             screenshot: ShortcutAction::Screenshot.default_combo().to_string(),
             record_toggle: ShortcutAction::RecordToggle.default_combo().to_string(),
             descriptor: ShortcutAction::Descriptor.default_combo().to_string(),
+            capture_readiness: ShortcutAction::CaptureReadiness.default_combo().to_string(),
         }
     }
 }
@@ -116,6 +129,7 @@ impl ShortcutBindings {
             ShortcutAction::Screenshot => &self.screenshot,
             ShortcutAction::RecordToggle => &self.record_toggle,
             ShortcutAction::Descriptor => &self.descriptor,
+            ShortcutAction::CaptureReadiness => &self.capture_readiness,
         }
     }
 
@@ -124,6 +138,7 @@ impl ShortcutBindings {
             ShortcutAction::Screenshot => self.screenshot = combo,
             ShortcutAction::RecordToggle => self.record_toggle = combo,
             ShortcutAction::Descriptor => self.descriptor = combo,
+            ShortcutAction::CaptureReadiness => self.capture_readiness = combo,
         }
     }
 }
@@ -201,6 +216,7 @@ fn action_event_name(action: ShortcutAction) -> &'static str {
         ShortcutAction::Screenshot => "global-shortcut-screenshot",
         ShortcutAction::RecordToggle => "global-shortcut-record-toggle",
         ShortcutAction::Descriptor => "global-shortcut-descriptor",
+        ShortcutAction::CaptureReadiness => "global-shortcut-capture-readiness",
     }
 }
 
@@ -377,6 +393,8 @@ fn take_native_screenshot() -> Result<String, String> {
 struct SaveResult {
     ok: bool,
     canceled: bool,
+    #[serde(rename = "savedFileName")]
+    saved_file_name: Option<String>,
 }
 
 /// Opens a native "Save As" dialog and writes the given base64-encoded
@@ -476,9 +494,11 @@ async fn save_capture_native(
                         &app,
                         &format!("save_capture_native: write OK, file exists on disk: {exists}"),
                     );
+                    let saved_file_name = path.file_name().map(|n| n.to_string_lossy().to_string());
                     Ok(SaveResult {
                         ok: true,
                         canceled: false,
+                        saved_file_name,
                     })
                 }
                 Err(e) => {
@@ -493,6 +513,7 @@ async fn save_capture_native(
             Ok(SaveResult {
                 ok: false,
                 canceled: true,
+                saved_file_name: None,
             })
         }
     }
@@ -590,7 +611,6 @@ pub fn run() {
             }
 
             debug_log::log(&handle, "=== app started, version 1.0.6, AUMID set ===");
-            native_speech::init_speech_worker(handle.clone());
             output_settings::apply_persisted_speech_settings(&handle);
             debug_log::log(&handle, "=== native speech worker starting ===");
 
@@ -669,6 +689,7 @@ pub fn run() {
             get_capture_context,
             get_descriptor_enabled,
             set_descriptor_enabled,
+            get_context_and_mark_reported,
             get_debug_log,
             clear_debug_log,
             log_debug_message,

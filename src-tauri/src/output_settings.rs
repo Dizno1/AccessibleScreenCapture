@@ -89,6 +89,12 @@ pub fn apply_persisted_speech_settings(app: &AppHandle) {
     let settings = load(app);
     native_speech::apply_voice(settings.speech_voice_id);
     native_speech::apply_rate(settings.speech_rate);
+    if settings.speak_outside_app {
+        // Only spin up SAPI/COM at startup if speech was left on last
+        // time - avoids unnecessary COM initialization for the (now
+        // default) case where it's off.
+        native_speech::init_speech_worker(app.clone());
+    }
 }
 
 #[tauri::command]
@@ -101,6 +107,12 @@ pub fn set_speak_outside_app(app: AppHandle, enabled: bool) -> Result<bool, Stri
     let mut settings = load(&app);
     settings.speak_outside_app = enabled;
     save(&app, &settings)?;
+    if enabled {
+        // init_speech_worker is idempotent - this reuses the existing
+        // worker if one is already running, and only actually starts
+        // SAPI/COM the first time speech is ever turned on.
+        native_speech::init_speech_worker(app);
+    }
     Ok(settings.speak_outside_app)
 }
 
