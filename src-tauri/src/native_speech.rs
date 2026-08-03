@@ -52,7 +52,7 @@ pub fn init_speech_worker() {
             let _ = voice.Speak(
                 &BSTR::from(text.as_str()),
                 flags,
-                std::ptr::null_mut::<u32>(),
+                Some(std::ptr::null_mut::<u32>()),
             );
         }
     });
