@@ -25,9 +25,32 @@ jobs:
         with:
           node-version: 22
 
+      - name: Generate Cargo lockfile and dependency diagnostics
+        if: github.event_name == 'workflow_dispatch'
+        shell: pwsh
+        run: |
+          cargo generate-lockfile --manifest-path src-tauri/Cargo.toml
+
+          "Resolved dependency tree for zune-jpeg:" | Out-File -FilePath dependency-resolution.txt -Encoding utf8
+          cargo tree --manifest-path src-tauri/Cargo.toml -i zune-jpeg 2>&1 | Tee-Object -FilePath dependency-resolution.txt -Append
+
+          "" | Out-File -FilePath dependency-resolution.txt -Append -Encoding utf8
+          "Resolved dependency tree for image:" | Out-File -FilePath dependency-resolution.txt -Append -Encoding utf8
+          cargo tree --manifest-path src-tauri/Cargo.toml -i image 2>&1 | Tee-Object -FilePath dependency-resolution.txt -Append
+
       - name: Build Windows application for manual run
         if: github.event_name == 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
+
+      - name: Upload Cargo lockfile diagnostics
+        if: always() && github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: AccessibleScreenCapture-Cargo-Lock-Diagnostics
+          path: |
+            src-tauri/Cargo.lock
+            dependency-resolution.txt
+          if-no-files-found: warn
 
       - name: Commit Cargo.lock now that this resolution built successfully
         # Runs only after the build step above succeeds - a step is
