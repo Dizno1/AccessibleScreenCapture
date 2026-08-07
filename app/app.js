@@ -889,7 +889,12 @@ async function captureScreenshotNative() {
 
   const dataBase64 = await nativeScreenshot();
   const blob = base64ToBlob(dataBase64, "image/png");
+  // announceScreenshotCaptured() must run first - it checks whether
+  // the app currently has focus to decide between the short in-app
+  // confirmation and the longer unfocused one, and showMainWindow()
+  // below would make that check always see "focused" if called first.
   announceScreenshotCaptured();
+  if (isTauri) await showMainWindow();
   showReview({
     kind: "screenshot",
     blob,
@@ -1060,17 +1065,26 @@ async function startRecording() {
   diagnostics.recordingRequestReceived = `Yes at ${nowText()}`;
   renderDiagnostics();
 
-  // Immediate feedback before the sharing dialog even appears - the
-  // global shortcut previously gave no indication anything happened
-  // until the user returned to the app and saw (or didn't see) the
-  // dialog themselves.
-  announceRaw("Recording requested. Complete the screen sharing dialog to begin.");
-
+  // One combined announcement rather than several separate ones in
+  // quick succession - covers what Check Capture Readiness already
+  // knows how to report (target, system audio, microphone) plus the
+  // sharing-dialog guidance, built from the same state the rest of
+  // the app already tracks (systemAudioOption/microphoneOption), not
+  // hard-coded independently of it.
+  const micLabel = microphoneOption.checked
+    ? microphoneSelect.options[microphoneSelect.selectedIndex]?.textContent || "Default microphone"
+    : "Off";
+  const readinessParts = [
+    "Recording requested.",
+    "Primary monitor.",
+    `System audio ${systemAudioOption.checked ? "on" : "off"}.`,
+    `Microphone: ${micLabel}.`,
+  ];
   if (systemAudioOption.checked) {
-    announceRaw(
-      'Windows will ask whether to share system audio. Turn on "Also share system audio" to include JAWS and other computer audio.'
-    );
+    readinessParts.push('Windows will separately ask to share system audio - turn on "Also share system audio" to include it.');
   }
+  readinessParts.push("Complete the screen sharing dialog to begin.");
+  announceRaw(readinessParts.join(" "));
 
   let displayStream = null;
   let micStream = null;
@@ -1129,7 +1143,7 @@ async function startRecording() {
       if (event.data && event.data.size > 0) recordingChunks.push(event.data);
     });
 
-    activeRecorder.addEventListener("stop", () => {
+    activeRecorder.addEventListener("stop", async () => {
       const recorderMimeType = activeRecorder?.mimeType || "video/webm";
       const blob = new Blob(recordingChunks, { type: recorderMimeType });
       // If the recording was stopped while still paused, count that
@@ -1148,6 +1162,18 @@ async function startRecording() {
       pauseStartedAt = null;
       hidePauseResumeButton();
       setWorkflowLocked(false);
+
+      // Bring the app to the foreground (a no-op if it's already
+      // focused) before setting any DOM focus - a DOM .focus() call
+      // inside a backgrounded native window doesn't produce an OS-
+      // level focus event a screen reader acts on, which is the most
+      // likely reason focus landing on Review Capture was unreliable
+      // when a recording was stopped via the global shortcut from
+      // another application. No render-synchronization delay is
+      // needed beyond this: showReview() builds the review DOM and
+      // calls .focus() synchronously in the same call, and the
+      // browser processes DOM mutations before that focus call runs.
+      if (isTauri) await showMainWindow();
 
       if (blob.size === 0) {
         announce("recordingFailed");
