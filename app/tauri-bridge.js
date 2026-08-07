@@ -104,6 +104,7 @@ export async function onGlobalShortcut(action, handler) {
     recordToggle: "global-shortcut-record-toggle",
     descriptor: "global-shortcut-descriptor",
     captureReadiness: "global-shortcut-capture-readiness",
+    pauseResumeRecording: "global-shortcut-pause-resume-recording",
   };
   await window.__TAURI__.event.listen(eventNames[action], handler);
 }

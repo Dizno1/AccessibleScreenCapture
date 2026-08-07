@@ -45,6 +45,7 @@ const screenshotControls = document.getElementById("screenshot-controls");
 const screenshotButton = document.getElementById("screenshot-button");
 const recordingControls = document.getElementById("recording-controls");
 const recordToggleButton = document.getElementById("record-toggle-button");
+const pauseResumeButton = document.getElementById("pause-resume-button");
 const reviewSection = document.getElementById("review-section");
 const reviewHeading = document.getElementById("review-heading");
 const reviewPreview = document.getElementById("review-preview");
@@ -61,6 +62,13 @@ let activeRecorder = null;
 let activeStreams = [];
 let recordingChunks = [];
 let recordingStartTime = 0;
+// Tracks time spent paused so the final duration (computed from wall-
+// clock start/stop) excludes it. Not a second timer architecture -
+// just an accumulator subtracted from the existing single duration
+// calculation at stop time, since WebM's actual embedded duration
+// isn't something this app parses.
+let pausedDurationMs = 0;
+let pauseStartedAt = null;
 let activeAudioContext = null;
 let captureCounter = 0;
 let descriptorEnabled = false;
@@ -70,6 +78,7 @@ const shortcutDisplay = {
   recordToggle: "Alt+Ctrl+R",
   descriptor: "Alt+Ctrl+D",
   captureReadiness: "Alt+Ctrl+C",
+  pauseResumeRecording: "Alt+Ctrl+P",
 };
 
 // Diagnostics: plain visible text a user can navigate to when
@@ -101,6 +110,8 @@ const diagnostics = {
   recordingFinalFileSize: "N/A",
   lastDescriptorContext: "None yet",
   pendingCaptureState: "Empty",
+  lastPauseResumeAction: "None yet",
+  pauseResumeShortcutStatus: "Not checked yet",
 };
 
 function nowText() {
@@ -134,6 +145,8 @@ function renderDiagnostics() {
     recordingFinalFileSize: "diag-final-size",
     lastDescriptorContext: "diag-descriptor-context",
     pendingCaptureState: "diag-pending-state",
+    lastPauseResumeAction: "diag-pause-resume-action",
+    pauseResumeShortcutStatus: "diag-pause-resume-shortcut",
   };
   for (const [key, id] of Object.entries(ids)) {
     const el = document.getElementById(id);
@@ -180,6 +193,106 @@ function renderRecordToggleButton() {
   const label = isRecording ? "Stop Recording" : "Start Recording";
   recordToggleButton.innerHTML = `${label} <span class="shortcut-hint" id="record-toggle-shortcut-hint">${shortcutDisplay.recordToggle}</span>`;
   recordToggleButton.setAttribute("aria-pressed", isRecording ? "true" : "false");
+}
+
+function renderPauseResumeButton() {
+  if (!pauseResumeButton) return;
+  const paused = activeRecorder?.state === "paused";
+  const label = paused ? "Resume Recording" : "Pause Recording";
+  pauseResumeButton.innerHTML = `${label} <span class="shortcut-hint" id="pause-resume-shortcut-hint">${shortcutDisplay.pauseResumeRecording}</span>`;
+  pauseResumeButton.setAttribute("aria-pressed", paused ? "true" : "false");
+}
+
+function showPauseResumeButton() {
+  if (!pauseResumeButton) return;
+  pauseResumeButton.hidden = false;
+  pauseResumeButton.disabled = false;
+  renderPauseResumeButton();
+}
+
+function hidePauseResumeButton() {
+  if (!pauseResumeButton) return;
+  pauseResumeButton.hidden = true;
+  pauseResumeButton.disabled = true;
+  renderPauseResumeButton();
+}
+
+/**
+ * Pause/resume use MediaRecorder's own state ("inactive" / "recording"
+ * / "paused") as the sole source of truth - deliberately no separate
+ * isPaused flag that could drift out of sync with what the recorder
+ * actually is doing. The display stream and its tracks are never
+ * touched here, so the authorized screen-sharing session stays open
+ * the whole time - only the recorder itself pauses.
+ */
+function pauseRecording() {
+  if (!activeRecorder || activeRecorder.state === "inactive") {
+    logDebug("pauseRecording: no active recorder");
+    announce("noRecordingActive");
+    return;
+  }
+  if (activeRecorder.state === "paused") {
+    logDebug("pauseRecording: already paused, ignoring");
+    return;
+  }
+
+  logDebug("pauseRecording: requested");
+  try {
+    activeRecorder.pause();
+    pauseStartedAt = Date.now();
+    logDebug("pauseRecording: MediaRecorder paused");
+    diagnostics.lastPauseResumeAction = `Paused at ${nowText()}`;
+    renderDiagnostics();
+    renderPauseResumeButton();
+    announce("recordingPaused");
+  } catch (error) {
+    console.error("Could not pause recording:", error);
+    logDebug(`pauseRecording: FAILED: ${error}`);
+    diagnostics.lastPauseResumeAction = `Pause failed at ${nowText()}`;
+    renderDiagnostics();
+    announce("recordingPauseFailed");
+  }
+}
+
+function resumeRecording() {
+  if (!activeRecorder || activeRecorder.state === "inactive") {
+    logDebug("resumeRecording: no active recorder");
+    announce("noRecordingActive");
+    return;
+  }
+  if (activeRecorder.state === "recording") {
+    logDebug("resumeRecording: already recording, ignoring");
+    return;
+  }
+
+  logDebug("resumeRecording: requested");
+  try {
+    activeRecorder.resume();
+    if (pauseStartedAt) {
+      pausedDurationMs += Date.now() - pauseStartedAt;
+      pauseStartedAt = null;
+    }
+    logDebug("resumeRecording: MediaRecorder resumed");
+    diagnostics.lastPauseResumeAction = `Resumed at ${nowText()}`;
+    renderDiagnostics();
+    renderPauseResumeButton();
+    announce("recordingResumed");
+  } catch (error) {
+    console.error("Could not resume recording:", error);
+    logDebug(`resumeRecording: FAILED: ${error}`);
+    diagnostics.lastPauseResumeAction = `Resume failed at ${nowText()}`;
+    renderDiagnostics();
+    announce("recordingResumeFailed");
+  }
+}
+
+function togglePauseResume() {
+  if (!activeRecorder || activeRecorder.state === "inactive") {
+    announce("noRecordingActive");
+    return;
+  }
+  if (activeRecorder.state === "paused") resumeRecording();
+  else pauseRecording();
 }
 
 renderScreenshotHint();
@@ -1019,7 +1132,11 @@ async function startRecording() {
     activeRecorder.addEventListener("stop", () => {
       const recorderMimeType = activeRecorder?.mimeType || "video/webm";
       const blob = new Blob(recordingChunks, { type: recorderMimeType });
-      const durationSeconds = (Date.now() - recordingStartTime) / 1000;
+      // If the recording was stopped while still paused, count that
+      // final open-ended pause too, not just completed pause/resume
+      // cycles.
+      const finalPausedMs = pauseStartedAt ? pausedDurationMs + (Date.now() - pauseStartedAt) : pausedDurationMs;
+      const durationSeconds = (Date.now() - recordingStartTime - finalPausedMs) / 1000;
 
       diagnostics.recordingBlobSize = `${blob.size} bytes`;
       diagnostics.recordingMimeType = recorderMimeType;
@@ -1028,6 +1145,8 @@ async function startRecording() {
       stopActiveStreams();
       activeRecorder = null;
       recordingChunks = [];
+      pauseStartedAt = null;
+      hidePauseResumeButton();
       setWorkflowLocked(false);
 
       if (blob.size === 0) {
@@ -1050,9 +1169,12 @@ async function startRecording() {
 
     activeRecorder.start();
     recordingStartTime = Date.now();
+    pausedDurationMs = 0;
+    pauseStartedAt = null;
     isRecording = true;
     recordToggleButton.disabled = false;
     renderRecordToggleButton();
+    showPauseResumeButton();
     diagnostics.recordingStartedDiag = `Yes at ${nowText()}`;
     renderDiagnostics();
     announce("recordingStarted");
@@ -1100,6 +1222,7 @@ function toggleRecording() {
 }
 
 recordToggleButton.addEventListener("click", toggleRecording);
+if (pauseResumeButton) pauseResumeButton.addEventListener("click", togglePauseResume);
 registerShortcut({ ctrl: true, alt: true, key: "r", action: toggleRecording });
 
 if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
@@ -1159,6 +1282,16 @@ if (isTauri) {
     // checkCaptureReadiness() evaluates whatever is actually the
     // foreground window and announces through the normal channel.
     checkCaptureReadiness();
+  });
+
+  onGlobalShortcut("pauseResumeRecording", () => {
+    logDebug("app.js: global-shortcut-pause-resume-recording event received by JS listener");
+    diagnostics.lastGlobalShortcut = `Pause or Resume Recording at ${nowText()}`;
+    renderDiagnostics();
+    // Never calls showMainWindow() or moves focus - pausing/resuming
+    // doesn't need the window visible, unlike starting a brand new
+    // recording, which needs the sharing picker to actually appear.
+    togglePauseResume();
   });
 
   onDescriptorContextChanged((context) => {
@@ -1237,6 +1370,13 @@ async function initShortcutSettings() {
       actionName: "Check Capture Readiness",
       messageName: "Check Capture Readiness",
     },
+    pauseResumeRecording: {
+      summaryLabel: document.getElementById("pause-resume-shortcut-label"),
+      currentLabel: document.getElementById("pause-resume-shortcut-current"),
+      changeButton: document.getElementById("pause-resume-shortcut-change"),
+      actionName: "Pause or Resume Recording",
+      messageName: "Pause or Resume Recording",
+    },
   };
 
   const diagnosticsKeyForAction = {
@@ -1244,6 +1384,7 @@ async function initShortcutSettings() {
     recordToggle: "recordingShortcutStatus",
     descriptor: "descriptorShortcutStatus",
     captureReadiness: "captureReadinessShortcutStatus",
+    pauseResumeRecording: "pauseResumeShortcutStatus",
   };
 
   function applyBindings(bindings) {
@@ -1352,7 +1493,7 @@ async function initShortcutSettings() {
         const response = await resetShortcuts();
         applyBindings(response.bindings);
         reportStartupFailures(response.failures);
-        const message = `Shortcuts restored to defaults: Screenshot ${comboToDisplayText(response.bindings.screenshot)}, Recording ${comboToDisplayText(response.bindings.recordToggle)}, Capture Context Descriptor ${comboToDisplayText(response.bindings.descriptor)}, Check Capture Readiness ${comboToDisplayText(response.bindings.captureReadiness)}.`;
+        const message = `Shortcuts restored to defaults: Screenshot ${comboToDisplayText(response.bindings.screenshot)}, Recording ${comboToDisplayText(response.bindings.recordToggle)}, Capture Context Descriptor ${comboToDisplayText(response.bindings.descriptor)}, Check Capture Readiness ${comboToDisplayText(response.bindings.captureReadiness)}, Pause or Resume Recording ${comboToDisplayText(response.bindings.pauseResumeRecording)}.`;
         announceRaw(message);
         statusEl.textContent = message;
       } catch (error) {

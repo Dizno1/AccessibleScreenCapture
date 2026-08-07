@@ -50,15 +50,18 @@ enum ShortcutAction {
     Descriptor,
     #[serde(rename = "captureReadiness")]
     CaptureReadiness,
+    #[serde(rename = "pauseResumeRecording")]
+    PauseResumeRecording,
 }
 
 impl ShortcutAction {
-    fn all() -> [ShortcutAction; 4] {
+    fn all() -> [ShortcutAction; 5] {
         [
             ShortcutAction::Screenshot,
             ShortcutAction::RecordToggle,
             ShortcutAction::Descriptor,
             ShortcutAction::CaptureReadiness,
+            ShortcutAction::PauseResumeRecording,
         ]
     }
 
@@ -68,6 +71,7 @@ impl ShortcutAction {
             ShortcutAction::RecordToggle => "ctrl+alt+r",
             ShortcutAction::Descriptor => "ctrl+alt+d",
             ShortcutAction::CaptureReadiness => "ctrl+alt+c",
+            ShortcutAction::PauseResumeRecording => "ctrl+alt+p",
         }
     }
 
@@ -79,6 +83,7 @@ impl ShortcutAction {
             ShortcutAction::RecordToggle => "recordToggle",
             ShortcutAction::Descriptor => "descriptor",
             ShortcutAction::CaptureReadiness => "captureReadiness",
+            ShortcutAction::PauseResumeRecording => "pauseResumeRecording",
         }
     }
 
@@ -88,6 +93,7 @@ impl ShortcutAction {
             "recordToggle" => Ok(ShortcutAction::RecordToggle),
             "descriptor" => Ok(ShortcutAction::Descriptor),
             "captureReadiness" => Ok(ShortcutAction::CaptureReadiness),
+            "pauseResumeRecording" => Ok(ShortcutAction::PauseResumeRecording),
             other => Err(format!("Unknown shortcut action: {other}")),
         }
     }
@@ -102,6 +108,8 @@ struct ShortcutBindings {
     descriptor: String,
     #[serde(rename = "captureReadiness", default = "default_capture_readiness_combo")]
     capture_readiness: String,
+    #[serde(rename = "pauseResumeRecording", default = "default_pause_resume_combo")]
+    pause_resume_recording: String,
 }
 
 fn default_descriptor_combo() -> String {
@@ -112,6 +120,10 @@ fn default_capture_readiness_combo() -> String {
     ShortcutAction::CaptureReadiness.default_combo().to_string()
 }
 
+fn default_pause_resume_combo() -> String {
+    ShortcutAction::PauseResumeRecording.default_combo().to_string()
+}
+
 impl Default for ShortcutBindings {
     fn default() -> Self {
         ShortcutBindings {
@@ -119,6 +131,7 @@ impl Default for ShortcutBindings {
             record_toggle: ShortcutAction::RecordToggle.default_combo().to_string(),
             descriptor: ShortcutAction::Descriptor.default_combo().to_string(),
             capture_readiness: ShortcutAction::CaptureReadiness.default_combo().to_string(),
+            pause_resume_recording: ShortcutAction::PauseResumeRecording.default_combo().to_string(),
         }
     }
 }
@@ -130,6 +143,7 @@ impl ShortcutBindings {
             ShortcutAction::RecordToggle => &self.record_toggle,
             ShortcutAction::Descriptor => &self.descriptor,
             ShortcutAction::CaptureReadiness => &self.capture_readiness,
+            ShortcutAction::PauseResumeRecording => &self.pause_resume_recording,
         }
     }
 
@@ -139,6 +153,7 @@ impl ShortcutBindings {
             ShortcutAction::RecordToggle => self.record_toggle = combo,
             ShortcutAction::Descriptor => self.descriptor = combo,
             ShortcutAction::CaptureReadiness => self.capture_readiness = combo,
+            ShortcutAction::PauseResumeRecording => self.pause_resume_recording = combo,
         }
     }
 }
@@ -217,6 +232,7 @@ fn action_event_name(action: ShortcutAction) -> &'static str {
         ShortcutAction::RecordToggle => "global-shortcut-record-toggle",
         ShortcutAction::Descriptor => "global-shortcut-descriptor",
         ShortcutAction::CaptureReadiness => "global-shortcut-capture-readiness",
+        ShortcutAction::PauseResumeRecording => "global-shortcut-pause-resume-recording",
     }
 }
 

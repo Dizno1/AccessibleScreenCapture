@@ -75,6 +75,9 @@
       <button type="button" id="record-toggle-button" class="primary-button" aria-pressed="false">
         Start Recording <span class="shortcut-hint" id="record-toggle-shortcut-hint">Alt+Ctrl+R</span>
       </button>
+      <button type="button" id="pause-resume-button" class="secondary-button" aria-pressed="false" hidden disabled>
+        Pause Recording <span class="shortcut-hint" id="pause-resume-shortcut-hint">Alt+Ctrl+P</span>
+      </button>
     </div>
 
     <label class="checkbox-option">
@@ -125,6 +128,10 @@
         <dt id="capture-readiness-shortcut-label">Alt+Ctrl+C</dt>
         <dd>Check capture readiness</dd>
       </div>
+      <div class="shortcut-row">
+        <dt id="pause-resume-shortcut-label">Alt+Ctrl+P</dt>
+        <dd>Pause or resume the active recording</dd>
+      </div>
     </dl>
     <p class="section-hint">Shortcuts are ignored while typing in a text field. Every action here is also available from an ordinary button.</p>
 
@@ -146,6 +153,10 @@
       <div class="shortcut-editor-row">
         <span>Check Capture Readiness: <span id="capture-readiness-shortcut-current">Alt+Ctrl+C</span></span>
         <button type="button" id="capture-readiness-shortcut-change" class="secondary-button">Change Check Capture Readiness shortcut</button>
+      </div>
+      <div class="shortcut-editor-row">
+        <span>Pause or Resume Recording: <span id="pause-resume-shortcut-current">Alt+Ctrl+P</span></span>
+        <button type="button" id="pause-resume-shortcut-change" class="secondary-button">Change Pause or Resume Recording shortcut</button>
       </div>
       <button type="button" id="shortcut-restore-defaults" class="secondary-button">Restore Default Shortcuts</button>
       <p id="shortcut-editor-status" role="status" aria-live="polite" class="section-hint"></p>
@@ -214,6 +225,14 @@
       <div class="shortcut-row">
         <dt>Check Capture Readiness shortcut</dt>
         <dd id="diag-capture-readiness-shortcut">Not checked yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Pause or Resume Recording shortcut</dt>
+        <dd id="diag-pause-resume-shortcut">Not checked yet</dd>
+      </div>
+      <div class="shortcut-row">
+        <dt>Last pause/resume action</dt>
+        <dd id="diag-pause-resume-action">None yet</dd>
       </div>
       <div class="shortcut-row">
         <dt>Last global shortcut received</dt>
