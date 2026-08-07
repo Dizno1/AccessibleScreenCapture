@@ -29,6 +29,26 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
 
+      - name: Commit Cargo.lock now that this resolution built successfully
+        # Runs only after the build step above succeeds - a step is
+        # skipped by default if an earlier step in the job failed, so
+        # a dependency resolution that didn't actually build is never
+        # the one that gets locked in for future runs. src-tauri/Cargo.lock
+        # exists on disk at this point regardless (cargo/tauri-action
+        # generate it as a normal side effect of building) - this step
+        # only adds committing it back to the repository, so the next
+        # run reuses these exact versions instead of resolving fresh.
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain src-tauri/Cargo.lock)" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add src-tauri/Cargo.lock
+            git commit -m "Add/update Cargo.lock for reproducible builds [skip ci]"
+            git push
+          fi
+
       - name: Upload Windows installers
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
