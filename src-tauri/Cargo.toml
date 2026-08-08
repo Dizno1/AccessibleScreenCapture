@@ -46,4 +46,16 @@ windows = { version = "0.58", features = [
 # type from one version's API surface into the other, which it
 # deliberately does not.
 windows-capture = "2"
+# WASAPI loopback for native system audio (src-tauri/src/native_audio.rs).
+# Like windows-capture above, this carries its own internal windows-rs
+# dependency, resolved by Cargo as a separate compiled crate from our
+# own pinned windows = "0.58" - native_audio.rs never passes a type
+# between the two, so there's no version boundary to conflict.
+# 0.23.0 is the real current version (confirmed by resolving the
+# previous >=0.4,<1.0 range) - pinned exactly rather than left open.
+# native_audio.rs's API calls were corrected to match 0.23.0's actual
+# API this round (DeviceEnumerator-based device discovery,
+# get_next_packet_size/read_from_device for buffer reads) rather than
+# the reconstructed older-era shapes used before.
+wasapi = "=0.23.0"
 

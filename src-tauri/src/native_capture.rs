@@ -72,8 +72,8 @@
 
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
@@ -96,6 +96,8 @@ static FIRST_FRAME_SIZE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 static CAPTURE_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static FIRST_FRAME_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static ENCODER_FINISH_DURATION: Mutex<Option<Duration>> = Mutex::new(None);
+static AUDIO_BUFFERS_CAPTURED: AtomicU32 = AtomicU32::new(0);
+static AUDIO_FRAMES_CAPTURED: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Serialize)]
 pub struct NativeCaptureProof {
@@ -125,16 +127,20 @@ pub struct NativeCaptureProof {
     video_path: Option<String>,
     #[serde(rename = "captureError")]
     capture_error: Option<String>,
+    #[serde(flatten)]
+    audio: crate::native_audio::AudioCaptureDiagnostics,
 }
 
 #[derive(Clone)]
 struct CaptureFlags {
     output_path: PathBuf,
+    include_system_audio: bool,
 }
 
 struct ProofHandler {
     output_path: PathBuf,
     encoder: Option<VideoEncoder>,
+    include_system_audio: bool,
 }
 
 impl GraphicsCaptureApiHandler for ProofHandler {
@@ -144,6 +150,8 @@ impl GraphicsCaptureApiHandler for ProofHandler {
     fn new(context: Context<Self::Flags>) -> Result<Self, Self::Error> {
         FRAME_COUNT.store(0, Ordering::SeqCst);
         FRAMES_SUBMITTED.store(0, Ordering::SeqCst);
+        AUDIO_BUFFERS_CAPTURED.store(0, Ordering::SeqCst);
+        AUDIO_FRAMES_CAPTURED.store(0, Ordering::SeqCst);
         *FIRST_FRAME_SIZE.lock().unwrap() = None;
         *CAPTURE_ERROR.lock().unwrap() = None;
         *FIRST_FRAME_AT.lock().unwrap() = None;
@@ -151,6 +159,7 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         Ok(ProofHandler {
             output_path: context.flags.output_path,
             encoder: None,
+            include_system_audio: context.flags.include_system_audio,
         })
     }
 
@@ -179,9 +188,48 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         // already proven correct on real hardware.
         if self.encoder.is_none() {
             let path_string = self.output_path.to_string_lossy().to_string();
+            // AUDIO SUBMISSION - CORRECTED THIS ROUND. The previous
+            // version called a guessed encoder.send_audio_frame(&[u8])
+            // method that was never confirmed against real source, and
+            // was flagged as such in its own comment - not acceptable,
+            // per explicit instruction not to guess. That call has been
+            // removed entirely, not replaced with a different guess.
+            //
+            // Real evidence gathered this round instead: the crate's
+            // complete official README (every example it ships,
+            // including advanced ones - DXGI Desktop Duplication,
+            // stream-based in-memory encoding) uses
+            // AudioSettingsBuilder::default().disabled(true) in every
+            // single case, with no example anywhere of manually
+            // submitting audio samples to VideoEncoder. That absence,
+            // across otherwise thorough documentation, is itself
+            // meaningful: it suggests audio capture may happen
+            // internally within the encoder's own Media Foundation
+            // session when enabled (matching 2.0.0's own headline
+            // feature, "hardware-accelerated video encoder with stable
+            // audio timing," worded as a property of the encoder
+            // itself, not of anything the caller feeds it) - rather
+            // than requiring the caller to push PCM at all.
+            //
+            // This round tests that directly: simply enabling audio
+            // (removing .disabled(true)) using only the
+            // already-confirmed builder call shape, with zero new
+            // guessed methods. No PCM is submitted from this module at
+            // all. If the resulting MP4 has real audio, that confirms
+            // the encoder self-captures. If it's still silent, that
+            // rules the hypothesis out cleanly and tells us a genuine
+            // manual-submission API investigation (likely requiring
+            // the actual crate source, not just its docs/README) is
+            // the real next step - either way, real evidence rather
+            // than another stacked guess.
+            let audio_settings = if self.include_system_audio {
+                AudioSettingsBuilder::default()
+            } else {
+                AudioSettingsBuilder::default().disabled(true)
+            };
             match VideoEncoder::new(
                 VideoSettingsBuilder::new(width, height),
-                AudioSettingsBuilder::default().disabled(true),
+                audio_settings,
                 ContainerSettingsBuilder::default(),
                 path_string.as_str(),
             ) {
@@ -222,7 +270,7 @@ impl GraphicsCaptureApiHandler for ProofHandler {
     }
 }
 
-fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
+fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<NativeCaptureProof, String> {
     let command_start = Instant::now();
     crate::debug_log::log(app, "native_capture: sustained proof starting, acquiring primary monitor");
 
@@ -236,6 +284,56 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
     // can't be mistaken for a successful leftover from before.
     let _ = std::fs::remove_file(&output_path);
 
+    // Start WASAPI loopback first, if requested, so it's already
+    // running by the time video capture begins. This is NOT wired
+    // into the encoder this round (see the AUDIO SUBMISSION comment
+    // below for why) - it runs purely to produce its own independent
+    // diagnostics, confirming whether this app's own WASAPI capture
+    // mechanism initializes and receives real audio buffers at all,
+    // separate from the question of whether the encoder itself ends
+    // up including system audio when simply enabled. A failure here
+    // never aborts the video proof - recorded as audio diagnostics,
+    // the video-only path continues exactly as before.
+    let mut audio_diagnostics = crate::native_audio::AudioCaptureDiagnostics {
+        audio_requested: include_system_audio,
+        ..Default::default()
+    };
+    let mut audio_stop_flag: Option<Arc<AtomicBool>> = None;
+
+    if include_system_audio {
+        match crate::native_audio::start_loopback_capture() {
+            Ok((receiver, stop_flag, diagnostics)) => {
+                crate::debug_log::log(
+                    app,
+                    &format!(
+                        "native_capture: WASAPI loopback started (diagnostic only this round), device={:?}, rate={:?}, channels={:?}",
+                        diagnostics.render_endpoint_name, diagnostics.mix_sample_rate, diagnostics.mix_channels
+                    ),
+                );
+                audio_diagnostics = diagnostics;
+                audio_stop_flag = Some(stop_flag.clone());
+                // Lightweight counting thread - just drains the
+                // channel so buffers/frames captured reflect real
+                // received audio, without doing anything else with
+                // the data (never fed to the encoder - see the AUDIO
+                // SUBMISSION comment below).
+                std::thread::spawn(move || {
+                    while !stop_flag.load(Ordering::SeqCst) {
+                        while let Ok(chunk) = receiver.try_recv() {
+                            AUDIO_BUFFERS_CAPTURED.fetch_add(1, Ordering::SeqCst);
+                            AUDIO_FRAMES_CAPTURED.fetch_add(chunk.frames, Ordering::SeqCst);
+                        }
+                        std::thread::sleep(Duration::from_millis(20));
+                    }
+                });
+            }
+            Err(e) => {
+                crate::debug_log::log(app, &format!("native_capture: WASAPI loopback FAILED to start: {e}"));
+                audio_diagnostics.audio_error = Some(e);
+            }
+        }
+    }
+
     let primary_monitor = Monitor::primary().map_err(|e| format!("No primary monitor available: {e}"))?;
 
     let settings = Settings::new(
@@ -248,6 +346,7 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
         ColorFormat::Rgba8,
         CaptureFlags {
             output_path: output_path.clone(),
+            include_system_audio,
         },
     );
 
@@ -299,6 +398,14 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
         }
     }
 
+    // Stop the WASAPI capture thread now that video capture has
+    // ended, however it ended - never leave it running.
+    if let Some(stop_flag) = &audio_stop_flag {
+        stop_flag.store(true, Ordering::SeqCst);
+    }
+    audio_diagnostics.buffers_captured = AUDIO_BUFFERS_CAPTURED.load(Ordering::SeqCst);
+    audio_diagnostics.frames_captured = AUDIO_FRAMES_CAPTURED.load(Ordering::SeqCst) as u64;
+
     let total_command_seconds = command_start.elapsed().as_secs_f64();
 
     let frames_received = FRAME_COUNT.load(Ordering::SeqCst);
@@ -337,7 +444,8 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
     crate::debug_log::log(
         app,
         &format!(
-            "native_capture: proof finished, wgc_callbacks={frames_received}, submitted_to_encoder={frames_submitted_to_encoder}, capture_duration={capture_duration_seconds:.2}s, finalization={encoder_finalization_seconds:?}s, total_command={total_command_seconds:.2}s, ended_normally={ended_normally}, capture_error={capture_error:?}, video_path={video_path:?}"
+            "native_capture: proof finished, wgc_callbacks={frames_received}, submitted_to_encoder={frames_submitted_to_encoder}, capture_duration={capture_duration_seconds:.2}s, finalization={encoder_finalization_seconds:?}s, total_command={total_command_seconds:.2}s, ended_normally={ended_normally}, capture_error={capture_error:?}, video_path={video_path:?}, audio_requested={}, audio_buffers_captured={}, audio_frames_captured={}, audio_error={:?}",
+            audio_diagnostics.audio_requested, audio_diagnostics.buffers_captured, audio_diagnostics.frames_captured, audio_diagnostics.audio_error
         ),
     );
 
@@ -355,6 +463,7 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
         ended_normally,
         video_path,
         capture_error,
+        audio: audio_diagnostics,
     })
 }
 
@@ -364,10 +473,13 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
 /// arrival - via Windows Graphics Capture, attempts to encode a real
 /// MP4 to this app's own config directory, and reports separately-
 /// measured timing plus WGC-callback vs. encoder-submission frame
-/// counts. Never opens any browser-style permission dialog.
+/// counts. Never opens any browser-style permission dialog. When
+/// include_system_audio is true, also attempts WASAPI loopback
+/// capture of the default playback device - a failure there is
+/// reported in the result, never a hard error for the whole command.
 #[tauri::command]
-pub async fn test_native_capture(app: AppHandle) -> Result<NativeCaptureProof, String> {
-    tauri::async_runtime::spawn_blocking(move || run_capture_proof(&app))
+pub async fn test_native_capture(app: AppHandle, include_system_audio: bool) -> Result<NativeCaptureProof, String> {
+    tauri::async_runtime::spawn_blocking(move || run_capture_proof(&app, include_system_audio))
         .await
         .map_err(|e| format!("Native capture proof task failed: {e}"))?
 }

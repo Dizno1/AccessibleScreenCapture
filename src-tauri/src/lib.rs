@@ -21,6 +21,7 @@ use tauri_plugin_notification::NotificationExt;
 mod capture_context;
 mod debug_log;
 mod descriptor;
+mod native_audio;
 mod native_capture;
 mod native_speech;
 mod output_settings;

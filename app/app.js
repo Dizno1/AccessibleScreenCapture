@@ -1593,10 +1593,11 @@ function initNativeCaptureTest() {
   if (!button || !result) return;
 
   button.addEventListener("click", async () => {
+    const wantsAudio = systemAudioOption.checked;
     result.textContent = "Testing native capture. This runs for about five seconds of actual capture, plus setup time.";
-    logDebug("app.js: native capture test requested");
+    logDebug(`app.js: native capture test requested, includeSystemAudio=${wantsAudio}`);
     try {
-      const proof = await testNativeCapture();
+      const proof = await testNativeCapture(wantsAudio);
       const dimensions =
         proof.frameWidth != null && proof.frameHeight != null ? `${proof.frameWidth} by ${proof.frameHeight} pixels` : "unknown dimensions";
       const fmt = (value) => (value != null ? value.toFixed(2) : "unknown");
@@ -1617,6 +1618,23 @@ function initNativeCaptureTest() {
         parts.push(`A short diagnostic video was written to ${proof.videoPath}. Play it manually to check length and smoothness - this test cannot inspect the file's own contents.`);
       } else {
         parts.push("No video file was produced this time.");
+      }
+
+      if (proof.audioRequested) {
+        if (proof.audioError) {
+          parts.push(`System audio was requested but this app's own WASAPI capture could not start: ${proof.audioError}`);
+        } else if (proof.wasapiInitialized) {
+          const device = proof.renderEndpointName || "the default playback device";
+          const format =
+            proof.mixSampleRate != null && proof.mixChannels != null
+              ? `${proof.mixSampleRate} Hz, ${proof.mixChannels} channel${proof.mixChannels === 1 ? "" : "s"}`
+              : "unknown format";
+          parts.push(
+            `This app's own WASAPI capture from ${device} (${format}) received ${proof.buffersCaptured} audio buffers, ${proof.framesCaptured} total frames - shown for diagnostics only, not fed into the video file. The encoder was separately asked to include audio on its own, unconfirmed whether that actually captures anything; check whether the MP4 has sound to see if that worked.`
+          );
+        }
+      } else {
+        parts.push("System audio was not requested for this test.");
       }
       result.textContent = parts.join(" ");
       logDebug(`app.js: native capture test finished: ${JSON.stringify(proof)}`);

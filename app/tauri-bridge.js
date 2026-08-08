@@ -180,8 +180,8 @@ export async function testSpeechVoice() {
  * touching the working recorder at all. See
  * src-tauri/src/native_capture.rs.
  */
-export async function testNativeCapture() {
-  return invoke("test_native_capture");
+export async function testNativeCapture(includeSystemAudio) {
+  return invoke("test_native_capture", { includeSystemAudio });
 }
 
 export async function getOutputSettings() {
