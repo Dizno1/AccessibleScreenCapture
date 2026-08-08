@@ -166,6 +166,10 @@ export async function setSpeechRate(rate) {
   return invoke("set_speech_rate", { rate });
 }
 
+export async function setSpeechVolume(volume) {
+  return invoke("set_speech_volume", { volume });
+}
+
 export async function testSpeechVoice() {
   return invoke("test_speech_voice");
 }

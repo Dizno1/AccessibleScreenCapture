@@ -33,7 +33,7 @@
 //     than being pushed to the worker via a separate message type -
 //     simpler, and "apply to the next message" falls out for free.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU16, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -46,11 +46,13 @@ use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CLSCTX_ALL, 
 
 const DESCRIPTOR_COOLDOWN: Duration = Duration::from_millis(600);
 const DEFAULT_RATE: i32 = 2;
+const DEFAULT_VOLUME: u16 = 100;
 
 static SPEECH_SENDER: OnceLock<Sender<SpeechRequest>> = OnceLock::new();
 static SAVE_DIALOG_OPEN: AtomicBool = AtomicBool::new(false);
 static LAST_DESCRIPTOR_SPEECH: Mutex<Option<Instant>> = Mutex::new(None);
 static CURRENT_RATE: AtomicI32 = AtomicI32::new(DEFAULT_RATE);
+static CURRENT_VOLUME: AtomicU16 = AtomicU16::new(DEFAULT_VOLUME);
 static CURRENT_VOICE_ID: Mutex<Option<String>> = Mutex::new(None); // None = Windows default voice
 static WORKER_RUNNING: AtomicBool = AtomicBool::new(false);
 static WORKER_STARTED: AtomicBool = AtomicBool::new(false);
@@ -117,6 +119,9 @@ pub fn init_speech_worker(app: tauri::AppHandle) {
 
             let rate = CURRENT_RATE.load(Ordering::SeqCst);
             let _ = voice.SetRate(rate);
+
+            let volume = CURRENT_VOLUME.load(Ordering::SeqCst);
+            let _ = voice.SetVolume(volume);
 
             if let Ok(voice_id) = CURRENT_VOICE_ID.lock() {
                 if let Some(id) = voice_id.as_ref() {
@@ -294,5 +299,16 @@ pub fn apply_voice(voice_id: Option<String>) {
 pub fn apply_rate(rate: i32) -> i32 {
     let clamped = rate.clamp(-10, 10);
     CURRENT_RATE.store(clamped, Ordering::SeqCst);
+    clamped
+}
+
+/// SAPI's own documented volume range is 0-100 (percent of full
+/// volume) - this is independent of, and never touches, Windows'
+/// master volume, JAWS's own volume, or any recording/microphone
+/// level. Default 100 matches SAPI's own default, preserving existing
+/// behavior for anyone who hasn't touched this setting yet.
+pub fn apply_volume(volume: u16) -> u16 {
+    let clamped = volume.min(100);
+    CURRENT_VOLUME.store(clamped, Ordering::SeqCst);
     clamped
 }

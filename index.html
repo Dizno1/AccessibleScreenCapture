@@ -188,7 +188,7 @@
     </label>
     <p class="section-hint">Displays a Windows toast notification independently of speech. A toast is a visual channel and is not guaranteed to be read by a screen reader - it supplements speech, it doesn't substitute for it.</p>
 
-    <h3>Speech voice and rate</h3>
+    <h3>Speech voice, rate, and volume</h3>
     <label for="speech-voice-select">Speech voice</label>
     <p class="section-hint">Used only for spoken status outside AccessibleScreenCapture - has no effect on Windows notifications or on your screen reader's own voice.</p>
     <select id="speech-voice-select">
@@ -199,8 +199,14 @@
     <p class="section-hint">Controls how fast the selected speech voice speaks.</p>
     <input type="range" id="speech-rate-slider" min="-10" max="10" step="1" value="2">
     <p id="speech-rate-value" class="section-hint">Speech rate: 2, faster</p>
-
     <button type="button" id="speech-rate-reset" class="secondary-button">Reset Speech Rate</button>
+
+    <label for="speech-volume-slider">Speech volume</label>
+    <p class="section-hint">Controls how loud AccessibleScreenCapture's own spoken status is - independent of Windows volume, your screen reader's volume, and recording/microphone levels.</p>
+    <input type="range" id="speech-volume-slider" min="0" max="100" step="5" value="100">
+    <p id="speech-volume-value" class="section-hint">Speech volume: 100</p>
+    <button type="button" id="speech-volume-reset" class="secondary-button">Reset Speech Volume</button>
+
     <button type="button" id="speech-voice-test" class="secondary-button">Test Speech Voice</button>
   </section>
 

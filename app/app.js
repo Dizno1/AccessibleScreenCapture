@@ -30,6 +30,7 @@ import {
   getSpeechVoices,
   setSpeechVoice,
   setSpeechRate,
+  setSpeechVolume,
   testSpeechVoice,
   testNativeCapture,
 } from "./tauri-bridge.js";
@@ -1617,22 +1618,28 @@ function initNativeCaptureTest() {
   if (!button || !result) return;
 
   button.addEventListener("click", async () => {
-    result.textContent = "Testing native capture. This runs for about five seconds.";
+    result.textContent = "Testing native capture. This runs for about five seconds of actual capture, plus setup time.";
     logDebug("app.js: native capture test requested");
     try {
       const proof = await testNativeCapture();
       const dimensions =
         proof.frameWidth != null && proof.frameHeight != null ? `${proof.frameWidth} by ${proof.frameHeight} pixels` : "unknown dimensions";
-      const fps = proof.approximateFps != null ? proof.approximateFps.toFixed(1) : "unknown";
-      const elapsed = proof.elapsedSeconds != null ? proof.elapsedSeconds.toFixed(1) : "unknown";
+      const fmt = (value) => (value != null ? value.toFixed(2) : "unknown");
+
       const parts = [
-        `${proof.framesReceived} frames received over ${elapsed} seconds (approximately ${fps} frames per second).`,
+        `Requested ${proof.requestedCaptureSeconds} seconds of capture.`,
+        `Initialization took ${fmt(proof.initializationSeconds)} seconds.`,
+        `Actual capture window was ${fmt(proof.captureDurationSeconds)} seconds.`,
+        `Encoder finalization took ${fmt(proof.encoderFinalizationSeconds)} seconds.`,
+        `Total command time was ${fmt(proof.totalCommandSeconds)} seconds.`,
+        `${proof.framesReceived} frame callbacks received; ${proof.framesSubmittedToEncoder} submitted to the encoder`,
+        proof.approximateFps != null ? `(approximately ${proof.approximateFps.toFixed(1)} frames per second based on the capture window only).` : "(rate not calculable).",
         `First frame ${dimensions}.`,
       ];
       if (proof.captureError) {
         parts.push(`Capture reported an error: ${proof.captureError}`);
       } else if (proof.videoPath) {
-        parts.push(`A short diagnostic video was written to ${proof.videoPath}.`);
+        parts.push(`A short diagnostic video was written to ${proof.videoPath}. Play it manually to check length and smoothness - this test cannot inspect the file's own contents.`);
       } else {
         parts.push("No video file was produced this time.");
       }
@@ -1678,6 +1685,9 @@ async function initOutputChannelSettings() {
   const rateSlider = document.getElementById("speech-rate-slider");
   const rateValue = document.getElementById("speech-rate-value");
   const rateResetButton = document.getElementById("speech-rate-reset");
+  const volumeSlider = document.getElementById("speech-volume-slider");
+  const volumeValue = document.getElementById("speech-volume-value");
+  const volumeResetButton = document.getElementById("speech-volume-reset");
   const testButton = document.getElementById("speech-voice-test");
   if (!section || !speakCheckbox || !notifyCheckbox) return;
 
@@ -1728,6 +1738,10 @@ async function initOutputChannelSettings() {
     voiceSelect.value = settings.speechVoiceId || "";
     rateSlider.value = String(settings.speechRate);
     updateRateValueText(settings.speechRate);
+    if (volumeSlider && volumeValue) {
+      volumeSlider.value = String(settings.speechVolume);
+      updateVolumeValueText(settings.speechVolume);
+    }
 
     voiceSelect.addEventListener("change", async () => {
       try {
@@ -1758,6 +1772,31 @@ async function initOutputChannelSettings() {
       }
     });
 
+    if (volumeSlider && volumeValue) {
+      volumeSlider.addEventListener("change", async () => {
+        const volume = Number(volumeSlider.value);
+        try {
+          const clamped = await setSpeechVolume(volume);
+          volumeSlider.value = String(clamped);
+          updateVolumeValueText(clamped);
+        } catch (error) {
+          console.error("Could not save speech volume:", error);
+        }
+      });
+    }
+
+    if (volumeResetButton) {
+      volumeResetButton.addEventListener("click", async () => {
+        volumeSlider.value = "100";
+        try {
+          const clamped = await setSpeechVolume(100);
+          updateVolumeValueText(clamped);
+        } catch (error) {
+          console.error("Could not reset speech volume:", error);
+        }
+      });
+    }
+
     testButton.addEventListener("click", async () => {
       try {
         await testSpeechVoice();
@@ -1773,6 +1812,12 @@ function updateRateValueText(rate) {
   if (!rateValue) return;
   const descriptor = rate === 0 ? "normal" : rate > 0 ? "faster" : "slower";
   rateValue.textContent = `Speech rate: ${rate}, ${descriptor}`;
+}
+
+function updateVolumeValueText(volume) {
+  const volumeValue = document.getElementById("speech-volume-value");
+  if (!volumeValue) return;
+  volumeValue.textContent = `Speech volume: ${volume}`;
 }
 
 /**

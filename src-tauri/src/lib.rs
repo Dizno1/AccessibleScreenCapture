@@ -13,7 +13,7 @@ use std::io::Cursor;
 use std::sync::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
-use tauri::{AppHandle, Emitter, Manager, State, WindowEvent};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
@@ -31,7 +31,7 @@ use debug_log::{clear_debug_log, get_debug_log, log_debug_message};
 use descriptor::{get_context_and_mark_reported, get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
 use native_capture::test_native_capture;
 use native_speech::{get_speech_voices, speak_status, test_speech_voice};
-use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice};
+use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice, set_speech_volume};
 use recording_save::{
     abort_recording_save, append_recording_chunk, begin_recording_save, finish_recording_save,
     RecordingSaveState,
@@ -646,9 +646,9 @@ pub fn run() {
             // turned on (off by default - see descriptor.rs).
             descriptor::spawn_watcher(handle.clone());
 
-            // System tray: left-click or "Show" restores the window;
-            // "Quit" is the only way to actually exit, since closing
-            // the window minimizes to tray instead.
+            // System tray: left-click or "Show" restores the window if
+            // it was minimized some other way; "Quit" remains a second
+            // way to exit alongside closing the window normally.
             let show_item = MenuItem::with_id(app, "show", "Show AccessibleScreenCapture", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Quit AccessibleScreenCapture", true, None::<&str>)?;
             let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
@@ -679,17 +679,24 @@ pub fn run() {
                 })
                 .build(app)?;
 
-            // Closing the window minimizes to tray (background
-            // recording readiness) rather than quitting the app.
-            if let Some(window) = app.get_webview_window("main") {
-                let window_clone = window.clone();
-                window.on_window_event(move |event| {
-                    if let WindowEvent::CloseRequested { api, .. } = event {
-                        api.prevent_close();
-                        let _ = window_clone.hide();
-                    }
-                });
-            }
+            // Closing the window now exits the application completely,
+            // per explicit correction - it previously intercepted the
+            // close request and hid the window instead, which left the
+            // process running invisibly in the tray with no accessible
+            // keyboard-reachable way for the user to actually quit
+            // (the tray menu's "Quit" item existed, but real Windows
+            // testing found the tray icon itself hard to reach via
+            // keyboard). Removing this interception restores Tauri's
+            // own default behavior: closing the only window exits the
+            // app cleanly, running the RunEvent::Exit handler below
+            // (which releases SAPI/COM resources) along the way. The
+            // tray icon, its "Show"/"Quit" menu, and hide_to_tray/
+            // show_main_window remain - they're still genuinely useful
+            // if the user minimizes the window some other way (the
+            // Windows minimize button, Alt+Tab) while a global shortcut
+            // keeps working in the background - that's the user's own
+            // choice to minimize, not the app overriding an intentional
+            // close. Only the close-time auto-hide is removed.
 
             Ok(())
         })
@@ -717,6 +724,7 @@ pub fn run() {
             set_show_notifications,
             set_speech_voice,
             set_speech_rate,
+            set_speech_volume,
             get_speech_voices,
             test_speech_voice,
             test_native_capture,

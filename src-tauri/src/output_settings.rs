@@ -20,6 +20,7 @@ use tauri::{AppHandle, Manager};
 
 const SETTINGS_FILE: &str = "output-settings.json";
 const DEFAULT_SPEECH_RATE: i32 = 2;
+const DEFAULT_SPEECH_VOLUME: u16 = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutputSettings {
@@ -31,6 +32,8 @@ pub struct OutputSettings {
     pub speech_voice_id: Option<String>,
     #[serde(rename = "speechRate", default = "default_rate")]
     pub speech_rate: i32,
+    #[serde(rename = "speechVolume", default = "default_volume")]
+    pub speech_volume: u16,
 }
 
 fn default_true() -> bool {
@@ -41,6 +44,10 @@ fn default_rate() -> i32 {
     DEFAULT_SPEECH_RATE
 }
 
+fn default_volume() -> u16 {
+    DEFAULT_SPEECH_VOLUME
+}
+
 impl Default for OutputSettings {
     fn default() -> Self {
         OutputSettings {
@@ -48,6 +55,7 @@ impl Default for OutputSettings {
             show_notifications: true,
             speech_voice_id: None,
             speech_rate: DEFAULT_SPEECH_RATE,
+            speech_volume: DEFAULT_SPEECH_VOLUME,
         }
     }
 }
@@ -89,6 +97,7 @@ pub fn apply_persisted_speech_settings(app: &AppHandle) {
     let settings = load(app);
     native_speech::apply_voice(settings.speech_voice_id);
     native_speech::apply_rate(settings.speech_rate);
+    native_speech::apply_volume(settings.speech_volume);
     if settings.speak_outside_app {
         // Only spin up SAPI/COM at startup if speech was left on last
         // time - avoids unnecessary COM initialization for the (now
@@ -138,6 +147,15 @@ pub fn set_speech_rate(app: AppHandle, rate: i32) -> Result<i32, String> {
     let clamped = native_speech::apply_rate(rate);
     let mut settings = load(&app);
     settings.speech_rate = clamped;
+    save(&app, &settings)?;
+    Ok(clamped)
+}
+
+#[tauri::command]
+pub fn set_speech_volume(app: AppHandle, volume: u16) -> Result<u16, String> {
+    let clamped = native_speech::apply_volume(volume);
+    let mut settings = load(&app);
+    settings.speech_volume = clamped;
     save(&app, &settings)?;
     Ok(clamped)
 }
