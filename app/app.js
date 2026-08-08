@@ -1617,14 +1617,27 @@ function initNativeCaptureTest() {
   if (!button || !result) return;
 
   button.addEventListener("click", async () => {
-    result.textContent = "Testing native capture...";
+    result.textContent = "Testing native capture. This runs for about five seconds.";
     logDebug("app.js: native capture test requested");
     try {
       const proof = await testNativeCapture();
       const dimensions =
         proof.frameWidth != null && proof.frameHeight != null ? `${proof.frameWidth} by ${proof.frameHeight} pixels` : "unknown dimensions";
-      result.textContent = `Native capture succeeded: ${proof.framesReceived} frames received, first frame ${dimensions}.`;
-      logDebug(`app.js: native capture test succeeded: ${JSON.stringify(proof)}`);
+      const fps = proof.approximateFps != null ? proof.approximateFps.toFixed(1) : "unknown";
+      const elapsed = proof.elapsedSeconds != null ? proof.elapsedSeconds.toFixed(1) : "unknown";
+      const parts = [
+        `${proof.framesReceived} frames received over ${elapsed} seconds (approximately ${fps} frames per second).`,
+        `First frame ${dimensions}.`,
+      ];
+      if (proof.captureError) {
+        parts.push(`Capture reported an error: ${proof.captureError}`);
+      } else if (proof.videoPath) {
+        parts.push(`A short diagnostic video was written to ${proof.videoPath}.`);
+      } else {
+        parts.push("No video file was produced this time.");
+      }
+      result.textContent = parts.join(" ");
+      logDebug(`app.js: native capture test finished: ${JSON.stringify(proof)}`);
     } catch (error) {
       console.error("Native capture test failed:", error);
       result.textContent = `Native capture failed: ${error}`;
