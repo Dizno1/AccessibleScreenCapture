@@ -35,17 +35,11 @@ import {
   testNativeCapture,
 } from "./tauri-bridge.js";
 
-const captureTypeScreenshot = document.getElementById("capture-type-screenshot");
-const captureTypeRecording = document.getElementById("capture-type-recording");
-const captureTypeFieldset = document.getElementById("capture-type-fieldset");
-const audioOptionsSection = document.getElementById("audio-options-section");
 const systemAudioOption = document.getElementById("option-system-audio");
 const microphoneOption = document.getElementById("option-microphone");
 const microphoneSelectWrapper = document.getElementById("microphone-select-wrapper");
 const microphoneSelect = document.getElementById("microphone-select");
-const screenshotControls = document.getElementById("screenshot-controls");
 const screenshotButton = document.getElementById("screenshot-button");
-const recordingControls = document.getElementById("recording-controls");
 const recordToggleButton = document.getElementById("record-toggle-button");
 const pauseResumeButton = document.getElementById("pause-resume-button");
 const reviewSection = document.getElementById("review-section");
@@ -159,12 +153,7 @@ function renderDiagnostics() {
 initAnnouncer(document.getElementById("status-announcer"));
 initShortcuts();
 
-function currentCaptureType() {
-  return captureTypeRecording.checked ? "recording" : "screenshot";
-}
-
 function setWorkflowLocked(locked) {
-  captureTypeFieldset.disabled = locked;
   systemAudioOption.disabled = locked;
   microphoneOption.disabled = locked;
   microphoneSelect.disabled = locked;
@@ -174,17 +163,6 @@ function setWorkflowLocked(locked) {
     recordToggleButton.disabled = locked;
   }
 }
-
-function updateCaptureTypeUI() {
-  const recordingSelected = currentCaptureType() === "recording";
-  audioOptionsSection.hidden = !recordingSelected;
-  screenshotControls.hidden = recordingSelected;
-  recordingControls.hidden = !recordingSelected;
-}
-
-captureTypeScreenshot.addEventListener("change", updateCaptureTypeUI);
-captureTypeRecording.addEventListener("change", updateCaptureTypeUI);
-updateCaptureTypeUI();
 
 function renderScreenshotHint() {
   const hint = document.getElementById("screenshot-shortcut-hint");
@@ -775,13 +753,14 @@ discardButton.addEventListener("click", () => {
   const confirmed = window.confirm("Discard this capture? This cannot be undone.");
   if (!confirmed) return;
 
+  const discardedKind = pendingCapture.kind;
   announce("captureDiscarded");
   hideReview();
-  focusCaptureControl();
+  focusCaptureControl(discardedKind);
 });
 
-function focusCaptureControl() {
-  if (currentCaptureType() === "recording") {
+function focusCaptureControl(kind) {
+  if (kind === "recording") {
     recordToggleButton.focus();
   } else {
     screenshotButton.focus();
@@ -868,9 +847,7 @@ function captureWasCanceled(error) {
 function announceScreenshotCaptured() {
   playScreenshotSound();
   if (isTauri && !isAppFocused()) {
-    announceRaw(
-      "Screenshot captured from the primary monitor. Return to AccessibleScreenCapture to review or save it."
-    );
+    announceRaw("Screenshot captured from the primary monitor.");
     diagnostics.lastScreenshotResult = `Captured (unfocused) at ${nowText()}`;
   } else {
     announce("screenshotCaptured");
@@ -1179,7 +1156,7 @@ async function startRecording() {
 
       if (blob.size === 0) {
         announce("recordingFailed");
-        focusCaptureControl();
+        focusCaptureControl("recording");
         return;
       }
 
@@ -1229,9 +1206,7 @@ function stopRecording() {
   renderDiagnostics();
 
   if (isTauri && !isAppFocused()) {
-    announceRaw(
-      "Recording stopped. Return to AccessibleScreenCapture to review, save, or discard it."
-    );
+    announceRaw("Recording stopped.");
   } else {
     announce("recordingStopped");
   }
@@ -1629,7 +1604,7 @@ function initNativeCaptureTest() {
       const parts = [
         `Requested ${proof.requestedCaptureSeconds} seconds of capture.`,
         `Initialization took ${fmt(proof.initializationSeconds)} seconds.`,
-        `Actual capture window was ${fmt(proof.captureDurationSeconds)} seconds.`,
+        `Actual capture window was ${proof.captureDurationSeconds.toFixed(2)} seconds.`,
         `Encoder finalization took ${fmt(proof.encoderFinalizationSeconds)} seconds.`,
         `Total command time was ${fmt(proof.totalCommandSeconds)} seconds.`,
         `${proof.framesReceived} frame callbacks received; ${proof.framesSubmittedToEncoder} submitted to the encoder`,

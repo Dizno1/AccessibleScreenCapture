@@ -1,73 +1,68 @@
 // Native Windows screen capture - EXPERIMENTAL PROOF, still not wired
 // into the working recorder.
 //
-// TIMING BUG FOUND AND FIXED THIS ROUND. The previous version reported
-// one "elapsed_seconds" number that started counting *before*
-// Capture::start() was even called and stopped counting *after* it
-// returned - meaning it silently included WGC/DXGI session setup
-// overhead and (since the encoder's .finish() was called from inside
-// the same callback, before capture_control.stop()) encoder
-// finalization too. A real test that visually lasted ~5 seconds
-// reported 12.3 seconds, because the reported number was never "just
-// the capture window" - it was setup + capture + finalization all
-// added together under one label. This version measures four phases
-// separately and never conflates them:
-//   - initialization: from calling Capture::start() to the first
-//     frame actually arriving (WGC negotiation + handler construction
-//     + frame-pool warm-up, whatever that turns out to cost)
-//   - capture: from the first frame to the moment the 5-second
-//     threshold is reached and a stop is decided on - this is the
-//     number that should read close to 5.0s
-//   - finalization: time spent specifically inside encoder.finish()
-//   - total command: the whole function, top to bottom, for context,
-//     clearly labeled so it's never mistaken for capture duration
-// This also fixes a real behavioral bug, not just a reporting one:
-// the *stop condition itself* previously measured elapsed time from
-// handler construction (new()), so slow setup ate into the same
-// 5-second budget the user was supposed to get - meaning the actual
-// visible capture window could genuinely have been shorter than
-// intended, before any diagnostics were even wrong. The stop
-// condition now measures from the first frame's arrival instead, so
-// the requested ~5 seconds is actually ~5 seconds of real capture.
+// STOP MECHANISM REDESIGNED THIS ROUND - confirmed root cause of the
+// ~24-second test. The previous version evaluated the 5-second stop
+// condition *inside* on_frame_arrived() - the only code that runs
+// while ProofHandler::start() blocks the calling thread. Since
+// windows-capture only delivers a callback "when required" (its own
+// documented behavior, not a bug), a static desktop with no second
+// callback for many seconds meant the time-check simply never ran
+// until whatever eventually triggered another frame - matching
+// exactly what the real Windows test showed (first frame started the
+// window, nothing else happened for ~19 more seconds, then a frame
+// arrived, the check finally fired, and only then did stop/finalize
+// happen). No amount of adjusting *what* the check compared against
+// could fix this - the check itself was only reachable from inside a
+// callback that might not fire.
 //
-// WHAT "FRAMES RECEIVED" MEANS - investigated, not fully resolved.
-// windows-capture's own issue tracker (NiiightmareXD/windows-capture
-// #190) confirms MinimumUpdateIntervalSettings::Default already
-// targets a fast interval (documented ~16.67ms, i.e. an implied
-// ~60fps target), and real-world testers in that report saw 45-78fps
-// even on relatively static test content - nowhere near "2 in 5
-// seconds" slow. That's evidence AGAINST a dirty-region/update-
-// interval misconfiguration being the dominant cause here, and FOR
-// the timing bug above being the real explanation: once capture
-// duration is measured correctly (from first frame, not from before
-// setup), the true frame count during that window should tell us
-// directly whether delivery itself is slow or was just being measured
-// across too short/wrong a window before. Not changed this round:
-// DirtyRegionSettings and MinimumUpdateIntervalSettings are both left
-// at ::Default, deliberately, until the corrected measurement confirms
-// whether that's still warranted - changing them now, before the
-// measurement bug was fixed, would have risked "fixing" a problem that
-// was actually a measurement artifact.
-// This round also distinguishes WGC callbacks (FRAME_COUNT) from
-// frames actually handed to the encoder (FRAMES_SUBMITTED) - they're
-// tracked separately because a callback could in principle arrive
-// before the encoder exists yet (the very first frame, while it's
-// being lazily created) or a send_frame() call could fail
-// independently of the callback itself succeeding.
-// Not implemented: parsing the resulting MP4's own container metadata
-// for its real encoded duration/frame count. Doing that reliably would
-// need an MP4-parsing dependency, which is out of scope for this pass
-// per explicit dependency discipline - the file is left in place,
-// specifically so it can be played and inspected manually, which is
-// the honest fallback when self-inspection isn't implemented rather
-// than inventing a number the encoder doesn't expose.
+// Fixed by using windows-capture's own non-blocking entry point,
+// `start_free_threaded()`, which runs the capture on its own
+// dedicated thread and returns a `CaptureControl` handle usable from
+// the *calling* thread - completely independent of whether any frame
+// callback ever fires. The calling thread now does a plain
+// `std::thread::sleep` for the requested duration, then calls
+// `.stop()` (and `.wait()`, to block until the capture thread and its
+// on_closed cleanup have genuinely finished) on that handle. This is
+// the crate's own documented mechanism for exactly this situation,
+// not a homegrown thread/timer workaround - `start_free_threaded()`
+// exists specifically so capture can be controlled from outside its
+// own callback. The exact `CaptureControl` method signatures
+// (`stop`/`wait`) were not confirmed against Rust source directly -
+// they're inferred from the crate's own Python bindings, which wrap
+// this same Rust type and expose `stop()`/`wait()`/`is_finished()`
+// under those exact names. If the real signatures differ, expect a
+// scoped, easily-isolated compiler error here, same as every other
+// round.
 //
-// ENCODING is unchanged from last round: windows-capture's own
-// VideoEncoder (Media Foundation-backed), MP4 output by convention,
-// created lazily on the first frame using that frame's own
-// width()/height() (proven correct on real hardware), written to this
-// app's own config directory - no Save As dialog, not the production
-// WebM format, purely a diagnostic artifact.
+// Encoder finalization moved to on_closed() (fires when the session
+// actually ends) rather than being decided inside on_frame_arrived(),
+// since stopping is no longer something on_frame_arrived() decides at
+// all.
+//
+// FRAME DELIVERY RATE. windows-capture's own README lists "Only
+// updates the frame when required" as a headline feature in every
+// version checked - deliberate, documented, change-driven delivery.
+// MinimumUpdateIntervalSettings::Custom(Duration) caps the MAXIMUM
+// rate at which real changes get reported (a ceiling on how often a
+// genuine content change can produce a new callback) - it does NOT
+// force or guarantee a callback when nothing on screen has actually
+// changed. On a fully static desktop, Custom(33ms) does not by itself
+// make callbacks arrive every 33ms; it only prevents them from
+// arriving faster than that when real changes are happening. It is
+// left set here (~30fps ceiling) as a reasonable maximum rate for the
+// proof, but it is not what fixes - and does not claim to fix - the
+// low-callback-count problem; the external stop mechanism above is
+// what makes this proof stop reliably regardless of callback
+// frequency. Whether WGC delivers a genuinely continuous sequence of
+// callbacks on real desktop activity (as opposed to a static one) is
+// still an open question this round's diagnostics are meant to help
+// answer, not something changed or assumed fixed here.
+//
+// DirtyRegionSettings is left at ::Default -
+// it governs *how* changed regions are reported (report-only vs.
+// report-and-render), not *whether* delivery happens at all, so it
+// isn't the lever for this problem.
 //
 // Same dependency-isolation note as every round: this module only
 // calls windows-capture's own public API, never windows::Win32::*
@@ -92,6 +87,7 @@ use windows_capture::settings::{
 };
 
 const REQUESTED_CAPTURE_SECS: u64 = 5;
+const TARGET_UPDATE_INTERVAL_MS: u64 = 33; // ~30fps ceiling on real-change reporting, not a forced/guaranteed rate - see FRAME DELIVERY RATE note above
 const OUTPUT_FILE_NAME: &str = "native-capture-test.mp4";
 
 static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
@@ -99,7 +95,6 @@ static FRAMES_SUBMITTED: AtomicU32 = AtomicU32::new(0);
 static FIRST_FRAME_SIZE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 static CAPTURE_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static FIRST_FRAME_AT: Mutex<Option<Instant>> = Mutex::new(None);
-static STOP_REQUESTED_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static ENCODER_FINISH_DURATION: Mutex<Option<Duration>> = Mutex::new(None);
 
 #[derive(Serialize)]
@@ -117,7 +112,7 @@ pub struct NativeCaptureProof {
     #[serde(rename = "initializationSeconds")]
     initialization_seconds: Option<f64>,
     #[serde(rename = "captureDurationSeconds")]
-    capture_duration_seconds: Option<f64>,
+    capture_duration_seconds: f64,
     #[serde(rename = "encoderFinalizationSeconds")]
     encoder_finalization_seconds: Option<f64>,
     #[serde(rename = "totalCommandSeconds")]
@@ -140,7 +135,6 @@ struct CaptureFlags {
 struct ProofHandler {
     output_path: PathBuf,
     encoder: Option<VideoEncoder>,
-    first_frame_instant: Option<Instant>,
 }
 
 impl GraphicsCaptureApiHandler for ProofHandler {
@@ -153,29 +147,31 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         *FIRST_FRAME_SIZE.lock().unwrap() = None;
         *CAPTURE_ERROR.lock().unwrap() = None;
         *FIRST_FRAME_AT.lock().unwrap() = None;
-        *STOP_REQUESTED_AT.lock().unwrap() = None;
         *ENCODER_FINISH_DURATION.lock().unwrap() = None;
         Ok(ProofHandler {
             output_path: context.flags.output_path,
             encoder: None,
-            first_frame_instant: None,
         })
     }
 
     fn on_frame_arrived(
         &mut self,
         frame: &mut Frame,
-        capture_control: InternalCaptureControl,
+        _capture_control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
+        // No stop-condition check here anymore - stopping is now
+        // driven externally (see run_capture_proof), independent of
+        // whether this callback fires at all.
         let count = FRAME_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
         let width = frame.width();
         let height = frame.height();
 
-        if self.first_frame_instant.is_none() {
-            let now = Instant::now();
-            self.first_frame_instant = Some(now);
-            *FIRST_FRAME_AT.lock().unwrap() = Some(now);
-            *FIRST_FRAME_SIZE.lock().unwrap() = Some((width, height));
+        {
+            let mut size = FIRST_FRAME_SIZE.lock().unwrap();
+            if size.is_none() {
+                *size = Some((width, height));
+                *FIRST_FRAME_AT.lock().unwrap() = Some(Instant::now());
+            }
         }
 
         // Created lazily here (not in new()) because the encoder
@@ -208,33 +204,20 @@ impl GraphicsCaptureApiHandler for ProofHandler {
             }
         }
 
-        // Stop condition is based on time since the FIRST FRAME, not
-        // since new() ran - so the requested ~5 seconds is ~5 seconds
-        // of actual capture, not 5 seconds including whatever setup
-        // overhead happened before any frame arrived at all.
-        let capture_elapsed = self
-            .first_frame_instant
-            .map(|start| start.elapsed())
-            .unwrap_or_default();
-
-        if capture_elapsed.as_secs() >= REQUESTED_CAPTURE_SECS {
-            *STOP_REQUESTED_AT.lock().unwrap() = Some(Instant::now());
-
-            if let Some(encoder) = self.encoder.take() {
-                let finish_start = Instant::now();
-                if let Err(e) = encoder.finish() {
-                    *CAPTURE_ERROR.lock().unwrap() = Some(format!("Could not finish encoding: {e}"));
-                }
-                *ENCODER_FINISH_DURATION.lock().unwrap() = Some(finish_start.elapsed());
-            }
-
-            capture_control.stop();
-        }
-
         Ok(())
     }
 
     fn on_closed(&mut self) -> Result<(), Self::Error> {
+        // The session has actually ended (triggered externally by
+        // run_capture_proof calling control.stop()) - finalize the
+        // encoder here, now that no more frames will arrive.
+        if let Some(encoder) = self.encoder.take() {
+            let finish_start = Instant::now();
+            if let Err(e) = encoder.finish() {
+                *CAPTURE_ERROR.lock().unwrap() = Some(format!("Could not finish encoding: {e}"));
+            }
+            *ENCODER_FINISH_DURATION.lock().unwrap() = Some(finish_start.elapsed());
+        }
         Ok(())
     }
 }
@@ -260,7 +243,7 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
         CursorCaptureSettings::Default,
         DrawBorderSettings::Default,
         SecondaryWindowSettings::Default,
-        MinimumUpdateIntervalSettings::Default,
+        MinimumUpdateIntervalSettings::Custom(Duration::from_millis(TARGET_UPDATE_INTERVAL_MS)),
         DirtyRegionSettings::Default,
         ColorFormat::Rgba8,
         CaptureFlags {
@@ -270,16 +253,49 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
 
     crate::debug_log::log(
         app,
-        &format!("native_capture: calling Capture::start, requested {REQUESTED_CAPTURE_SECS}s of capture, output {}", output_path.display()),
+        &format!(
+            "native_capture: calling Capture::start_free_threaded, requested {REQUESTED_CAPTURE_SECS}s of capture, target interval {TARGET_UPDATE_INTERVAL_MS}ms, output {}",
+            output_path.display()
+        ),
     );
 
     let capture_call_at = Instant::now();
-    let start_result = ProofHandler::start(settings);
-    let ended_normally = start_result.is_ok();
-    if let Err(e) = &start_result {
-        let mut error = CAPTURE_ERROR.lock().unwrap();
-        if error.is_none() {
-            *error = Some(format!("Capture::start returned an error: {e}"));
+    let mut ended_normally = false;
+
+    match ProofHandler::start_free_threaded(settings) {
+        Ok(control) => {
+            // Independent of any frame callback: sleep on this
+            // (calling) thread for the requested duration, then stop
+            // the capture directly through the handle. This is the
+            // actual fix - the previous version's stop condition
+            // could only run from inside a callback that might not
+            // fire for a long time on a static desktop.
+            std::thread::sleep(Duration::from_secs(REQUESTED_CAPTURE_SECS));
+
+            match control.stop() {
+                Ok(()) => {
+                    // stop(self) consumes control and already requests
+                    // shutdown and joins the capture thread - there is
+                    // nothing left to wait() on afterward, and control
+                    // itself is gone by this point. A successful
+                    // return here is itself the confirmation that the
+                    // capture thread (and its on_closed cleanup,
+                    // i.e. encoder finalization) has finished.
+                    ended_normally = true;
+                }
+                Err(e) => {
+                    let mut error = CAPTURE_ERROR.lock().unwrap();
+                    if error.is_none() {
+                        *error = Some(format!("CaptureControl::stop returned an error: {e}"));
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            let mut error = CAPTURE_ERROR.lock().unwrap();
+            if error.is_none() {
+                *error = Some(format!("start_free_threaded returned an error: {e}"));
+            }
         }
     }
 
@@ -293,28 +309,23 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
         .map(|(w, h)| (Some(w), Some(h)))
         .unwrap_or((None, None));
     let capture_error = CAPTURE_ERROR.lock().unwrap().clone();
-
     let first_frame_at = *FIRST_FRAME_AT.lock().unwrap();
-    let stop_requested_at = *STOP_REQUESTED_AT.lock().unwrap();
 
-    // initialization_seconds: time from actually invoking
-    // Capture::start() to the first frame arriving - covers WGC
-    // session negotiation, handler construction, and frame-pool
-    // warm-up as one meaningful number, without including anything
-    // outside this function's own control (spawn_blocking scheduling,
-    // IPC dispatch, etc., which aren't part of "how long did WGC take
-    // to deliver a first frame").
     let initialization_seconds = first_frame_at.map(|first| first.duration_since(capture_call_at).as_secs_f64());
-
-    let capture_duration_seconds = match (first_frame_at, stop_requested_at) {
-        (Some(first), Some(stop)) => Some(stop.duration_since(first).as_secs_f64()),
-        _ => None,
-    };
+    // Capture duration is simply the requested duration here, since
+    // the sleep-then-stop mechanism makes it deterministic by design -
+    // unlike the previous version, this number no longer depends on
+    // frame timing to compute at all, which is the whole point of the
+    // fix. Kept as its own field (rather than reusing
+    // requested_capture_seconds) in case a future revision makes the
+    // sleep duration dynamic.
+    let capture_duration_seconds = REQUESTED_CAPTURE_SECS as f64;
     let encoder_finalization_seconds = ENCODER_FINISH_DURATION.lock().unwrap().map(|d| d.as_secs_f64());
 
-    let approximate_fps = match capture_duration_seconds {
-        Some(secs) if secs > 0.0 => Some(frames_submitted_to_encoder as f64 / secs),
-        _ => None,
+    let approximate_fps = if capture_duration_seconds > 0.0 {
+        Some(frames_submitted_to_encoder as f64 / capture_duration_seconds)
+    } else {
+        None
     };
 
     let video_path = if capture_error.is_none() && output_path.exists() {
@@ -326,7 +337,7 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
     crate::debug_log::log(
         app,
         &format!(
-            "native_capture: proof finished, wgc_callbacks={frames_received}, submitted_to_encoder={frames_submitted_to_encoder}, capture_duration={capture_duration_seconds:?}s, finalization={encoder_finalization_seconds:?}s, total_command={total_command_seconds:.2}s, ended_normally={ended_normally}, capture_error={capture_error:?}, video_path={video_path:?}"
+            "native_capture: proof finished, wgc_callbacks={frames_received}, submitted_to_encoder={frames_submitted_to_encoder}, capture_duration={capture_duration_seconds:.2}s, finalization={encoder_finalization_seconds:?}s, total_command={total_command_seconds:.2}s, ended_normally={ended_normally}, capture_error={capture_error:?}, video_path={video_path:?}"
         ),
     );
 
@@ -349,11 +360,11 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
 
 /// Diagnostic-only command. Not called anywhere in the working
 /// recording flow. Captures the primary monitor for a requested ~5
-/// seconds (measured from the first frame, not from setup start) via
-/// Windows Graphics Capture, attempts to encode a real MP4 to this
-/// app's own config directory, and reports separately-measured
-/// timing plus WGC-callback vs. encoder-submission frame counts.
-/// Never opens any browser-style permission dialog.
+/// seconds - stopped by an external timer, independent of frame
+/// arrival - via Windows Graphics Capture, attempts to encode a real
+/// MP4 to this app's own config directory, and reports separately-
+/// measured timing plus WGC-callback vs. encoder-submission frame
+/// counts. Never opens any browser-style permission dialog.
 #[tauri::command]
 pub async fn test_native_capture(app: AppHandle) -> Result<NativeCaptureProof, String> {
     tauri::async_runtime::spawn_blocking(move || run_capture_proof(&app))
