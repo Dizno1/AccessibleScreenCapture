@@ -38,7 +38,10 @@ use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
 use windows_capture::monitor::Monitor;
-use windows_capture::settings::{ColorFormat, CursorCaptureSettings, DrawBorderSettings, Settings};
+use windows_capture::settings::{
+    ColorFormat, CursorCaptureSettings, DirtyRegionSettings, DrawBorderSettings,
+    MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
+};
 
 const PROOF_FRAME_LIMIT: u32 = 30;
 const PROOF_TIME_LIMIT_SECS: u64 = 3;
@@ -110,10 +113,12 @@ fn run_capture_proof(app: &AppHandle) -> Result<NativeCaptureProof, String> {
         primary_monitor,
         CursorCaptureSettings::Default,
         DrawBorderSettings::Default,
+        SecondaryWindowSettings::Default,
+        MinimumUpdateIntervalSettings::Default,
+        DirtyRegionSettings::Default,
         ColorFormat::Rgba8,
         (),
-    )
-    .map_err(|e| format!("Could not build capture settings: {e}"))?;
+    );
 
     crate::debug_log::log(app, "native_capture: calling Capture::start (blocks until the handler stops it)");
 
