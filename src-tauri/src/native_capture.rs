@@ -89,6 +89,7 @@ use windows_capture::settings::{
 const REQUESTED_CAPTURE_SECS: u64 = 5;
 const TARGET_UPDATE_INTERVAL_MS: u64 = 33; // ~30fps ceiling on real-change reporting, not a forced/guaranteed rate - see FRAME DELIVERY RATE note above
 const OUTPUT_FILE_NAME: &str = "native-capture-test.mp4";
+const AUDIO_FILE_NAME: &str = "native-capture-test-audio.wav";
 
 static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
 static FRAMES_SUBMITTED: AtomicU32 = AtomicU32::new(0);
@@ -129,18 +130,18 @@ pub struct NativeCaptureProof {
     capture_error: Option<String>,
     #[serde(flatten)]
     audio: crate::native_audio::AudioCaptureDiagnostics,
+    #[serde(rename = "audioWavPath")]
+    audio_wav_path: Option<String>,
 }
 
 #[derive(Clone)]
 struct CaptureFlags {
     output_path: PathBuf,
-    include_system_audio: bool,
 }
 
 struct ProofHandler {
     output_path: PathBuf,
     encoder: Option<VideoEncoder>,
-    include_system_audio: bool,
 }
 
 impl GraphicsCaptureApiHandler for ProofHandler {
@@ -159,7 +160,6 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         Ok(ProofHandler {
             output_path: context.flags.output_path,
             encoder: None,
-            include_system_audio: context.flags.include_system_audio,
         })
     }
 
@@ -188,45 +188,19 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         // already proven correct on real hardware.
         if self.encoder.is_none() {
             let path_string = self.output_path.to_string_lossy().to_string();
-            // AUDIO SUBMISSION - CORRECTED THIS ROUND. The previous
-            // version called a guessed encoder.send_audio_frame(&[u8])
-            // method that was never confirmed against real source, and
-            // was flagged as such in its own comment - not acceptable,
-            // per explicit instruction not to guess. That call has been
-            // removed entirely, not replaced with a different guess.
-            //
-            // Real evidence gathered this round instead: the crate's
-            // complete official README (every example it ships,
-            // including advanced ones - DXGI Desktop Duplication,
-            // stream-based in-memory encoding) uses
-            // AudioSettingsBuilder::default().disabled(true) in every
-            // single case, with no example anywhere of manually
-            // submitting audio samples to VideoEncoder. That absence,
-            // across otherwise thorough documentation, is itself
-            // meaningful: it suggests audio capture may happen
-            // internally within the encoder's own Media Foundation
-            // session when enabled (matching 2.0.0's own headline
-            // feature, "hardware-accelerated video encoder with stable
-            // audio timing," worded as a property of the encoder
-            // itself, not of anything the caller feeds it) - rather
-            // than requiring the caller to push PCM at all.
-            //
-            // This round tests that directly: simply enabling audio
-            // (removing .disabled(true)) using only the
-            // already-confirmed builder call shape, with zero new
-            // guessed methods. No PCM is submitted from this module at
-            // all. If the resulting MP4 has real audio, that confirms
-            // the encoder self-captures. If it's still silent, that
-            // rules the hypothesis out cleanly and tells us a genuine
-            // manual-submission API investigation (likely requiring
-            // the actual crate source, not just its docs/README) is
-            // the real next step - either way, real evidence rather
-            // than another stacked guess.
-            let audio_settings = if self.include_system_audio {
-                AudioSettingsBuilder::default()
-            } else {
-                AudioSettingsBuilder::default().disabled(true)
-            };
+            // ENCODER AUDIO - HYPOTHESIS CLOSED. An earlier round
+            // tested whether simply enabling AudioSettingsBuilder
+            // (without submitting any PCM) makes the encoder capture
+            // system audio internally on its own. That was tested on
+            // the real Windows machine this round and did not produce
+            // audible audio - the hypothesis is disproven, not left
+            // open. Encoder audio stays disabled unconditionally now;
+            // there's no reason to keep producing an empty AAC track
+            // shell for a path that's confirmed not to work. Real
+            // captured system audio is written to a separate WAV file
+            // instead - see the AUDIO INTEGRATION comment above
+            // run_capture_proof for the full architecture reasoning.
+            let audio_settings = AudioSettingsBuilder::default().disabled(true);
             match VideoEncoder::new(
                 VideoSettingsBuilder::new(width, height),
                 audio_settings,
@@ -270,6 +244,81 @@ impl GraphicsCaptureApiHandler for ProofHandler {
     }
 }
 
+// AUDIO INTEGRATION - architecture decision this round.
+//
+// Both halves are now independently proven on real hardware: native
+// video (a real ~5.00s capture window, frames encoded to HEVC/MP4)
+// and native WASAPI system audio (539 buffers, 189600 frames, 48kHz
+// stereo, captured from the real default render device). The
+// remaining question was how to combine them into one file.
+//
+// Investigated first, per instruction, rather than guessed:
+// windows-capture's VideoEncoder was searched extensively across
+// several rounds - its complete official README (every example it
+// ships, including advanced DXGI Desktop Duplication and stream-based
+// encoding use cases), its public error enum, and community
+// discussion - and no confirmed, documented public method for
+// supplying external PCM audio samples was ever found. The one
+// plausible alternative hypothesis (that simply enabling
+// AudioSettingsBuilder makes the encoder capture system audio
+// internally, with no caller involvement at all) has now been tested
+// on the real machine and did not produce audible audio - that
+// hypothesis is closed.
+//
+// Given that, and given explicit instruction not to introduce a large
+// multimedia framework casually (FFmpeg would mean shipping an
+// external executable/runtime - a real, load-bearing consequence that
+// hasn't been decided on, so it isn't introduced here), the smallest
+// honest architecture this round is: keep the two proven capture
+// paths as they are, and write the WASAPI PCM to its own real WAV
+// file (write_wav_file() below - plain std, no new dependency) using
+// the actual captured mix format, alongside the existing MP4. This is
+// not the one-file muxed result the directive prefers, and that gap
+// is reported honestly rather than papered over - but it's a real,
+// inspectable, playable second file with genuine captured audio in
+// it, not a faked integration. Muxing both into one container would
+// need either a confirmed encoder audio-input API (still not found)
+// or a real container-muxing component (a meaningfully larger
+// undertaking, appropriately out of scope for a single pass per the
+// "smallest reliable architecture" instruction) - both remain open
+// for a dedicated future pass, not attempted here.
+//
+// WAV format note: the format tag is written as IEEE float (3) when
+// bits_per_sample is 32, otherwise as integer PCM (1). WASAPI shared-
+// mode mix formats on modern Windows are almost always 32-bit float -
+// a well-established platform norm, not a guess specific to this
+// project - so this covers the common case directly; other bit depths
+// fall back to the PCM tag, which may not be byte-for-byte correct for
+// every possible device format, but keeps the file structurally valid
+// either way.
+fn write_wav_file(path: &std::path::Path, pcm: &[u8], sample_rate: u32, channels: u16, bits_per_sample: u16) -> Result<(), String> {
+    let format_tag: u16 = if bits_per_sample == 32 { 3 } else { 1 }; // 3 = IEEE float, 1 = integer PCM
+    let block_align = channels * (bits_per_sample / 8);
+    let byte_rate = sample_rate * block_align as u32;
+    let data_len = pcm.len() as u32;
+    let riff_len = 36 + data_len;
+
+    let mut file = std::fs::File::create(path).map_err(|e| format!("Could not create WAV file: {e}"))?;
+    use std::io::Write;
+
+    file.write_all(b"RIFF").map_err(|e| e.to_string())?;
+    file.write_all(&riff_len.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(b"WAVE").map_err(|e| e.to_string())?;
+    file.write_all(b"fmt ").map_err(|e| e.to_string())?;
+    file.write_all(&16u32.to_le_bytes()).map_err(|e| e.to_string())?; // fmt chunk size
+    file.write_all(&format_tag.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(&channels.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(&sample_rate.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(&byte_rate.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(&block_align.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(&bits_per_sample.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(b"data").map_err(|e| e.to_string())?;
+    file.write_all(&data_len.to_le_bytes()).map_err(|e| e.to_string())?;
+    file.write_all(pcm).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<NativeCaptureProof, String> {
     let command_start = Instant::now();
     crate::debug_log::log(app, "native_capture: sustained proof starting, acquiring primary monitor");
@@ -285,20 +334,19 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     let _ = std::fs::remove_file(&output_path);
 
     // Start WASAPI loopback first, if requested, so it's already
-    // running by the time video capture begins. This is NOT wired
-    // into the encoder this round (see the AUDIO SUBMISSION comment
-    // below for why) - it runs purely to produce its own independent
-    // diagnostics, confirming whether this app's own WASAPI capture
-    // mechanism initializes and receives real audio buffers at all,
-    // separate from the question of whether the encoder itself ends
-    // up including system audio when simply enabled. A failure here
-    // never aborts the video proof - recorded as audio diagnostics,
-    // the video-only path continues exactly as before.
+    // running by the time video capture begins. Its captured PCM is
+    // now accumulated (not just counted) and written to a separate
+    // WAV file after capture ends - see the AUDIO INTEGRATION comment
+    // below for why this is a second file rather than one muxed MP4
+    // this round. A failure here never aborts the video proof -
+    // recorded as audio diagnostics, the video-only path continues
+    // exactly as before.
     let mut audio_diagnostics = crate::native_audio::AudioCaptureDiagnostics {
         audio_requested: include_system_audio,
         ..Default::default()
     };
     let mut audio_stop_flag: Option<Arc<AtomicBool>> = None;
+    let mut audio_join_handle: Option<std::thread::JoinHandle<Vec<u8>>> = None;
 
     if include_system_audio {
         match crate::native_audio::start_loopback_capture() {
@@ -306,26 +354,37 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
                 crate::debug_log::log(
                     app,
                     &format!(
-                        "native_capture: WASAPI loopback started (diagnostic only this round), device={:?}, rate={:?}, channels={:?}",
+                        "native_capture: WASAPI loopback started, device={:?}, rate={:?}, channels={:?}",
                         diagnostics.render_endpoint_name, diagnostics.mix_sample_rate, diagnostics.mix_channels
                     ),
                 );
                 audio_diagnostics = diagnostics;
                 audio_stop_flag = Some(stop_flag.clone());
-                // Lightweight counting thread - just drains the
-                // channel so buffers/frames captured reflect real
-                // received audio, without doing anything else with
-                // the data (never fed to the encoder - see the AUDIO
-                // SUBMISSION comment below).
-                std::thread::spawn(move || {
+                // Accumulates every captured chunk's raw PCM bytes
+                // into one buffer, returned when the thread joins -
+                // this is what gets written to the WAV file below.
+                // Never touches the video encoder (see the AUDIO
+                // INTEGRATION comment below for why).
+                audio_join_handle = Some(std::thread::spawn(move || {
+                    let mut accumulated = Vec::new();
                     while !stop_flag.load(Ordering::SeqCst) {
                         while let Ok(chunk) = receiver.try_recv() {
                             AUDIO_BUFFERS_CAPTURED.fetch_add(1, Ordering::SeqCst);
                             AUDIO_FRAMES_CAPTURED.fetch_add(chunk.frames, Ordering::SeqCst);
+                            accumulated.extend_from_slice(&chunk.pcm);
                         }
                         std::thread::sleep(Duration::from_millis(20));
                     }
-                });
+                    // Drain whatever arrived in the brief window
+                    // between the last poll and the thread actually
+                    // observing stop_flag, so nothing captured is lost.
+                    while let Ok(chunk) = receiver.try_recv() {
+                        AUDIO_BUFFERS_CAPTURED.fetch_add(1, Ordering::SeqCst);
+                        AUDIO_FRAMES_CAPTURED.fetch_add(chunk.frames, Ordering::SeqCst);
+                        accumulated.extend_from_slice(&chunk.pcm);
+                    }
+                    accumulated
+                }));
             }
             Err(e) => {
                 crate::debug_log::log(app, &format!("native_capture: WASAPI loopback FAILED to start: {e}"));
@@ -346,7 +405,6 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
         ColorFormat::Rgba8,
         CaptureFlags {
             output_path: output_path.clone(),
-            include_system_audio,
         },
     );
 
@@ -403,6 +461,48 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     if let Some(stop_flag) = &audio_stop_flag {
         stop_flag.store(true, Ordering::SeqCst);
     }
+
+    // Wait for the audio thread to actually finish and hand back
+    // everything it accumulated, then write it as a real WAV file.
+    // See the AUDIO INTEGRATION comment below for why this is a
+    // separate file rather than muxed into the MP4 this round.
+    let mut audio_wav_path: Option<String> = None;
+    if let Some(handle) = audio_join_handle {
+        match handle.join() {
+            Ok(pcm) if !pcm.is_empty() => {
+                let wav_path = output_dir.join(AUDIO_FILE_NAME);
+                match write_wav_file(
+                    &wav_path,
+                    &pcm,
+                    audio_diagnostics.mix_sample_rate.unwrap_or(48_000),
+                    audio_diagnostics.mix_channels.unwrap_or(2),
+                    audio_diagnostics.mix_bits_per_sample.unwrap_or(32),
+                ) {
+                    Ok(()) => {
+                        crate::debug_log::log(app, &format!("native_capture: WAV written, {} bytes PCM, {}", pcm.len(), wav_path.display()));
+                        audio_wav_path = Some(wav_path.display().to_string());
+                    }
+                    Err(e) => {
+                        crate::debug_log::log(app, &format!("native_capture: WAV write FAILED: {e}"));
+                        if audio_diagnostics.audio_error.is_none() {
+                            audio_diagnostics.audio_error = Some(format!("Could not write WAV file: {e}"));
+                        }
+                    }
+                }
+            }
+            Ok(_) => {
+                // Empty accumulation - audio was requested and WASAPI
+                // initialized, but nothing was actually captured
+                // (e.g. the render device was silent the whole time).
+            }
+            Err(_) => {
+                if audio_diagnostics.audio_error.is_none() {
+                    audio_diagnostics.audio_error = Some("Audio capture thread panicked.".to_string());
+                }
+            }
+        }
+    }
+
     audio_diagnostics.buffers_captured = AUDIO_BUFFERS_CAPTURED.load(Ordering::SeqCst);
     audio_diagnostics.frames_captured = AUDIO_FRAMES_CAPTURED.load(Ordering::SeqCst) as u64;
 
@@ -464,6 +564,7 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
         video_path,
         capture_error,
         audio: audio_diagnostics,
+        audio_wav_path,
     })
 }
 

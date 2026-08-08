@@ -1630,8 +1630,15 @@ function initNativeCaptureTest() {
               ? `${proof.mixSampleRate} Hz, ${proof.mixChannels} channel${proof.mixChannels === 1 ? "" : "s"}`
               : "unknown format";
           parts.push(
-            `This app's own WASAPI capture from ${device} (${format}) received ${proof.buffersCaptured} audio buffers, ${proof.framesCaptured} total frames - shown for diagnostics only, not fed into the video file. The encoder was separately asked to include audio on its own, unconfirmed whether that actually captures anything; check whether the MP4 has sound to see if that worked.`
+            `System audio captured from ${device} (${format}): ${proof.buffersCaptured} buffers, ${proof.framesCaptured} total frames.`
           );
+          if (proof.audioWavPath) {
+            parts.push(
+              `Written to a separate audio file at ${proof.audioWavPath} - not yet combined into the video file, since no confirmed way to feed audio into the native video encoder was found. Play both files to check they're in sync.`
+            );
+          } else {
+            parts.push("No audio file was produced this time.");
+          }
         }
       } else {
         parts.push("System audio was not requested for this test.");
