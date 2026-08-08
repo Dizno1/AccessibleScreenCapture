@@ -170,6 +170,16 @@ export async function testSpeechVoice() {
   return invoke("test_speech_voice");
 }
 
+/**
+ * Diagnostic-only: acquires a few frames from the primary monitor via
+ * Windows Graphics Capture and reports how many arrived, without
+ * touching the working recorder at all. See
+ * src-tauri/src/native_capture.rs.
+ */
+export async function testNativeCapture() {
+  return invoke("test_native_capture");
+}
+
 export async function getOutputSettings() {
   return invoke("get_output_settings");
 }

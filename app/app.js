@@ -31,6 +31,7 @@ import {
   setSpeechVoice,
   setSpeechRate,
   testSpeechVoice,
+  testNativeCapture,
 } from "./tauri-bridge.js";
 
 const captureTypeScreenshot = document.getElementById("capture-type-screenshot");
@@ -1563,6 +1564,7 @@ function initDiagnostics() {
   section.hidden = false;
   renderDiagnostics();
   initDebugLogViewer();
+  initNativeCaptureTest();
 }
 
 /**
@@ -1600,6 +1602,33 @@ function initDebugLogViewer() {
     } catch (error) {
       console.error("Could not clear debug log:", error);
       if (status) status.textContent = "Could not clear the debug log.";
+    }
+  });
+}
+
+/**
+ * Wires the experimental native-capture test button. Entirely
+ * separate from the working recorder - this never touches
+ * startRecording/stopRecording or anything in the capture workflow.
+ */
+function initNativeCaptureTest() {
+  const button = document.getElementById("native-capture-test");
+  const result = document.getElementById("native-capture-result");
+  if (!button || !result) return;
+
+  button.addEventListener("click", async () => {
+    result.textContent = "Testing native capture...";
+    logDebug("app.js: native capture test requested");
+    try {
+      const proof = await testNativeCapture();
+      const dimensions =
+        proof.frameWidth != null && proof.frameHeight != null ? `${proof.frameWidth} by ${proof.frameHeight} pixels` : "unknown dimensions";
+      result.textContent = `Native capture succeeded: ${proof.framesReceived} frames received, first frame ${dimensions}.`;
+      logDebug(`app.js: native capture test succeeded: ${JSON.stringify(proof)}`);
+    } catch (error) {
+      console.error("Native capture test failed:", error);
+      result.textContent = `Native capture failed: ${error}`;
+      logDebug(`app.js: native capture test FAILED: ${error}`);
     }
   });
 }

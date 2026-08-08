@@ -21,6 +21,7 @@ use tauri_plugin_notification::NotificationExt;
 mod capture_context;
 mod debug_log;
 mod descriptor;
+mod native_capture;
 mod native_speech;
 mod output_settings;
 mod recording_save;
@@ -28,6 +29,7 @@ mod recording_save;
 use capture_context::get_capture_context;
 use debug_log::{clear_debug_log, get_debug_log, log_debug_message};
 use descriptor::{get_context_and_mark_reported, get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
+use native_capture::test_native_capture;
 use native_speech::{get_speech_voices, speak_status, test_speech_voice};
 use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice};
 use recording_save::{
@@ -717,6 +719,7 @@ pub fn run() {
             set_speech_rate,
             get_speech_voices,
             test_speech_voice,
+            test_native_capture,
             begin_recording_save,
             append_recording_chunk,
             finish_recording_save,

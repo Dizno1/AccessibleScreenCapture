@@ -35,4 +35,15 @@ windows = { version = "0.58", features = [
   "Win32_Media_Speech",
   "Win32_System_Com",
 ] }
+# Native Windows Graphics Capture proof (src-tauri/src/native_capture.rs)
+# only - not wired into the working recorder. This crate depends on
+# its own internal version of `windows`, resolved by Cargo as a
+# separate compiled dependency from our own pinned `windows = "0.58"`
+# above (Cargo supports multiple incompatible versions of the same
+# crate name coexisting in one graph) - so this does not force
+# upgrading the windows dependency the rest of this project already
+# uses. That only holds as long as native_capture.rs never passes a
+# type from one version's API surface into the other, which it
+# deliberately does not.
+windows-capture = "2"
 
