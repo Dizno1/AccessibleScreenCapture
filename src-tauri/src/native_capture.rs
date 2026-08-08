@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 use tauri::AppHandle;
-use windows_capture::capture::GraphicsCaptureApiHandler;
+use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
 use windows_capture::monitor::Monitor;
@@ -64,7 +64,7 @@ impl GraphicsCaptureApiHandler for ProofHandler {
     type Flags = ();
     type Error = Box<dyn std::error::Error + Send + Sync>;
 
-    fn new(_flags: Self::Flags) -> Result<Self, Self::Error> {
+    fn new(_context: Context<()>) -> Result<Self, Self::Error> {
         FRAME_COUNT.store(0, Ordering::SeqCst);
         *FIRST_FRAME_SIZE.lock().unwrap() = None;
         Ok(ProofHandler { start: Instant::now() })
