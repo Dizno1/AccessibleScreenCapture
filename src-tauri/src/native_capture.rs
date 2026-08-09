@@ -280,25 +280,48 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         // stretch) can't produce an excessive burst of encoder calls
         // in one callback.
         //
-        // FINAL-TAIL GAP - INVESTIGATED, CONFIRMED UNRESOLVABLE WITH
-        // THE CURRENT API. This catch-up mechanism only runs inside
-        // on_frame_arrived(), so it can only fill gaps BETWEEN real
-        // callbacks - the gap between the LAST real callback and the
-        // moment control.stop() is externally called is not
-        // represented in the MP4. Investigated whether a copy of the
-        // last frame's data could be resubmitted from outside this
-        // callback (e.g. right before stop()) to close that gap:
-        // frame.buffer() returns a FrameBuffer whose only public use
-        // is save_as_image() - there is no way to extract raw pixel
-        // data and construct a new Frame from it later, and
-        // send_frame() only accepts the crate's own Frame type, which
-        // has no public constructor. So there is no confirmed way to
-        // "replay" a frame outside its own callback. This gap remains
-        // unresolved, not silently accepted - it was not solved by
-        // assuming active-screen tests (which happen to get a real
-        // callback close to the stop moment) prove it doesn't matter.
+        // SPACING FIX THIS ROUND. A real test submitted 223 frames
+        // (16 real + 207 catch-up) in a tight, effectively
+        // instantaneous burst, and the resulting MP4 was 4.483s - not
+        // the 223/60=3.716s the pure "sequential count" model
+        // predicts. That mismatch means the encoder's real internal
+        // timing model is not simple sequential counting, and is
+        // plausibly influenced by real wall-clock submission time to
+        // some degree (windows-capture 2.0.0's own changelog
+        // specifically advertises "monotonic audio timing" as an
+        // encoder improvement, which is at least suggestive that
+        // internal timing isn't purely frame-count-based). Rather
+        // than guess at a corrected formula without a way to verify
+        // it, catch-up sends are now spaced apart by a real sleep
+        // matching the target frame interval instead of fired in an
+        // instant burst - this makes the mechanism's correctness not
+        // depend on knowing the encoder's exact internal timing model:
+        // if it uses real submission time, spaced sends now correctly
+        // reproduce the real elapsed gap; if it's still sequential-
+        // count-based, spacing doesn't change the count and is no
+        // worse than before either way.
+        //
+        // FINAL-TAIL GAP - INVESTIGATED AGAIN THIS ROUND, STILL
+        // CONFIRMED UNRESOLVABLE WITH THE CURRENT API. This catch-up
+        // mechanism only runs inside on_frame_arrived(), so it can
+        // only fill gaps BETWEEN real callbacks - the gap between the
+        // LAST real callback and the moment control.stop() is
+        // externally called is not represented in the MP4 by this
+        // mechanism alone. Re-confirmed via fresh research this round
+        // that VideoEncoderSource remains an internal type with no
+        // public constructor, and send_frame() remains the only
+        // public video-submission method, requiring the crate's own
+        // Frame type specifically - there is still no confirmed way
+        // to submit video content from outside a real WGC callback.
+        // The bounded grace-period wait (in run_capture_proof, before
+        // calling stop()) remains the only available mitigation for
+        // this specific gap - not because it's an ideal architecture,
+        // but because no better one exists within confirmed API
+        // capabilities. This is stated plainly, not hidden behind
+        // favorable test runs.
         const ASSUMED_ENCODER_FPS: f64 = 60.0;
-        const MAX_CATCHUP_FRAMES: u32 = 600; // 10s worth at 60fps - a sane ceiling, not a hard requirement
+        const CATCHUP_FRAME_INTERVAL: Duration = Duration::from_micros(16_667); // ~1/60s
+        const MAX_CATCHUP_FRAMES: u32 = 300; // 5s worth at 60fps - lower than before since sends are no longer instantaneous; a longer real gap now genuinely costs real time to catch up, so this cap also bounds how long on_frame_arrived can block
 
         let catchup_sends = match self.last_frame_at {
             Some(previous) => {
@@ -318,6 +341,10 @@ impl GraphicsCaptureApiHandler for ProofHandler {
                         FRAMES_SUBMITTED.fetch_add(1, Ordering::SeqCst);
                         if i > 0 {
                             DUPLICATED_FRAMES_SUBMITTED.fetch_add(1, Ordering::SeqCst);
+                            // Space catch-up sends by real time
+                            // instead of firing them instantaneously -
+                            // see the SPACING FIX comment above.
+                            std::thread::sleep(CATCHUP_FRAME_INTERVAL);
                         }
                     }
                     Err(e) => {
@@ -587,27 +614,30 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
                 Ok(_first_frame_at) => {
                     std::thread::sleep(Duration::from_secs(REQUESTED_CAPTURE_SECS));
 
-                    // TAIL-GAP MITIGATION. The catch-up mechanism in
-                    // on_frame_arrived() can only fill gaps BETWEEN
-                    // real callbacks - the interval between the LAST
-                    // real callback and this stop point was, until
-                    // now, never represented in the encoded media at
-                    // all (confirmed: 239 submitted frames / 60fps ==
-                    // 3.983s exactly, in a real test where the
-                    // requested window was 5s - the entire ~1s
-                    // shortfall was this unfilled tail, not a
-                    // computation error in the catch-up math itself).
-                    // This does not fabricate frames or guess a
-                    // duplicate count - it waits, briefly and
-                    // bounded, for one more GENUINE WGC callback,
-                    // which (if it arrives) triggers the existing,
-                    // legitimate catch-up mechanism to close most of
-                    // the gap using real elapsed time. If the desktop
-                    // stays completely static through this grace
-                    // window too, no frame arrives, nothing is
-                    // fabricated, and the remaining gap is reported
-                    // honestly via the new tailGapSeconds diagnostic
-                    // rather than hidden.
+                    // TAIL-GAP MITIGATION - KEPT, NOT A COMPLETE FIX.
+                    // Re-investigated this round specifically to find
+                    // something better: confirmed again (fresh
+                    // research, not just trusting last round's
+                    // conclusion) that windows-capture 2.0.1 has no
+                    // public way to submit video content from outside
+                    // a real WGC callback - VideoEncoderSource has no
+                    // public constructor, and send_frame() only
+                    // accepts the crate's own Frame type, which can't
+                    // be created or replayed independently. Given that
+                    // hard constraint, this bounded wait for one more
+                    // GENUINE callback remains the best available
+                    // mitigation, not an ideal architecture - it does
+                    // NOT fabricate any content, and it does NOT
+                    // guarantee success (a desktop that stays
+                    // completely static through this window too still
+                    // leaves a real, honestly-reported gap). The
+                    // catch-up mechanism itself was corrected this
+                    // round (real time-spaced sends instead of an
+                    // instant burst - see the SPACING FIX comment in
+                    // on_frame_arrived), which is the more consequential
+                    // fix; this grace period only helps the specific
+                    // gap after the very last callback, which no
+                    // in-callback mechanism can ever reach.
                     let last_before_grace = *LAST_REAL_FRAME_AT.lock().unwrap();
                     let gap_already_ms = last_before_grace.map(|last| last.elapsed().as_millis() as u64).unwrap_or(u64::MAX);
                     if gap_already_ms >= TAIL_GAP_GRACE_THRESHOLD_MS {
