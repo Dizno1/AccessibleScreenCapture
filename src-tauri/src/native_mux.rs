@@ -41,13 +41,7 @@
 // (src-tauri/binaries/ffmpeg-<real target triple>.exe, determined at
 // build time via rustc --print host-tuple) automatically, before
 // either build path runs. No manual download, rename, or copy step
-// is required of anyone building the app through that workflow. A
-// local developer build that skips that workflow step (running
-// `cargo tauri build` directly without it, for example) will still
-// be missing the sidecar and will fail cleanly at the point below
-// (a clear error, not a crash) - that's an expected consequence of
-// not running the full CI pipeline, not something an end user of the
-// packaged application would ever encounter.
+// is required of anyone building the app through that workflow.
 //
 // PACKAGING CONSEQUENCES, for the record:
 //   - License: FFmpeg is LGPL 2.1+ if built without GPL-only
@@ -59,11 +53,20 @@
 //     "linking" provisions the way embedding its source would.
 //     FFmpeg's own license text/attribution should still ship
 //     alongside the binary.
-//   - Size: a full FFmpeg Windows build commonly runs 70-100+ MB; a
-//     minimal build with just muxing/AAC-encoding support (many
-//     trusted community builds, e.g. gyan.dev's "essentials" build)
-//     is smaller but still a real, non-trivial addition to installer
-//     size - this was not minimized or verified further in this pass.
+//   - Size: real evidence now available - the built MSI grew from
+//     ~5MB to ~53MB after the sidecar was bundled, confirming FFmpeg
+//     is genuinely included and roughly quantifying the real cost.
+//
+// STREAM MAPPING - FIXED THIS ROUND. The command previously had no
+// explicit -map directives. With two inputs (a video whose container
+// also happens to carry a silent AAC track, and a WAV), FFmpeg's
+// default automatic stream selection when no -map is given picks
+// "one" video and audio stream using its own internal heuristics
+// across ALL inputs - there was no guarantee it would consistently
+// prefer the WAV's audio over the source MP4's silent AAC track.
+// Explicit `-map 0:v:0 -map 1:a:0` removes that ambiguity entirely:
+// video always comes from input 0 (the MP4), audio always comes from
+// input 1 (the WAV), and the silent AAC track is never a candidate.
 //
 // AUDIO CODEC: AAC (`-c:a aac`, FFmpeg's built-in encoder - no extra
 // FFmpeg build option required for that specific codec).
@@ -71,17 +74,37 @@
 // unmodified, never re-encoded, preserving quality and avoiding
 // re-encoding time/complexity entirely, per explicit preference.
 // `-shortest` bounds the output to the shorter of the two input
-// streams (the two are already aligned to within ~34ms by the
+// streams (the two are already aligned to within tens of ms by the
 // capture-origin work, so this only trims that small residual
 // difference, not a meaningful edit).
+//
+// OBSERVABILITY - IMPROVED THIS ROUND. A prior version could leave
+// the whole mux attempt silently unreported if a preceding step (the
+// caller's app_config_dir() lookup) failed - the result was neither a
+// success nor a failure message, just nothing, which is exactly the
+// confusing outcome a real test run showed. MuxResult now always
+// exists once an attempt genuinely begins (mux_attempted is always
+// true when this function actually runs), reports the sidecar
+// process's real exit code, and treats "success" as requiring BOTH a
+// clean process exit AND a confirmed existing output file afterward -
+// not just trusting the exit code alone. stderr is retained but
+// bounded in length so a large FFmpeg log can't flood the UI.
 
 use serde::Serialize;
 use std::path::Path;
 use tauri::AppHandle;
 use tauri_plugin_shell::ShellExt;
 
+const MAX_STDERR_CHARS: usize = 2000;
+
 #[derive(Serialize)]
 pub struct MuxResult {
+    #[serde(rename = "muxAttempted")]
+    pub mux_attempted: bool,
+    #[serde(rename = "sidecarInvocationSucceeded")]
+    pub sidecar_invocation_succeeded: bool,
+    #[serde(rename = "ffmpegExitCode")]
+    pub ffmpeg_exit_code: Option<i32>,
     #[serde(rename = "finalMuxedPath")]
     pub final_muxed_path: Option<String>,
     #[serde(rename = "muxingMethod")]
@@ -98,13 +121,22 @@ pub struct MuxResult {
     pub muxing_error: Option<String>,
 }
 
+fn truncated_stderr(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    if text.chars().count() > MAX_STDERR_CHARS {
+        let truncated: String = text.chars().take(MAX_STDERR_CHARS).collect();
+        format!("{truncated}... [truncated, {} total characters]", text.chars().count())
+    } else {
+        text.to_string()
+    }
+}
+
 /// Attempts to mux the given video and audio files into one MP4 at
 /// `output_path`, via the bundled `ffmpeg` sidecar. Never deletes or
-/// modifies `video_path`/`audio_path` - a failure here (including the
-/// sidecar binary simply not being present, the real, currently
-/// unresolved gap - see the module-level comment) is always reported
-/// as a clean MuxResult, never a panic, and the two proven source
-/// files are left exactly as they are either way.
+/// modifies `video_path`/`audio_path`. Always returns a MuxResult
+/// with mux_attempted true - every failure path (sidecar not found,
+/// process launch failure, non-zero exit, missing output file after
+/// a clean exit) is reported explicitly, never silently swallowed.
 pub async fn mux_video_and_audio(app: &AppHandle, video_path: &Path, audio_path: &Path, output_path: &Path) -> MuxResult {
     let video_stream_handling = "copy (no re-encode)".to_string();
     let audio_codec_used = "aac".to_string();
@@ -114,15 +146,16 @@ pub async fn mux_video_and_audio(app: &AppHandle, video_path: &Path, audio_path:
         Ok(cmd) => cmd,
         Err(e) => {
             return MuxResult {
+                mux_attempted: true,
+                sidecar_invocation_succeeded: false,
+                ffmpeg_exit_code: None,
                 final_muxed_path: None,
                 muxing_method,
                 video_stream_handling,
                 audio_codec_used,
                 muxing_success: false,
                 final_file_size_bytes: None,
-                muxing_error: Some(format!(
-                    "Could not locate the ffmpeg sidecar binary: {e}. The Windows CI build prepares this automatically before packaging - if you're running a local developer build outside that workflow, the sidecar simply hasn't been prepared for this build."
-                )),
+                muxing_error: Some(format!("Could not locate the ffmpeg sidecar binary: {e}")),
             };
         }
     };
@@ -136,6 +169,10 @@ pub async fn mux_video_and_audio(app: &AppHandle, video_path: &Path, audio_path:
             &video_path.to_string_lossy(),
             "-i",
             &audio_path.to_string_lossy(),
+            "-map",
+            "0:v:0",
+            "-map",
+            "1:a:0",
             "-c:v",
             "copy",
             "-c:a",
@@ -149,32 +186,51 @@ pub async fn mux_video_and_audio(app: &AppHandle, video_path: &Path, audio_path:
         .await;
 
     match output {
-        Ok(result) if result.status.success() => {
-            let final_file_size_bytes = std::fs::metadata(output_path).ok().map(|m| m.len());
-            MuxResult {
-                final_muxed_path: Some(output_path.display().to_string()),
-                muxing_method,
-                video_stream_handling,
-                audio_codec_used,
-                muxing_success: true,
-                final_file_size_bytes,
-                muxing_error: None,
+        Ok(result) => {
+            let exit_code = result.status.code();
+            let output_exists = output_path.exists();
+            // Success requires BOTH a clean process exit AND a
+            // confirmed output file afterward - not the exit code
+            // alone, in case FFmpeg reports success without actually
+            // producing the expected file for some reason.
+            if result.status.success() && output_exists {
+                let final_file_size_bytes = std::fs::metadata(output_path).ok().map(|m| m.len());
+                MuxResult {
+                    mux_attempted: true,
+                    sidecar_invocation_succeeded: true,
+                    ffmpeg_exit_code: exit_code,
+                    final_muxed_path: Some(output_path.display().to_string()),
+                    muxing_method,
+                    video_stream_handling,
+                    audio_codec_used,
+                    muxing_success: true,
+                    final_file_size_bytes,
+                    muxing_error: None,
+                }
+            } else {
+                let reason = if !result.status.success() {
+                    format!("ffmpeg exited with a non-zero status: {exit_code:?}. stderr: {}", truncated_stderr(&result.stderr))
+                } else {
+                    "ffmpeg reported success but the expected output file does not exist.".to_string()
+                };
+                MuxResult {
+                    mux_attempted: true,
+                    sidecar_invocation_succeeded: true,
+                    ffmpeg_exit_code: exit_code,
+                    final_muxed_path: None,
+                    muxing_method,
+                    video_stream_handling,
+                    audio_codec_used,
+                    muxing_success: false,
+                    final_file_size_bytes: None,
+                    muxing_error: Some(reason),
+                }
             }
         }
-        Ok(result) => MuxResult {
-            final_muxed_path: None,
-            muxing_method,
-            video_stream_handling,
-            audio_codec_used,
-            muxing_success: false,
-            final_file_size_bytes: None,
-            muxing_error: Some(format!(
-                "ffmpeg exited with a non-zero status: {:?}. stderr: {}",
-                result.status.code(),
-                String::from_utf8_lossy(&result.stderr)
-            )),
-        },
         Err(e) => MuxResult {
+            mux_attempted: true,
+            sidecar_invocation_succeeded: false,
+            ffmpeg_exit_code: None,
             final_muxed_path: None,
             muxing_method,
             video_stream_handling,

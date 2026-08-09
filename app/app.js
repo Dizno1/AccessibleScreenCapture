@@ -1606,9 +1606,11 @@ function initNativeCaptureTest() {
         `Requested ${proof.requestedCaptureSeconds} seconds of capture.`,
         `Initialization took ${fmt(proof.initializationSeconds)} seconds.`,
         `Actual capture window was ${proof.captureDurationSeconds.toFixed(2)} seconds.`,
+        `Last real video frame arrived ${fmt(proof.lastRealFrameSeconds)} seconds after the first.`,
+        `Tail gap (time after the last real frame with no corresponding video content) was ${fmt(proof.tailGapSeconds)} seconds.`,
         `Encoder finalization took ${fmt(proof.encoderFinalizationSeconds)} seconds.`,
         `Total command time was ${fmt(proof.totalCommandSeconds)} seconds.`,
-        `${proof.framesReceived} frame callbacks received; ${proof.framesSubmittedToEncoder} submitted to the encoder`,
+        `${proof.framesReceived} frame callbacks received; ${proof.framesSubmittedToEncoder} submitted to the encoder (${proof.duplicatedFramesSubmitted} of those were catch-up duplicates of a real frame, not new content).`,
         proof.approximateFps != null ? `(approximately ${proof.approximateFps.toFixed(1)} frames per second based on the capture window only).` : "(rate not calculable).",
         `First frame ${dimensions}.`,
       ];
@@ -1640,9 +1642,7 @@ function initNativeCaptureTest() {
             `Trimmed to align with video's actual capture window: ${preRoll} seconds discarded from the start, ${postRoll} seconds discarded from the end. Saved audio duration: ${savedDuration} seconds (${proof.retainedAudioFrames} frames).`
           );
           if (proof.audioWavPath) {
-            parts.push(
-              `Written to a separate audio file at ${proof.audioWavPath} - not yet combined into the video file, since no confirmed way to feed audio into the native video encoder was found. Play both files to check they're in sync.`
-            );
+            parts.push(`Written to a separate audio file at ${proof.audioWavPath}.`);
           } else {
             parts.push("No audio file was produced this time.");
           }
@@ -1651,13 +1651,16 @@ function initNativeCaptureTest() {
         parts.push("System audio was not requested for this test.");
       }
 
-      if (proof.muxingSuccess) {
+      if (proof.muxAttempted === false) {
+        parts.push("Combining video and audio was not attempted, since the video and/or audio source file was not produced.");
+      } else if (proof.muxingSuccess) {
         const size = proof.finalFileSizeBytes != null ? `${(proof.finalFileSizeBytes / 1024 / 1024).toFixed(1)} MB` : "unknown size";
         parts.push(
           `Combined video and audio file written to ${proof.finalMuxedPath} (${size}). Video was copied without re-encoding; audio was encoded to AAC.`
         );
-      } else if (proof.muxingError) {
-        parts.push(`Combining video and audio failed: ${proof.muxingError}`);
+      } else {
+        const exitInfo = proof.ffmpegExitCode != null ? ` (ffmpeg exit code ${proof.ffmpegExitCode})` : "";
+        parts.push(`Combining video and audio failed${exitInfo}: ${proof.muxingError || "unknown error"}`);
       }
 
       result.textContent = parts.join(" ");

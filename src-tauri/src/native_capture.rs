@@ -89,6 +89,8 @@ use windows_capture::settings::{
 
 const REQUESTED_CAPTURE_SECS: u64 = 5;
 const FIRST_FRAME_TIMEOUT_SECS: u64 = 10; // generous margin over observed real init times (~1.5s), fails cleanly rather than hanging forever
+const TAIL_GAP_GRACE_THRESHOLD_MS: u64 = 200; // only wait the grace period if the tail gap is already meaningfully large
+const TAIL_GAP_GRACE_PERIOD_SECS: u64 = 1; // bounded extra wait for one more real frame - never fabricates content, see the mitigation comment at its call site
 const TARGET_UPDATE_INTERVAL_MS: u64 = 33; // ~30fps ceiling on real-change reporting, not a forced/guaranteed rate - see FRAME DELIVERY RATE note above
 const OUTPUT_FILE_NAME: &str = "native-capture-test.mp4";
 const AUDIO_FILE_NAME: &str = "native-capture-test-audio.wav";
@@ -99,6 +101,8 @@ static FRAMES_SUBMITTED: AtomicU32 = AtomicU32::new(0);
 static FIRST_FRAME_SIZE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 static CAPTURE_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static FIRST_FRAME_AT: Mutex<Option<Instant>> = Mutex::new(None);
+static LAST_REAL_FRAME_AT: Mutex<Option<Instant>> = Mutex::new(None);
+static DUPLICATED_FRAMES_SUBMITTED: AtomicU32 = AtomicU32::new(0);
 static ENCODER_FINISH_DURATION: Mutex<Option<Duration>> = Mutex::new(None);
 static AUDIO_BUFFERS_CAPTURED: AtomicU32 = AtomicU32::new(0);
 static AUDIO_FRAMES_CAPTURED: AtomicU32 = AtomicU32::new(0);
@@ -111,6 +115,12 @@ pub struct NativeCaptureProof {
     frames_received: u32,
     #[serde(rename = "framesSubmittedToEncoder")]
     frames_submitted_to_encoder: u32,
+    #[serde(rename = "duplicatedFramesSubmitted")]
+    duplicated_frames_submitted: u32,
+    #[serde(rename = "lastRealFrameSeconds")]
+    last_real_frame_seconds: Option<f64>,
+    #[serde(rename = "tailGapSeconds")]
+    tail_gap_seconds: Option<f64>,
     #[serde(rename = "frameWidth")]
     frame_width: Option<u32>,
     #[serde(rename = "frameHeight")]
@@ -172,6 +182,8 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         *FIRST_FRAME_SIZE.lock().unwrap() = None;
         *CAPTURE_ERROR.lock().unwrap() = None;
         *FIRST_FRAME_AT.lock().unwrap() = None;
+        *LAST_REAL_FRAME_AT.lock().unwrap() = None;
+        DUPLICATED_FRAMES_SUBMITTED.store(0, Ordering::SeqCst);
         *ENCODER_FINISH_DURATION.lock().unwrap() = None;
         Ok(ProofHandler {
             output_path: context.flags.output_path,
@@ -296,13 +308,17 @@ impl GraphicsCaptureApiHandler for ProofHandler {
             None => 1, // first frame - just send it once
         };
         self.last_frame_at = Some(Instant::now());
+        *LAST_REAL_FRAME_AT.lock().unwrap() = self.last_frame_at;
 
         if let Some(encoder) = self.encoder.as_mut() {
             let mut send_error: Option<String> = None;
-            for _ in 0..catchup_sends {
+            for i in 0..catchup_sends {
                 match encoder.send_frame(frame) {
                     Ok(()) => {
                         FRAMES_SUBMITTED.fetch_add(1, Ordering::SeqCst);
+                        if i > 0 {
+                            DUPLICATED_FRAMES_SUBMITTED.fetch_add(1, Ordering::SeqCst);
+                        }
                     }
                     Err(e) => {
                         send_error = Some(format!("Could not send frame {count} to encoder: {e}"));
@@ -570,6 +586,41 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
             match first_frame_rx.recv_timeout(Duration::from_secs(FIRST_FRAME_TIMEOUT_SECS)) {
                 Ok(_first_frame_at) => {
                     std::thread::sleep(Duration::from_secs(REQUESTED_CAPTURE_SECS));
+
+                    // TAIL-GAP MITIGATION. The catch-up mechanism in
+                    // on_frame_arrived() can only fill gaps BETWEEN
+                    // real callbacks - the interval between the LAST
+                    // real callback and this stop point was, until
+                    // now, never represented in the encoded media at
+                    // all (confirmed: 239 submitted frames / 60fps ==
+                    // 3.983s exactly, in a real test where the
+                    // requested window was 5s - the entire ~1s
+                    // shortfall was this unfilled tail, not a
+                    // computation error in the catch-up math itself).
+                    // This does not fabricate frames or guess a
+                    // duplicate count - it waits, briefly and
+                    // bounded, for one more GENUINE WGC callback,
+                    // which (if it arrives) triggers the existing,
+                    // legitimate catch-up mechanism to close most of
+                    // the gap using real elapsed time. If the desktop
+                    // stays completely static through this grace
+                    // window too, no frame arrives, nothing is
+                    // fabricated, and the remaining gap is reported
+                    // honestly via the new tailGapSeconds diagnostic
+                    // rather than hidden.
+                    let last_before_grace = *LAST_REAL_FRAME_AT.lock().unwrap();
+                    let gap_already_ms = last_before_grace.map(|last| last.elapsed().as_millis() as u64).unwrap_or(u64::MAX);
+                    if gap_already_ms >= TAIL_GAP_GRACE_THRESHOLD_MS {
+                        let grace_deadline = Instant::now() + Duration::from_secs(TAIL_GAP_GRACE_PERIOD_SECS);
+                        while Instant::now() < grace_deadline {
+                            std::thread::sleep(Duration::from_millis(50));
+                            let latest = *LAST_REAL_FRAME_AT.lock().unwrap();
+                            if latest != last_before_grace {
+                                break; // a new real frame arrived and triggered catch-up
+                            }
+                        }
+                    }
+
                     stop_requested_at = Some(Instant::now());
 
                     match control.stop() {
@@ -823,6 +874,21 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
         _ => 0.0,
     };
     let encoder_finalization_seconds = ENCODER_FINISH_DURATION.lock().unwrap().map(|d| d.as_secs_f64());
+    let duplicated_frames_submitted = DUPLICATED_FRAMES_SUBMITTED.load(Ordering::SeqCst);
+    let last_real_frame_at = *LAST_REAL_FRAME_AT.lock().unwrap();
+    let last_real_frame_seconds = match (first_frame_at, last_real_frame_at) {
+        (Some(first), Some(last)) => Some(last.duration_since(first).as_secs_f64()),
+        _ => None,
+    };
+    // How much of the requested window, after the last real WGC
+    // callback, has no corresponding encoded media - the honest
+    // measurement of the known, previously-unmitigated limitation.
+    // Should now usually be small thanks to the grace-period wait
+    // above, but is reported exactly as measured, not assumed zero.
+    let tail_gap_seconds = match (last_real_frame_at, stop_requested_at) {
+        (Some(last), Some(stop)) => Some(stop.duration_since(last).as_secs_f64()),
+        _ => None,
+    };
 
     let approximate_fps = if capture_duration_seconds > 0.0 {
         Some(frames_submitted_to_encoder as f64 / capture_duration_seconds)
@@ -847,6 +913,9 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     Ok(NativeCaptureProof {
         frames_received,
         frames_submitted_to_encoder,
+        duplicated_frames_submitted,
+        last_real_frame_seconds,
+        tail_gap_seconds,
         frame_width,
         frame_height,
         requested_capture_seconds: REQUESTED_CAPTURE_SECS,
@@ -893,24 +962,63 @@ pub async fn test_native_capture(app: AppHandle, include_system_audio: bool) -> 
     // and the real, currently-unresolved packaging gap (a real
     // ffmpeg.exe build must be bundled before this can succeed).
     if let (Some(video_path), Some(audio_path)) = (proof.video_path.clone(), proof.audio_wav_path.clone()) {
-        if let Ok(output_dir) = app_for_mux.path().app_config_dir() {
-            let output_path = output_dir.join(FINAL_MUX_FILE_NAME);
-            let mux_result = crate::native_mux::mux_video_and_audio(
-                &app_for_mux,
-                std::path::Path::new(&video_path),
-                std::path::Path::new(&audio_path),
-                &output_path,
-            )
-            .await;
-            crate::debug_log::log(
-                &app_for_mux,
-                &format!(
-                    "native_capture: mux attempt finished, success={}, path={:?}, error={:?}",
-                    mux_result.muxing_success, mux_result.final_muxed_path, mux_result.muxing_error
-                ),
-            );
-            proof.mux = Some(mux_result);
+        match app_for_mux.path().app_config_dir() {
+            Ok(output_dir) => {
+                let output_path = output_dir.join(FINAL_MUX_FILE_NAME);
+                let mux_result = crate::native_mux::mux_video_and_audio(
+                    &app_for_mux,
+                    std::path::Path::new(&video_path),
+                    std::path::Path::new(&audio_path),
+                    &output_path,
+                )
+                .await;
+                crate::debug_log::log(
+                    &app_for_mux,
+                    &format!(
+                        "native_capture: mux attempt finished, success={}, exit_code={:?}, path={:?}, error={:?}",
+                        mux_result.muxing_success, mux_result.ffmpeg_exit_code, mux_result.final_muxed_path, mux_result.muxing_error
+                    ),
+                );
+                proof.mux = Some(mux_result);
+            }
+            Err(e) => {
+                // Previously this whole block was skipped silently on
+                // this failure, leaving proof.mux as None with no
+                // success or error message at all - exactly the
+                // confusing "nothing happened" outcome a real test
+                // showed. Now always reported explicitly.
+                crate::debug_log::log(&app_for_mux, &format!("native_capture: mux attempt could not start, could not resolve config dir: {e}"));
+                proof.mux = Some(crate::native_mux::MuxResult {
+                    mux_attempted: true,
+                    sidecar_invocation_succeeded: false,
+                    ffmpeg_exit_code: None,
+                    final_muxed_path: None,
+                    muxing_method: "ffmpeg sidecar".to_string(),
+                    video_stream_handling: "copy (no re-encode)".to_string(),
+                    audio_codec_used: "aac".to_string(),
+                    muxing_success: false,
+                    final_file_size_bytes: None,
+                    muxing_error: Some(format!("Could not resolve the app config directory for the muxed output path: {e}")),
+                });
+            }
         }
+    } else {
+        // Neither source file was available (e.g. video or audio
+        // capture itself failed) - explicitly report that mux was
+        // never attempted, rather than leaving proof.mux silently
+        // None with no indication why.
+        proof.mux = Some(crate::native_mux::MuxResult {
+            mux_attempted: false,
+            sidecar_invocation_succeeded: false,
+            ffmpeg_exit_code: None,
+            final_muxed_path: None,
+            muxing_method: "ffmpeg sidecar".to_string(),
+            video_stream_handling: "copy (no re-encode)".to_string(),
+            audio_codec_used: "aac".to_string(),
+            muxing_success: false,
+            final_file_size_bytes: None,
+            muxing_error: Some("Mux not attempted - the native video and/or WASAPI audio source file was not produced.".to_string()),
+        });
     }
 
     Ok(proof)
