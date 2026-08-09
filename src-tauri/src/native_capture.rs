@@ -73,6 +73,7 @@
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -87,6 +88,7 @@ use windows_capture::settings::{
 };
 
 const REQUESTED_CAPTURE_SECS: u64 = 5;
+const FIRST_FRAME_TIMEOUT_SECS: u64 = 10; // generous margin over observed real init times (~1.5s), fails cleanly rather than hanging forever
 const TARGET_UPDATE_INTERVAL_MS: u64 = 33; // ~30fps ceiling on real-change reporting, not a forced/guaranteed rate - see FRAME DELIVERY RATE note above
 const OUTPUT_FILE_NAME: &str = "native-capture-test.mp4";
 const AUDIO_FILE_NAME: &str = "native-capture-test-audio.wav";
@@ -134,17 +136,27 @@ pub struct NativeCaptureProof {
     audio: crate::native_audio::AudioCaptureDiagnostics,
     #[serde(rename = "audioWavPath")]
     audio_wav_path: Option<String>,
+    #[serde(rename = "preRollDiscardedSeconds")]
+    pre_roll_discarded_seconds: Option<f64>,
+    #[serde(rename = "postRollDiscardedSeconds")]
+    post_roll_discarded_seconds: Option<f64>,
+    #[serde(rename = "retainedAudioFrames")]
+    retained_audio_frames: u64,
+    #[serde(rename = "expectedWavDurationSeconds")]
+    expected_wav_duration_seconds: Option<f64>,
 }
 
 #[derive(Clone)]
 struct CaptureFlags {
     output_path: PathBuf,
+    first_frame_tx: Sender<Instant>,
 }
 
 struct ProofHandler {
     output_path: PathBuf,
     encoder: Option<VideoEncoder>,
     last_frame_at: Option<Instant>,
+    first_frame_tx: Option<Sender<Instant>>,
 }
 
 impl GraphicsCaptureApiHandler for ProofHandler {
@@ -161,6 +173,7 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         Ok(ProofHandler {
             output_path: context.flags.output_path,
             encoder: None,
+            first_frame_tx: Some(context.flags.first_frame_tx),
             last_frame_at: None,
         })
     }
@@ -180,8 +193,17 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         {
             let mut size = FIRST_FRAME_SIZE.lock().unwrap();
             if size.is_none() {
+                let now = Instant::now();
                 *size = Some((width, height));
-                *FIRST_FRAME_AT.lock().unwrap() = Some(Instant::now());
+                *FIRST_FRAME_AT.lock().unwrap() = Some(now);
+                // Signal the controlling thread that the first real
+                // frame has arrived - it's waiting on this before
+                // starting the actual requested-duration countdown
+                // (see run_capture_proof). take() ensures this only
+                // ever sends once, on the true first frame.
+                if let Some(tx) = self.first_frame_tx.take() {
+                    let _ = tx.send(now);
+                }
             }
         }
 
@@ -242,6 +264,24 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         // maximum so a very long gap (e.g. after an unusually static
         // stretch) can't produce an excessive burst of encoder calls
         // in one callback.
+        //
+        // FINAL-TAIL GAP - INVESTIGATED, CONFIRMED UNRESOLVABLE WITH
+        // THE CURRENT API. This catch-up mechanism only runs inside
+        // on_frame_arrived(), so it can only fill gaps BETWEEN real
+        // callbacks - the gap between the LAST real callback and the
+        // moment control.stop() is externally called is not
+        // represented in the MP4. Investigated whether a copy of the
+        // last frame's data could be resubmitted from outside this
+        // callback (e.g. right before stop()) to close that gap:
+        // frame.buffer() returns a FrameBuffer whose only public use
+        // is save_as_image() - there is no way to extract raw pixel
+        // data and construct a new Frame from it later, and
+        // send_frame() only accepts the crate's own Frame type, which
+        // has no public constructor. So there is no confirmed way to
+        // "replay" a frame outside its own callback. This gap remains
+        // unresolved, not silently accepted - it was not solved by
+        // assuming active-screen tests (which happen to get a real
+        // callback close to the stop moment) prove it doesn't matter.
         const ASSUMED_ENCODER_FPS: f64 = 60.0;
         const MAX_CATCHUP_FRAMES: u32 = 600; // 10s worth at 60fps - a sane ceiling, not a hard requirement
 
@@ -330,6 +370,19 @@ impl GraphicsCaptureApiHandler for ProofHandler {
 // "smallest reliable architecture" instruction) - both remain open
 // for a dedicated future pass, not attempted here.
 //
+// CAPTURE-ORIGIN ALIGNMENT (this round). A real test found the WAV
+// was capturing genuine audio but over the wrong window - it started
+// before video was ready and kept running after video's whole
+// lifecycle ended, producing ~1.5s more audio than the video's actual
+// content, closely matching video's own reported initialization time.
+// See the detailed CAPTURE-ORIGIN ALIGNMENT comment further below
+// (right above where chunks are trimmed) for exactly how this is
+// fixed: audio itself still starts early and stops late deliberately
+// (so it never misses real content), but only the portion between
+// video's real first frame and that plus the requested duration gets
+// saved to the WAV - trimmed at the sample level, not by discarding
+// whole chunks or an arbitrary fixed constant.
+//
 // WAV format note: the format tag is written as IEEE float (3) when
 // bits_per_sample is 32, otherwise as integer PCM (1). WASAPI shared-
 // mode mix formats on modern Windows are almost always 32-bit float -
@@ -398,11 +451,12 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
         ..Default::default()
     };
     let mut audio_stop_flag: Option<Arc<AtomicBool>> = None;
-    let mut audio_join_handle: Option<std::thread::JoinHandle<Vec<u8>>> = None;
+    let mut audio_join_handle: Option<std::thread::JoinHandle<Vec<crate::native_audio::AudioChunk>>> = None;
+    let mut audio_capture_start: Option<Instant> = None;
 
     if include_system_audio {
         match crate::native_audio::start_loopback_capture() {
-            Ok((receiver, stop_flag, diagnostics)) => {
+            Ok((receiver, stop_flag, diagnostics, capture_start)) => {
                 crate::debug_log::log(
                     app,
                     &format!(
@@ -412,13 +466,17 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
                 );
                 audio_diagnostics = diagnostics;
                 audio_stop_flag = Some(stop_flag.clone());
-                // Accumulates every captured chunk's raw PCM bytes
-                // into one buffer, returned when the thread joins -
-                // this is what gets written to the WAV file below.
-                // Never touches the video encoder (see the AUDIO
-                // INTEGRATION comment below for why).
+                audio_capture_start = Some(capture_start);
+                // Accumulates every captured chunk AS ITS OWN OBJECT
+                // (not flattened into one byte buffer) - capture-
+                // origin alignment below needs each chunk's own
+                // elapsed timestamp to decide whether it's pre-roll,
+                // retained, or post-roll, and to trim a chunk that
+                // straddles a boundary. Never touches the video
+                // encoder (see the AUDIO INTEGRATION comment below
+                // for why).
                 audio_join_handle = Some(std::thread::spawn(move || {
-                    let mut accumulated = Vec::new();
+                    let mut chunks: Vec<crate::native_audio::AudioChunk> = Vec::new();
                     while !stop_flag.load(Ordering::SeqCst) {
                         while let Ok(chunk) = receiver.try_recv() {
                             AUDIO_BUFFERS_CAPTURED.fetch_add(1, Ordering::SeqCst);
@@ -430,7 +488,7 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
                                 }
                             }
                             *AUDIO_LAST_CHUNK_ELAPSED.lock().unwrap() = Some(chunk.elapsed);
-                            accumulated.extend_from_slice(&chunk.pcm);
+                            chunks.push(chunk);
                         }
                         std::thread::sleep(Duration::from_millis(10));
                     }
@@ -447,9 +505,9 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
                             }
                         }
                         *AUDIO_LAST_CHUNK_ELAPSED.lock().unwrap() = Some(chunk.elapsed);
-                        accumulated.extend_from_slice(&chunk.pcm);
+                        chunks.push(chunk);
                     }
-                    accumulated
+                    chunks
                 }));
             }
             Err(e) => {
@@ -461,6 +519,8 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
 
     let primary_monitor = Monitor::primary().map_err(|e| format!("No primary monitor available: {e}"))?;
 
+    let (first_frame_tx, first_frame_rx) = mpsc::channel::<Instant>();
+
     let settings = Settings::new(
         primary_monitor,
         CursorCaptureSettings::Default,
@@ -471,6 +531,7 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
         ColorFormat::Rgba8,
         CaptureFlags {
             output_path: output_path.clone(),
+            first_frame_tx,
         },
     );
 
@@ -484,32 +545,62 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
 
     let capture_call_at = Instant::now();
     let mut ended_normally = false;
+    let mut stop_requested_at: Option<Instant> = None;
 
     match ProofHandler::start_free_threaded(settings) {
         Ok(control) => {
-            // Independent of any frame callback: sleep on this
-            // (calling) thread for the requested duration, then stop
-            // the capture directly through the handle. This is the
-            // actual fix - the previous version's stop condition
-            // could only run from inside a callback that might not
-            // fire for a long time on a static desktop.
-            std::thread::sleep(Duration::from_secs(REQUESTED_CAPTURE_SECS));
+            // Wait for the first real frame before starting the
+            // requested-duration countdown - this is the actual fix.
+            // Previously the countdown started right after
+            // start_free_threaded() returned, which is BEFORE WGC
+            // initialization and the first frame - meaning the
+            // requested 5 seconds already included video's own
+            // startup time, so the real content-capturing window
+            // after the first frame was shorter than 5 seconds even
+            // though audio's trimming logic assumed a full 5 seconds
+            // from that same first-frame point. Waiting here first
+            // makes both windows describe the same real interval.
+            // recv_timeout (not recv) so a first frame that never
+            // arrives fails cleanly instead of hanging forever - a
+            // real possibility if WGC initialization itself fails
+            // silently or the desktop can't be captured at all.
+            match first_frame_rx.recv_timeout(Duration::from_secs(FIRST_FRAME_TIMEOUT_SECS)) {
+                Ok(_first_frame_at) => {
+                    std::thread::sleep(Duration::from_secs(REQUESTED_CAPTURE_SECS));
+                    stop_requested_at = Some(Instant::now());
 
-            match control.stop() {
-                Ok(()) => {
-                    // stop(self) consumes control and already requests
-                    // shutdown and joins the capture thread - there is
-                    // nothing left to wait() on afterward, and control
-                    // itself is gone by this point. A successful
-                    // return here is itself the confirmation that the
-                    // capture thread (and its on_closed cleanup,
-                    // i.e. encoder finalization) has finished.
-                    ended_normally = true;
+                    match control.stop() {
+                        Ok(()) => {
+                            // stop(self) consumes control and already
+                            // requests shutdown and joins the capture
+                            // thread - there is nothing left to
+                            // wait() on afterward, and control itself
+                            // is gone by this point. A successful
+                            // return here is itself the confirmation
+                            // that the capture thread (and its
+                            // on_closed cleanup, i.e. encoder
+                            // finalization) has finished.
+                            ended_normally = true;
+                        }
+                        Err(e) => {
+                            let mut error = CAPTURE_ERROR.lock().unwrap();
+                            if error.is_none() {
+                                *error = Some(format!("CaptureControl::stop returned an error: {e}"));
+                            }
+                        }
+                    }
                 }
-                Err(e) => {
+                Err(_) => {
+                    // No first frame within the timeout - fail
+                    // cleanly rather than starting a countdown from
+                    // an undefined origin. Still stop the capture
+                    // thread so nothing is left running.
+                    let _ = control.stop();
                     let mut error = CAPTURE_ERROR.lock().unwrap();
                     if error.is_none() {
-                        *error = Some(format!("CaptureControl::stop returned an error: {e}"));
+                        *error = Some(format!(
+                            "No video frame arrived within {FIRST_FRAME_TIMEOUT_SECS} seconds of starting capture - initialization may have failed."
+                        ));
                     }
                 }
             }
@@ -529,29 +620,149 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     }
 
     // Wait for the audio thread to actually finish and hand back
-    // everything it accumulated, then write it as a real WAV file.
-    // See the AUDIO INTEGRATION comment below for why this is a
-    // separate file rather than muxed into the MP4 this round.
+    // every captured chunk, then align it to video's actual capture
+    // window before writing the WAV. See the AUDIO INTEGRATION
+    // comment below for why this is a separate file rather than
+    // muxed into the MP4 this round.
+    //
+    // CAPTURE-ORIGIN ALIGNMENT. Audio starts capturing before video's
+    // WGC session is even created (so there's no startup gap once
+    // video is ready), and stops only after video's entire lifecycle
+    // ends - both deliberate, to make sure audio never misses real
+    // content. That means the raw audio span is always longer than
+    // the requested duration, by roughly video's own initialization
+    // time (confirmed by a real test: ~1.5s pre-roll, matching video's
+    // reported initialization_seconds almost exactly). The fix is not
+    // to change when audio starts or stops, but to trim what gets
+    // SAVED: capture_origin is defined as FIRST_FRAME_AT - the real
+    // Instant video's first actual frame arrived, i.e. "when video
+    // capture was actually ready" - and only audio between
+    // capture_origin and capture_origin + REQUESTED_CAPTURE_SECS is
+    // retained. Each chunk's own elapsed-since-audio-capture-start
+    // timestamp (converted to an absolute Instant via
+    // audio_capture_start) is compared against that window - chunks
+    // entirely outside it are dropped, and a chunk straddling either
+    // boundary is trimmed at the sample level using the real mix
+    // format (sample rate, channels, bytes per sample), not discarded
+    // whole, so no more real audio is lost than necessary.
     let mut audio_wav_path: Option<String> = None;
+    let mut pre_roll_discarded_seconds: Option<f64> = None;
+    let mut post_roll_discarded_seconds: Option<f64> = None;
+    let mut retained_audio_frames: u64 = 0;
+    let mut expected_wav_duration_seconds: Option<f64> = None;
+
     if let Some(handle) = audio_join_handle {
         match handle.join() {
-            Ok(pcm) if !pcm.is_empty() => {
-                let wav_path = output_dir.join(AUDIO_FILE_NAME);
-                match write_wav_file(
-                    &wav_path,
-                    &pcm,
-                    audio_diagnostics.mix_sample_rate.unwrap_or(48_000),
-                    audio_diagnostics.mix_channels.unwrap_or(2),
-                    audio_diagnostics.mix_bits_per_sample.unwrap_or(32),
-                ) {
-                    Ok(()) => {
-                        crate::debug_log::log(app, &format!("native_capture: WAV written, {} bytes PCM, {}", pcm.len(), wav_path.display()));
-                        audio_wav_path = Some(wav_path.display().to_string());
+            Ok(chunks) if !chunks.is_empty() => {
+                let capture_origin = *FIRST_FRAME_AT.lock().unwrap();
+                let sample_rate = audio_diagnostics.mix_sample_rate.unwrap_or(48_000);
+                let channels = audio_diagnostics.mix_channels.unwrap_or(2);
+                let bits_per_sample = audio_diagnostics.mix_bits_per_sample.unwrap_or(32);
+                let block_align = (channels as usize) * (bits_per_sample as usize / 8);
+                // The real measured stop point, not the nominal
+                // requested constant - keeps audio's trim boundary
+                // exactly consistent with where video actually
+                // stopped, including any small scheduling jitter.
+                let window_end = match (capture_origin, stop_requested_at) {
+                    (Some(origin), Some(stop)) => stop.duration_since(origin).as_secs_f64(),
+                    _ => REQUESTED_CAPTURE_SECS as f64,
+                };
+
+                let mut retained_pcm: Vec<u8> = Vec::new();
+                let mut pre_roll_secs = 0.0f64;
+                let mut post_roll_secs = 0.0f64;
+
+                match (capture_origin, audio_capture_start) {
+                    (Some(origin), Some(audio_start)) if block_align > 0 => {
+                        for chunk in &chunks {
+                            let chunk_frames = chunk.frames as f64;
+                            let chunk_duration = chunk_frames / sample_rate as f64;
+                            // chunk.elapsed marks when the packet was
+                            // read, i.e. the END of the audio it
+                            // contains - the chunk's content spans
+                            // backwards from there.
+                            let chunk_end_abs = audio_start + chunk.elapsed;
+                            let chunk_start_abs = chunk_end_abs
+                                .checked_sub(Duration::from_secs_f64(chunk_duration))
+                                .unwrap_or(chunk_end_abs);
+
+                            // Express both edges as offsets (seconds,
+                            // possibly negative) from capture_origin.
+                            let start_offset = if chunk_start_abs >= origin {
+                                chunk_start_abs.duration_since(origin).as_secs_f64()
+                            } else {
+                                -origin.duration_since(chunk_start_abs).as_secs_f64()
+                            };
+                            let end_offset = if chunk_end_abs >= origin {
+                                chunk_end_abs.duration_since(origin).as_secs_f64()
+                            } else {
+                                -origin.duration_since(chunk_end_abs).as_secs_f64()
+                            };
+
+                            if end_offset <= 0.0 || start_offset >= window_end {
+                                // Entirely outside the retained window.
+                                if end_offset <= 0.0 {
+                                    pre_roll_secs += chunk_duration;
+                                } else {
+                                    post_roll_secs += chunk_duration;
+                                }
+                                continue;
+                            }
+
+                            // Trim frames before capture_origin
+                            // (pre-roll) and after the window end
+                            // (post-roll), sample-accurately.
+                            let trim_start_secs = (0.0 - start_offset).max(0.0);
+                            let trim_end_secs = (end_offset - window_end).max(0.0);
+                            pre_roll_secs += trim_start_secs;
+                            post_roll_secs += trim_end_secs;
+
+                            let trim_start_frames = ((trim_start_secs * sample_rate as f64).round() as usize).min(chunk.frames as usize);
+                            let trim_end_frames = ((trim_end_secs * sample_rate as f64).round() as usize).min(chunk.frames as usize - trim_start_frames.min(chunk.frames as usize));
+
+                            let start_byte = trim_start_frames * block_align;
+                            let end_byte = chunk.pcm.len().saturating_sub(trim_end_frames * block_align);
+
+                            if start_byte < end_byte && end_byte <= chunk.pcm.len() {
+                                retained_pcm.extend_from_slice(&chunk.pcm[start_byte..end_byte]);
+                                retained_audio_frames += ((end_byte - start_byte) / block_align.max(1)) as u64;
+                            }
+                        }
+                        pre_roll_discarded_seconds = Some(pre_roll_secs);
+                        post_roll_discarded_seconds = Some(post_roll_secs);
                     }
-                    Err(e) => {
-                        crate::debug_log::log(app, &format!("native_capture: WAV write FAILED: {e}"));
+                    _ => {
+                        // No valid capture_origin (video never
+                        // produced a frame) - can't align, so nothing
+                        // is retained rather than guessing. Reported
+                        // as an audio error so it's visible, not
+                        // silently empty.
                         if audio_diagnostics.audio_error.is_none() {
-                            audio_diagnostics.audio_error = Some(format!("Could not write WAV file: {e}"));
+                            audio_diagnostics.audio_error =
+                                Some("Could not align audio to video's capture window - video never reported a first frame.".to_string());
+                        }
+                    }
+                }
+
+                if !retained_pcm.is_empty() {
+                    expected_wav_duration_seconds = Some(retained_audio_frames as f64 / sample_rate as f64);
+                    let wav_path = output_dir.join(AUDIO_FILE_NAME);
+                    match write_wav_file(&wav_path, &retained_pcm, sample_rate, channels, bits_per_sample) {
+                        Ok(()) => {
+                            crate::debug_log::log(
+                                app,
+                                &format!(
+                                    "native_capture: WAV written, {} retained frames ({:.2}s), pre_roll_discarded={:.2}s, post_roll_discarded={:.2}s, {}",
+                                    retained_audio_frames, expected_wav_duration_seconds.unwrap_or(0.0), pre_roll_secs, post_roll_secs, wav_path.display()
+                                ),
+                            );
+                            audio_wav_path = Some(wav_path.display().to_string());
+                        }
+                        Err(e) => {
+                            crate::debug_log::log(app, &format!("native_capture: WAV write FAILED: {e}"));
+                            if audio_diagnostics.audio_error.is_none() {
+                                audio_diagnostics.audio_error = Some(format!("Could not write WAV file: {e}"));
+                            }
                         }
                     }
                 }
@@ -597,14 +808,17 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     let first_frame_at = *FIRST_FRAME_AT.lock().unwrap();
 
     let initialization_seconds = first_frame_at.map(|first| first.duration_since(capture_call_at).as_secs_f64());
-    // Capture duration is simply the requested duration here, since
-    // the sleep-then-stop mechanism makes it deterministic by design -
-    // unlike the previous version, this number no longer depends on
-    // frame timing to compute at all, which is the whole point of the
-    // fix. Kept as its own field (rather than reusing
-    // requested_capture_seconds) in case a future revision makes the
-    // sleep duration dynamic.
-    let capture_duration_seconds = REQUESTED_CAPTURE_SECS as f64;
+    // Measured, not assumed: the real elapsed time from the first
+    // frame to the moment stop was requested. Now that the countdown
+    // starts after waiting for the first frame (see the wait on
+    // first_frame_rx above), this should read close to
+    // REQUESTED_CAPTURE_SECS - but it's computed from real timestamps
+    // rather than hardcoded, so any remaining discrepancy (e.g. from
+    // scheduling jitter) is visible rather than papered over.
+    let capture_duration_seconds = match (first_frame_at, stop_requested_at) {
+        (Some(first), Some(stop)) => stop.duration_since(first).as_secs_f64(),
+        _ => 0.0,
+    };
     let encoder_finalization_seconds = ENCODER_FINISH_DURATION.lock().unwrap().map(|d| d.as_secs_f64());
 
     let approximate_fps = if capture_duration_seconds > 0.0 {
@@ -643,6 +857,10 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
         capture_error,
         audio: audio_diagnostics,
         audio_wav_path,
+        pre_roll_discarded_seconds,
+        post_roll_discarded_seconds,
+        retained_audio_frames,
+        expected_wav_duration_seconds,
     })
 }
 

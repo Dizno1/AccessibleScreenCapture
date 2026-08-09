@@ -128,13 +128,17 @@ impl Default for AudioCaptureDiagnostics {
 /// object is created and used entirely within that thread (see the
 /// COM/thread ownership note above). Blocks briefly waiting for the
 /// worker to report whether initialization succeeded, then returns a
-/// receiver for captured PCM chunks and a handle to request stop;
-/// capture continues on the worker thread until `stop_flag` is set.
-/// Never panics; every failure path returns Err with a specific
-/// message instead.
-pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics), String> {
+/// receiver for captured PCM chunks, a handle to request stop, and
+/// the Instant the worker began capturing - the caller uses that
+/// Instant plus each AudioChunk's `elapsed` to convert chunk
+/// timestamps into absolute Instants comparable to video's own
+/// first-frame timestamp, for capture-origin alignment. Capture
+/// continues on the worker thread until `stop_flag` is set. Never
+/// panics; every failure path returns Err with a specific message
+/// instead.
+pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
     let (chunk_tx, chunk_rx): (Sender<AudioChunk>, Receiver<AudioChunk>) = mpsc::channel();
-    let (init_tx, init_rx) = mpsc::channel::<Result<AudioCaptureDiagnostics, String>>();
+    let (init_tx, init_rx) = mpsc::channel::<Result<(AudioCaptureDiagnostics, Instant), String>>();
     let stop_flag = Arc::new(AtomicBool::new(false));
     let stop_flag_for_thread = stop_flag.clone();
 
@@ -248,13 +252,17 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
         // Initialization succeeded - report that back before entering
         // the read loop. All WASAPI objects (audio_client,
         // capture_client) stay right here on this thread for the rest
-        // of its life; they're never sent anywhere.
-        if init_tx.send(Ok(diagnostics)).is_err() {
+        // of its life; they're never sent anywhere. capture_start is
+        // sent back too, so the caller can convert each AudioChunk's
+        // elapsed-since-capture_start into an absolute Instant
+        // comparable to video's own FIRST_FRAME_AT, for capture-origin
+        // alignment.
+        let capture_start = Instant::now();
+        if init_tx.send(Ok((diagnostics, capture_start))).is_err() {
             // Caller already gave up waiting - nothing further to do.
             return;
         }
 
-        let capture_start = Instant::now();
         while !stop_flag_for_thread.load(Ordering::SeqCst) {
             // Drain every packet currently queued before sleeping -
             // reading at most one packet per poll tick could let
@@ -316,7 +324,7 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
     });
 
     match init_rx.recv() {
-        Ok(Ok(diagnostics)) => Ok((chunk_rx, stop_flag, diagnostics)),
+        Ok(Ok((diagnostics, capture_start))) => Ok((chunk_rx, stop_flag, diagnostics, capture_start)),
         Ok(Err(e)) => Err(e),
         Err(_) => Err("Audio worker thread ended unexpectedly during initialization.".to_string()),
     }

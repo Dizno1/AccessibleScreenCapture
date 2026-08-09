@@ -1631,7 +1631,13 @@ function initNativeCaptureTest() {
               : "unknown format";
           const span = proof.capturedSpanSeconds != null ? `${proof.capturedSpanSeconds.toFixed(2)} seconds` : "unknown duration";
           parts.push(
-            `System audio captured from ${device} (${format}): ${proof.buffersCaptured} buffers, ${proof.framesCaptured} total frames, spanning ${span} of real captured audio.`
+            `System audio from ${device} (${format}): ${proof.buffersCaptured} buffers, ${proof.framesCaptured} total frames captured over ${span} of raw capture time.`
+          );
+          const preRoll = proof.preRollDiscardedSeconds != null ? proof.preRollDiscardedSeconds.toFixed(2) : "unknown";
+          const postRoll = proof.postRollDiscardedSeconds != null ? proof.postRollDiscardedSeconds.toFixed(2) : "unknown";
+          const savedDuration = proof.expectedWavDurationSeconds != null ? proof.expectedWavDurationSeconds.toFixed(2) : "unknown";
+          parts.push(
+            `Trimmed to align with video's actual capture window: ${preRoll} seconds discarded from the start, ${postRoll} seconds discarded from the end. Saved audio duration: ${savedDuration} seconds (${proof.retainedAudioFrames} frames).`
           );
           if (proof.audioWavPath) {
             parts.push(
