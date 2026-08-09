@@ -1598,22 +1598,26 @@ function initNativeCaptureTest() {
     logDebug(`app.js: native capture test requested, includeSystemAudio=${wantsAudio}`);
     try {
       const proof = await testNativeCapture(wantsAudio);
-      const dimensions =
-        proof.frameWidth != null && proof.frameHeight != null ? `${proof.frameWidth} by ${proof.frameHeight} pixels` : "unknown dimensions";
       const fmt = (value) => (value != null ? value.toFixed(2) : "unknown");
 
       const parts = [
         `Requested ${proof.requestedCaptureSeconds} seconds of capture.`,
         `Initialization took ${fmt(proof.initializationSeconds)} seconds.`,
         `Actual capture window was ${proof.captureDurationSeconds.toFixed(2)} seconds.`,
-        `Last real video frame arrived ${fmt(proof.lastRealFrameSeconds)} seconds after the first.`,
-        `Tail gap (time after the last real frame with no corresponding video content) was ${fmt(proof.tailGapSeconds)} seconds.`,
-        `Encoder finalization took ${fmt(proof.encoderFinalizationSeconds)} seconds.`,
         `Total command time was ${fmt(proof.totalCommandSeconds)} seconds.`,
-        `${proof.framesReceived} frame callbacks received; ${proof.framesSubmittedToEncoder} submitted to the encoder (${proof.duplicatedFramesSubmitted} of those were catch-up duplicates of a real frame, not new content).`,
-        proof.approximateFps != null ? `(approximately ${proof.approximateFps.toFixed(1)} frames per second based on the capture window only).` : "(rate not calculable).",
-        `First frame ${dimensions}.`,
+        `${proof.framesReceived} real screen-change callbacks received.`,
       ];
+      if (proof.videoClockFps != null) {
+        parts.push(
+          `Independent video clock ran at ${proof.videoClockFps} fps and produced ${proof.videoClockFramesProduced} video frames using codec ${proof.videoCodecUsed} - this no longer depends on how many real screen changes occurred, so a static screen and an active screen should both produce a full-length video.`
+        );
+        if (!proof.videoEncodeSuccess && proof.videoEncodeError) {
+          parts.push(`Video encoding reported an error: ${proof.videoEncodeError}`);
+        }
+      }
+      const dimensions =
+        proof.frameWidth != null && proof.frameHeight != null ? `${proof.frameWidth} by ${proof.frameHeight} pixels` : "unknown dimensions";
+      parts.push(`First frame ${dimensions}.`);
       if (proof.captureError) {
         parts.push(`Capture reported an error: ${proof.captureError}`);
       } else if (proof.videoPath) {

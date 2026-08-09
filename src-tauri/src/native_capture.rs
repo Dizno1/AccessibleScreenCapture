@@ -71,14 +71,12 @@
 // could conflict.
 
 use serde::Serialize;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
 use windows_capture::capture::{Context, GraphicsCaptureApiHandler};
-use windows_capture::encoder::{AudioSettingsBuilder, ContainerSettingsBuilder, VideoEncoder, VideoSettingsBuilder};
 use windows_capture::frame::Frame;
 use windows_capture::graphics_capture_api::InternalCaptureControl;
 use windows_capture::monitor::Monitor;
@@ -87,23 +85,20 @@ use windows_capture::settings::{
     MinimumUpdateIntervalSettings, SecondaryWindowSettings, Settings,
 };
 
+use crate::native_video_encode::{new_shared_frame, run_video_clock, OwnedFrame, SharedFrame};
+
 const REQUESTED_CAPTURE_SECS: u64 = 5;
 const FIRST_FRAME_TIMEOUT_SECS: u64 = 10; // generous margin over observed real init times (~1.5s), fails cleanly rather than hanging forever
-const TAIL_GAP_GRACE_THRESHOLD_MS: u64 = 200; // only wait the grace period if the tail gap is already meaningfully large
-const TAIL_GAP_GRACE_PERIOD_SECS: u64 = 1; // bounded extra wait for one more real frame - never fabricates content, see the mitigation comment at its call site
-const TARGET_UPDATE_INTERVAL_MS: u64 = 33; // ~30fps ceiling on real-change reporting, not a forced/guaranteed rate - see FRAME DELIVERY RATE note above
+const VIDEO_CLOCK_FPS: u32 = 30; // deliberate, not inherited from windows-capture's old default - see native_video_encode.rs
+const TARGET_UPDATE_INTERVAL_MS: u64 = 33; // WGC acquisition-side setting only now, unrelated to the output video's own clock rate above - see FRAME DELIVERY RATE note below
 const OUTPUT_FILE_NAME: &str = "native-capture-test.mp4";
 const AUDIO_FILE_NAME: &str = "native-capture-test-audio.wav";
 const FINAL_MUX_FILE_NAME: &str = "native-capture-test-final.mp4";
 
 static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
-static FRAMES_SUBMITTED: AtomicU32 = AtomicU32::new(0);
 static FIRST_FRAME_SIZE: Mutex<Option<(u32, u32)>> = Mutex::new(None);
 static CAPTURE_ERROR: Mutex<Option<String>> = Mutex::new(None);
 static FIRST_FRAME_AT: Mutex<Option<Instant>> = Mutex::new(None);
-static LAST_REAL_FRAME_AT: Mutex<Option<Instant>> = Mutex::new(None);
-static DUPLICATED_FRAMES_SUBMITTED: AtomicU32 = AtomicU32::new(0);
-static ENCODER_FINISH_DURATION: Mutex<Option<Duration>> = Mutex::new(None);
 static AUDIO_BUFFERS_CAPTURED: AtomicU32 = AtomicU32::new(0);
 static AUDIO_FRAMES_CAPTURED: AtomicU32 = AtomicU32::new(0);
 static AUDIO_FIRST_CHUNK_ELAPSED: Mutex<Option<Duration>> = Mutex::new(None);
@@ -113,14 +108,8 @@ static AUDIO_LAST_CHUNK_ELAPSED: Mutex<Option<Duration>> = Mutex::new(None);
 pub struct NativeCaptureProof {
     #[serde(rename = "framesReceived")]
     frames_received: u32,
-    #[serde(rename = "framesSubmittedToEncoder")]
-    frames_submitted_to_encoder: u32,
-    #[serde(rename = "duplicatedFramesSubmitted")]
-    duplicated_frames_submitted: u32,
-    #[serde(rename = "lastRealFrameSeconds")]
-    last_real_frame_seconds: Option<f64>,
-    #[serde(rename = "tailGapSeconds")]
-    tail_gap_seconds: Option<f64>,
+    #[serde(flatten)]
+    video_clock: Option<crate::native_video_encode::VideoClockResult>,
     #[serde(rename = "frameWidth")]
     frame_width: Option<u32>,
     #[serde(rename = "frameHeight")]
@@ -131,12 +120,8 @@ pub struct NativeCaptureProof {
     initialization_seconds: Option<f64>,
     #[serde(rename = "captureDurationSeconds")]
     capture_duration_seconds: f64,
-    #[serde(rename = "encoderFinalizationSeconds")]
-    encoder_finalization_seconds: Option<f64>,
     #[serde(rename = "totalCommandSeconds")]
     total_command_seconds: f64,
-    #[serde(rename = "approximateFps")]
-    approximate_fps: Option<f64>,
     #[serde(rename = "endedNormally")]
     ended_normally: bool,
     #[serde(rename = "videoPath")]
@@ -161,15 +146,13 @@ pub struct NativeCaptureProof {
 
 #[derive(Clone)]
 struct CaptureFlags {
-    output_path: PathBuf,
     first_frame_tx: Sender<Instant>,
+    shared_frame: SharedFrame,
 }
 
 struct ProofHandler {
-    output_path: PathBuf,
-    encoder: Option<VideoEncoder>,
-    last_frame_at: Option<Instant>,
     first_frame_tx: Option<Sender<Instant>>,
+    shared_frame: SharedFrame,
 }
 
 impl GraphicsCaptureApiHandler for ProofHandler {
@@ -178,184 +161,116 @@ impl GraphicsCaptureApiHandler for ProofHandler {
 
     fn new(context: Context<Self::Flags>) -> Result<Self, Self::Error> {
         FRAME_COUNT.store(0, Ordering::SeqCst);
-        FRAMES_SUBMITTED.store(0, Ordering::SeqCst);
         *FIRST_FRAME_SIZE.lock().unwrap() = None;
         *CAPTURE_ERROR.lock().unwrap() = None;
         *FIRST_FRAME_AT.lock().unwrap() = None;
-        *LAST_REAL_FRAME_AT.lock().unwrap() = None;
-        DUPLICATED_FRAMES_SUBMITTED.store(0, Ordering::SeqCst);
-        *ENCODER_FINISH_DURATION.lock().unwrap() = None;
+        *context.flags.shared_frame.lock().unwrap() = None;
         Ok(ProofHandler {
-            output_path: context.flags.output_path,
-            encoder: None,
             first_frame_tx: Some(context.flags.first_frame_tx),
-            last_frame_at: None,
+            shared_frame: context.flags.shared_frame,
         })
     }
 
+    // ACQUISITION ONLY. This callback's only job now is: get the raw
+    // pixels out of whatever WGC just delivered, copy them into owned
+    // CPU memory, and publish that as the latest shared frame - no
+    // encoder, no catch-up, no timing decisions happen here at all
+    // anymore. The independent video clock (native_video_encode.rs,
+    // run on a separate thread by run_capture_proof) reads this
+    // shared state on its own fixed schedule, completely decoupled
+    // from how often (or rarely) this callback actually fires. See
+    // the OWNERSHIP note at the top of native_video_encode.rs for why
+    // this copy is what makes that decoupling possible - a borrowed
+    // Frame is not valid once this function returns, but a Vec<u8> we
+    // copied the bytes into is ours for as long as we want to keep it.
     fn on_frame_arrived(
         &mut self,
         frame: &mut Frame,
         _capture_control: InternalCaptureControl,
     ) -> Result<(), Self::Error> {
-        // No stop-condition check here anymore - stopping is now
-        // driven externally (see run_capture_proof), independent of
-        // whether this callback fires at all.
-        let count = FRAME_COUNT.fetch_add(1, Ordering::SeqCst) + 1;
+        FRAME_COUNT.fetch_add(1, Ordering::SeqCst);
         let width = frame.width();
         let height = frame.height();
 
-        {
-            let mut size = FIRST_FRAME_SIZE.lock().unwrap();
-            if size.is_none() {
-                let now = Instant::now();
-                *size = Some((width, height));
-                *FIRST_FRAME_AT.lock().unwrap() = Some(now);
-                // Signal the controlling thread that the first real
-                // frame has arrived - it's waiting on this before
-                // starting the actual requested-duration countdown
-                // (see run_capture_proof). take() ensures this only
-                // ever sends once, on the true first frame.
-                if let Some(tx) = self.first_frame_tx.take() {
-                    let _ = tx.send(now);
-                }
-            }
-        }
-
-        // Created lazily here (not in new()) because the encoder
-        // needs real pixel dimensions, and frame.width()/height() are
-        // already proven correct on real hardware.
-        if self.encoder.is_none() {
-            let path_string = self.output_path.to_string_lossy().to_string();
-            // ENCODER AUDIO - HYPOTHESIS CLOSED. An earlier round
-            // tested whether simply enabling AudioSettingsBuilder
-            // (without submitting any PCM) makes the encoder capture
-            // system audio internally on its own. That was tested on
-            // the real Windows machine this round and did not produce
-            // audible audio - the hypothesis is disproven, not left
-            // open. Encoder audio stays disabled unconditionally now;
-            // there's no reason to keep producing an empty AAC track
-            // shell for a path that's confirmed not to work. Real
-            // captured system audio is written to a separate WAV file
-            // instead - see the AUDIO INTEGRATION comment above
-            // run_capture_proof for the full architecture reasoning.
-            let audio_settings = AudioSettingsBuilder::default().disabled(true);
-            match VideoEncoder::new(
-                VideoSettingsBuilder::new(width, height),
-                audio_settings,
-                ContainerSettingsBuilder::default(),
-                path_string.as_str(),
-            ) {
-                Ok(encoder) => self.encoder = Some(encoder),
-                Err(e) => {
-                    *CAPTURE_ERROR.lock().unwrap() = Some(format!("Could not create encoder: {e}"));
-                }
-            }
-        }
-
-        // VIDEO DURATION FIX. Root cause confirmed from real test
-        // data: a requested 5-second capture with only 2 WGC
-        // callbacks produced an MP4 with ~0.033s of media - exactly
-        // 2 frames / 60fps. That's not a coincidence: it shows the
-        // encoder times frames by a fixed assumed rate (60fps) times
-        // sequential frame count, not by real elapsed wall-clock time
-        // between callbacks - confirmed indirectly, since accurate
-        // per-frame timestamps would have produced ~5s regardless of
-        // how few callbacks arrived. windows-capture's send_frame()
-        // takes no explicit timestamp parameter, and no confirmed API
-        // exists to override this per Frame, so the fix has to work
-        // within that constraint rather than against it: this
-        // callback now sends the CURRENT frame repeatedly - once for
-        // every ~1/60s of real time that elapsed since the previous
-        // callback - so the encoder's own fixed-rate timeline
-        // naturally accumulates to match real elapsed time instead of
-        // only advancing once per (rare) callback. This is the
-        // "generating appropriately timestamped duplicate frames"
-        // mechanism, implemented the only way available: repeated
-        // send_frame() calls on the same still-valid Frame reference,
-        // all within this one callback (a Frame is not valid to reuse
-        // once this callback returns, so catch-up can only happen
-        // here, not from a separate timer). Capped at a reasonable
-        // maximum so a very long gap (e.g. after an unusually static
-        // stretch) can't produce an excessive burst of encoder calls
-        // in one callback.
+        // RACE CONDITION FIXED THIS ROUND. The first-frame readiness
+        // signal (FIRST_FRAME_SIZE/FIRST_FRAME_AT/first_frame_tx) used
+        // to be sent BEFORE frame.buffer() was even called - meaning
+        // the controlling thread could start run_video_clock() before
+        // the OwnedFrame it needs to read on tick 0 had actually been
+        // published to shared_frame, causing a real
+        // "No owned frame available at tick 0" failure. The buffer
+        // extraction and publication now happen FIRST; the readiness
+        // signal is only ever sent immediately after a successful
+        // publication, so "the first frame is ready" now genuinely
+        // means "a complete OwnedFrame exists in shared_frame; it is
+        // safe to start reading it," not merely "a WGC callback
+        // arrived." If this first callback's buffer read fails or its
+        // dimensions don't check out, no signal is sent at all - a
+        // later successful callback becomes the true first frame
+        // instead, and the existing 10-second initialization timeout
+        // still governs how long the controller waits for that.
         //
-        // SPACING FIX THIS ROUND. A real test submitted 223 frames
-        // (16 real + 207 catch-up) in a tight, effectively
-        // instantaneous burst, and the resulting MP4 was 4.483s - not
-        // the 223/60=3.716s the pure "sequential count" model
-        // predicts. That mismatch means the encoder's real internal
-        // timing model is not simple sequential counting, and is
-        // plausibly influenced by real wall-clock submission time to
-        // some degree (windows-capture 2.0.0's own changelog
-        // specifically advertises "monotonic audio timing" as an
-        // encoder improvement, which is at least suggestive that
-        // internal timing isn't purely frame-count-based). Rather
-        // than guess at a corrected formula without a way to verify
-        // it, catch-up sends are now spaced apart by a real sleep
-        // matching the target frame interval instead of fired in an
-        // instant burst - this makes the mechanism's correctness not
-        // depend on knowing the encoder's exact internal timing model:
-        // if it uses real submission time, spaced sends now correctly
-        // reproduce the real elapsed gap; if it's still sequential-
-        // count-based, spacing doesn't change the count and is no
-        // worse than before either way.
-        //
-        // FINAL-TAIL GAP - INVESTIGATED AGAIN THIS ROUND, STILL
-        // CONFIRMED UNRESOLVABLE WITH THE CURRENT API. This catch-up
-        // mechanism only runs inside on_frame_arrived(), so it can
-        // only fill gaps BETWEEN real callbacks - the gap between the
-        // LAST real callback and the moment control.stop() is
-        // externally called is not represented in the MP4 by this
-        // mechanism alone. Re-confirmed via fresh research this round
-        // that VideoEncoderSource remains an internal type with no
-        // public constructor, and send_frame() remains the only
-        // public video-submission method, requiring the crate's own
-        // Frame type specifically - there is still no confirmed way
-        // to submit video content from outside a real WGC callback.
-        // The bounded grace-period wait (in run_capture_proof, before
-        // calling stop()) remains the only available mitigation for
-        // this specific gap - not because it's an ideal architecture,
-        // but because no better one exists within confirmed API
-        // capabilities. This is stated plainly, not hidden behind
-        // favorable test runs.
-        const ASSUMED_ENCODER_FPS: f64 = 60.0;
-        const CATCHUP_FRAME_INTERVAL: Duration = Duration::from_micros(16_667); // ~1/60s
-        const MAX_CATCHUP_FRAMES: u32 = 300; // 5s worth at 60fps - lower than before since sends are no longer instantaneous; a longer real gap now genuinely costs real time to catch up, so this cap also bounds how long on_frame_arrived can block
+        // Confirmed API (a real community example using this exact
+        // pattern, plus docs.rs's own FrameBuffer page): frame.buffer()
+        // returns a FrameBuffer, and as_raw_buffer() gives the raw
+        // pixel bytes - but that raw buffer "may include padding"
+        // (its row_pitch can exceed width * bytes-per-pixel). FFmpeg's
+        // rawvideo input expects tightly-packed rows with no gaps, so
+        // padding is stripped here row-by-row using the buffer's own
+        // reported row_pitch - copying width*4 bytes from each row and
+        // skipping whatever padding follows it, rather than assuming
+        // the buffer is already tightly packed.
+        match frame.buffer() {
+            Ok(mut buffer) => {
+                let row_pitch = buffer.row_pitch() as usize;
+                let raw = buffer.as_raw_buffer();
+                let bytes_per_pixel = 4usize; // RGBA8, matching ColorFormat::Rgba8 in Settings
+                let tight_row_bytes = width as usize * bytes_per_pixel;
 
-        let catchup_sends = match self.last_frame_at {
-            Some(previous) => {
-                let gap_secs = previous.elapsed().as_secs_f64();
-                ((gap_secs * ASSUMED_ENCODER_FPS).round() as u32).clamp(1, MAX_CATCHUP_FRAMES)
-            }
-            None => 1, // first frame - just send it once
-        };
-        self.last_frame_at = Some(Instant::now());
-        *LAST_REAL_FRAME_AT.lock().unwrap() = self.last_frame_at;
+                if row_pitch >= tight_row_bytes && raw.len() >= row_pitch * height as usize {
+                    let mut pixels = Vec::with_capacity(tight_row_bytes * height as usize);
+                    for row in 0..height as usize {
+                        let start = row * row_pitch;
+                        let end = start + tight_row_bytes;
+                        pixels.extend_from_slice(&raw[start..end]);
+                    }
+                    *self.shared_frame.lock().unwrap() = Some(OwnedFrame { width, height, pixels });
 
-        if let Some(encoder) = self.encoder.as_mut() {
-            let mut send_error: Option<String> = None;
-            for i in 0..catchup_sends {
-                match encoder.send_frame(frame) {
-                    Ok(()) => {
-                        FRAMES_SUBMITTED.fetch_add(1, Ordering::SeqCst);
-                        if i > 0 {
-                            DUPLICATED_FRAMES_SUBMITTED.fetch_add(1, Ordering::SeqCst);
-                            // Space catch-up sends by real time
-                            // instead of firing them instantaneously -
-                            // see the SPACING FIX comment above.
-                            std::thread::sleep(CATCHUP_FRAME_INTERVAL);
+                    // Only now, after a real OwnedFrame has actually
+                    // been published, is it safe to tell the
+                    // controller a frame is ready.
+                    let mut size = FIRST_FRAME_SIZE.lock().unwrap();
+                    if size.is_none() {
+                        let now = Instant::now();
+                        *size = Some((width, height));
+                        *FIRST_FRAME_AT.lock().unwrap() = Some(now);
+                        // take() ensures this only ever sends once, on
+                        // the true first successfully published frame.
+                        if let Some(tx) = self.first_frame_tx.take() {
+                            let _ = tx.send(now);
                         }
                     }
-                    Err(e) => {
-                        send_error = Some(format!("Could not send frame {count} to encoder: {e}"));
-                        break;
-                    }
+                } else {
+                    // The buffer's reported dimensions didn't match
+                    // what we expected - don't publish a possibly
+                    // corrupt frame, and do NOT signal first-frame
+                    // readiness from this callback. If this was the
+                    // very first callback, a later successful one
+                    // still can become the true first frame.
+                    *CAPTURE_ERROR.lock().unwrap() = Some(format!(
+                        "Frame buffer size mismatch: row_pitch={row_pitch}, expected>={tight_row_bytes}, raw_len={}, expected_total={}",
+                        raw.len(),
+                        row_pitch * height as usize
+                    ));
                 }
             }
-            if let Some(e) = send_error {
-                *CAPTURE_ERROR.lock().unwrap() = Some(e);
-                self.encoder = None; // stop trying to encode further frames after a failure
+            Err(e) => {
+                // A single failed read doesn't end capture - the
+                // video clock just keeps showing whatever the last
+                // successfully-read frame was, exactly as it would
+                // for a genuinely static desktop. No first-frame
+                // signal is sent from this callback either way.
+                *CAPTURE_ERROR.lock().unwrap() = Some(format!("Could not read frame buffer: {e}"));
             }
         }
 
@@ -363,16 +278,6 @@ impl GraphicsCaptureApiHandler for ProofHandler {
     }
 
     fn on_closed(&mut self) -> Result<(), Self::Error> {
-        // The session has actually ended (triggered externally by
-        // run_capture_proof calling control.stop()) - finalize the
-        // encoder here, now that no more frames will arrive.
-        if let Some(encoder) = self.encoder.take() {
-            let finish_start = Instant::now();
-            if let Err(e) = encoder.finish() {
-                *CAPTURE_ERROR.lock().unwrap() = Some(format!("Could not finish encoding: {e}"));
-            }
-            *ENCODER_FINISH_DURATION.lock().unwrap() = Some(finish_start.elapsed());
-        }
         Ok(())
     }
 }
@@ -566,6 +471,7 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     let primary_monitor = Monitor::primary().map_err(|e| format!("No primary monitor available: {e}"))?;
 
     let (first_frame_tx, first_frame_rx) = mpsc::channel::<Instant>();
+    let shared_frame = new_shared_frame();
 
     let settings = Settings::new(
         primary_monitor,
@@ -576,15 +482,15 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
         DirtyRegionSettings::Default,
         ColorFormat::Rgba8,
         CaptureFlags {
-            output_path: output_path.clone(),
             first_frame_tx,
+            shared_frame: shared_frame.clone(),
         },
     );
 
     crate::debug_log::log(
         app,
         &format!(
-            "native_capture: calling Capture::start_free_threaded, requested {REQUESTED_CAPTURE_SECS}s of capture, target interval {TARGET_UPDATE_INTERVAL_MS}ms, output {}",
+            "native_capture: calling Capture::start_free_threaded (acquisition only now), requested {REQUESTED_CAPTURE_SECS}s, video clock {VIDEO_CLOCK_FPS}fps, target WGC interval {TARGET_UPDATE_INTERVAL_MS}ms, output {}",
             output_path.display()
         ),
     );
@@ -592,78 +498,53 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     let capture_call_at = Instant::now();
     let mut ended_normally = false;
     let mut stop_requested_at: Option<Instant> = None;
+    let mut video_clock_result: Option<crate::native_video_encode::VideoClockResult> = None;
 
     match ProofHandler::start_free_threaded(settings) {
         Ok(control) => {
-            // Wait for the first real frame before starting the
-            // requested-duration countdown - this is the actual fix.
-            // Previously the countdown started right after
-            // start_free_threaded() returned, which is BEFORE WGC
-            // initialization and the first frame - meaning the
-            // requested 5 seconds already included video's own
-            // startup time, so the real content-capturing window
-            // after the first frame was shorter than 5 seconds even
-            // though audio's trimming logic assumed a full 5 seconds
-            // from that same first-frame point. Waiting here first
-            // makes both windows describe the same real interval.
+            // Wait for the first real frame so there's something in
+            // shared_frame before the video clock starts reading it,
+            // and so capture_origin (FIRST_FRAME_AT) is established
+            // for audio alignment below - unchanged from before.
             // recv_timeout (not recv) so a first frame that never
-            // arrives fails cleanly instead of hanging forever - a
-            // real possibility if WGC initialization itself fails
-            // silently or the desktop can't be captured at all.
+            // arrives fails cleanly instead of hanging forever.
             match first_frame_rx.recv_timeout(Duration::from_secs(FIRST_FRAME_TIMEOUT_SECS)) {
                 Ok(_first_frame_at) => {
-                    std::thread::sleep(Duration::from_secs(REQUESTED_CAPTURE_SECS));
+                    let (width, height) = FIRST_FRAME_SIZE.lock().unwrap().unwrap_or((1920, 1080));
 
-                    // TAIL-GAP MITIGATION - KEPT, NOT A COMPLETE FIX.
-                    // Re-investigated this round specifically to find
-                    // something better: confirmed again (fresh
-                    // research, not just trusting last round's
-                    // conclusion) that windows-capture 2.0.1 has no
-                    // public way to submit video content from outside
-                    // a real WGC callback - VideoEncoderSource has no
-                    // public constructor, and send_frame() only
-                    // accepts the crate's own Frame type, which can't
-                    // be created or replayed independently. Given that
-                    // hard constraint, this bounded wait for one more
-                    // GENUINE callback remains the best available
-                    // mitigation, not an ideal architecture - it does
-                    // NOT fabricate any content, and it does NOT
-                    // guarantee success (a desktop that stays
-                    // completely static through this window too still
-                    // leaves a real, honestly-reported gap). The
-                    // catch-up mechanism itself was corrected this
-                    // round (real time-spaced sends instead of an
-                    // instant burst - see the SPACING FIX comment in
-                    // on_frame_arrived), which is the more consequential
-                    // fix; this grace period only helps the specific
-                    // gap after the very last callback, which no
-                    // in-callback mechanism can ever reach.
-                    let last_before_grace = *LAST_REAL_FRAME_AT.lock().unwrap();
-                    let gap_already_ms = last_before_grace.map(|last| last.elapsed().as_millis() as u64).unwrap_or(u64::MAX);
-                    if gap_already_ms >= TAIL_GAP_GRACE_THRESHOLD_MS {
-                        let grace_deadline = Instant::now() + Duration::from_secs(TAIL_GAP_GRACE_PERIOD_SECS);
-                        while Instant::now() < grace_deadline {
-                            std::thread::sleep(Duration::from_millis(50));
-                            let latest = *LAST_REAL_FRAME_AT.lock().unwrap();
-                            if latest != last_before_grace {
-                                break; // a new real frame arrived and triggered catch-up
-                            }
-                        }
-                    }
-
+                    // THE ACTUAL FIX. Video's timeline no longer
+                    // depends on WGC callback arrival at all past this
+                    // point - run_video_clock owns its own schedule
+                    // and reads whatever the latest owned frame is on
+                    // every tick, blocking for exactly the requested
+                    // duration regardless of how many (or how few)
+                    // more real callbacks arrive during that time. A
+                    // completely static desktop now produces the same
+                    // repeated image at every tick, which is correct
+                    // screen-recording behavior - not a workaround.
+                    // See native_video_encode.rs for the full
+                    // architecture reasoning, including why the
+                    // previous callback-driven approach (proven to
+                    // fail on a real static-screen test: 1 callback, 1
+                    // frame, ~0.3MB file) was replaced rather than
+                    // patched again.
+                    let result = run_video_clock(app, &shared_frame, &output_path, width, height, VIDEO_CLOCK_FPS, REQUESTED_CAPTURE_SECS);
+                    crate::debug_log::log(
+                        app,
+                        &format!(
+                            "native_capture: video clock finished, success={}, frames_produced={}, error={:?}",
+                            result.video_encode_success, result.video_clock_frames_produced, result.video_encode_error
+                        ),
+                    );
+                    video_clock_result = Some(result);
                     stop_requested_at = Some(Instant::now());
 
+                    // WGC acquisition can stop now - the video clock
+                    // above already produced the complete, correctly-
+                    // timed file independently of this, so this is no
+                    // longer time-critical the way it was before.
                     match control.stop() {
                         Ok(()) => {
-                            // stop(self) consumes control and already
-                            // requests shutdown and joins the capture
-                            // thread - there is nothing left to
-                            // wait() on afterward, and control itself
-                            // is gone by this point. A successful
-                            // return here is itself the confirmation
-                            // that the capture thread (and its
-                            // on_closed cleanup, i.e. encoder
-                            // finalization) has finished.
                             ended_normally = true;
                         }
                         Err(e) => {
@@ -882,7 +763,6 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     let total_command_seconds = command_start.elapsed().as_secs_f64();
 
     let frames_received = FRAME_COUNT.load(Ordering::SeqCst);
-    let frames_submitted_to_encoder = FRAMES_SUBMITTED.load(Ordering::SeqCst);
     let (frame_width, frame_height) = FIRST_FRAME_SIZE
         .lock()
         .unwrap()
@@ -892,41 +772,19 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     let first_frame_at = *FIRST_FRAME_AT.lock().unwrap();
 
     let initialization_seconds = first_frame_at.map(|first| first.duration_since(capture_call_at).as_secs_f64());
-    // Measured, not assumed: the real elapsed time from the first
-    // frame to the moment stop was requested. Now that the countdown
-    // starts after waiting for the first frame (see the wait on
-    // first_frame_rx above), this should read close to
-    // REQUESTED_CAPTURE_SECS - but it's computed from real timestamps
-    // rather than hardcoded, so any remaining discrepancy (e.g. from
-    // scheduling jitter) is visible rather than papered over.
+    // The video clock now runs for exactly REQUESTED_CAPTURE_SECS by
+    // construction (see run_video_clock) - this is no longer computed
+    // from callback timing at all, which is the whole point of the
+    // architecture change. Kept as its own measured value (from
+    // first_frame_at to stop_requested_at, which now marks when the
+    // video clock finished) rather than hardcoded, so any real
+    // scheduling overhead is still visible rather than assumed zero.
     let capture_duration_seconds = match (first_frame_at, stop_requested_at) {
         (Some(first), Some(stop)) => stop.duration_since(first).as_secs_f64(),
         _ => 0.0,
     };
-    let encoder_finalization_seconds = ENCODER_FINISH_DURATION.lock().unwrap().map(|d| d.as_secs_f64());
-    let duplicated_frames_submitted = DUPLICATED_FRAMES_SUBMITTED.load(Ordering::SeqCst);
-    let last_real_frame_at = *LAST_REAL_FRAME_AT.lock().unwrap();
-    let last_real_frame_seconds = match (first_frame_at, last_real_frame_at) {
-        (Some(first), Some(last)) => Some(last.duration_since(first).as_secs_f64()),
-        _ => None,
-    };
-    // How much of the requested window, after the last real WGC
-    // callback, has no corresponding encoded media - the honest
-    // measurement of the known, previously-unmitigated limitation.
-    // Should now usually be small thanks to the grace-period wait
-    // above, but is reported exactly as measured, not assumed zero.
-    let tail_gap_seconds = match (last_real_frame_at, stop_requested_at) {
-        (Some(last), Some(stop)) => Some(stop.duration_since(last).as_secs_f64()),
-        _ => None,
-    };
 
-    let approximate_fps = if capture_duration_seconds > 0.0 {
-        Some(frames_submitted_to_encoder as f64 / capture_duration_seconds)
-    } else {
-        None
-    };
-
-    let video_path = if capture_error.is_none() && output_path.exists() {
+    let video_path = if video_clock_result.as_ref().map(|r| r.video_encode_success).unwrap_or(false) && output_path.exists() {
         Some(output_path.display().to_string())
     } else {
         None
@@ -935,25 +793,21 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     crate::debug_log::log(
         app,
         &format!(
-            "native_capture: proof finished, wgc_callbacks={frames_received}, submitted_to_encoder={frames_submitted_to_encoder}, capture_duration={capture_duration_seconds:.2}s, finalization={encoder_finalization_seconds:?}s, total_command={total_command_seconds:.2}s, ended_normally={ended_normally}, capture_error={capture_error:?}, video_path={video_path:?}, audio_requested={}, audio_buffers_captured={}, audio_frames_captured={}, audio_error={:?}",
+            "native_capture: proof finished, wgc_callbacks={frames_received}, video_clock={:?}, capture_duration={capture_duration_seconds:.2}s, total_command={total_command_seconds:.2}s, ended_normally={ended_normally}, capture_error={capture_error:?}, video_path={video_path:?}, audio_requested={}, audio_buffers_captured={}, audio_frames_captured={}, audio_error={:?}",
+            video_clock_result.as_ref().map(|r| (r.video_clock_frames_produced, r.video_encode_success)),
             audio_diagnostics.audio_requested, audio_diagnostics.buffers_captured, audio_diagnostics.frames_captured, audio_diagnostics.audio_error
         ),
     );
 
     Ok(NativeCaptureProof {
         frames_received,
-        frames_submitted_to_encoder,
-        duplicated_frames_submitted,
-        last_real_frame_seconds,
-        tail_gap_seconds,
+        video_clock: video_clock_result,
         frame_width,
         frame_height,
         requested_capture_seconds: REQUESTED_CAPTURE_SECS,
         initialization_seconds,
         capture_duration_seconds,
-        encoder_finalization_seconds,
         total_command_seconds,
-        approximate_fps,
         ended_normally,
         video_path,
         capture_error,

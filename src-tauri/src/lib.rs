@@ -24,6 +24,7 @@ mod descriptor;
 mod native_audio;
 mod native_capture;
 mod native_mux;
+mod native_video_encode;
 mod native_speech;
 mod output_settings;
 mod recording_save;
