@@ -184,8 +184,8 @@ export async function testNativeCapture(includeSystemAudio) {
   return invoke("test_native_capture", { includeSystemAudio });
 }
 
-export async function startNativeRecording(includeSystemAudio) {
-  return invoke("start_native_recording", { includeSystemAudio });
+export async function startNativeRecording(includeSystemAudio, includeMicrophone) {
+  return invoke("start_native_recording", { includeSystemAudio, includeMicrophone });
 }
 
 export async function stopNativeRecording() {

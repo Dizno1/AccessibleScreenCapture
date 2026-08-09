@@ -241,3 +241,169 @@ pub async fn mux_video_and_audio(app: &AppHandle, video_path: &Path, audio_path:
         },
     }
 }
+
+/// Muxes a production recording with 0, 1, or 2 audio sources (native
+/// WASAPI system audio and/or native WASAPI microphone capture) into
+/// one final MP4. Added alongside mux_video_and_audio rather than
+/// changing its signature - that function is used by the diagnostic
+/// test's single-audio-source path and is left untouched to avoid any
+/// risk to that already-proven code.
+///
+/// Four cases, matching the four audio-selection combinations the
+/// production recorder supports:
+///   - Neither source: `-an` (explicitly no audio track), video
+///     stream-copied.
+///   - Exactly one source: same shape as mux_video_and_audio - that
+///     source's audio is encoded to AAC directly, no mixing needed.
+///   - Both sources: FFmpeg's `amix` filter combines them into one
+///     audio stream before AAC encoding. amix's default behavior
+///     normalizes each input's volume by the number of inputs (to
+///     avoid the combined signal clipping) - this is FFmpeg's own
+///     documented default, not a project-specific choice, and is the
+///     expected behavior for mixing two live sources together.
+pub async fn mux_recording(
+    app: &AppHandle,
+    video_path: &Path,
+    system_audio_path: Option<&Path>,
+    mic_audio_path: Option<&Path>,
+    output_path: &Path,
+) -> MuxResult {
+    let video_stream_handling = "copy (no re-encode)".to_string();
+    let muxing_method = "ffmpeg sidecar".to_string();
+
+    let sidecar = match app.shell().sidecar("ffmpeg") {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            return MuxResult {
+                mux_attempted: true,
+                sidecar_invocation_succeeded: false,
+                ffmpeg_exit_code: None,
+                final_muxed_path: None,
+                muxing_method,
+                video_stream_handling,
+                audio_codec_used: "none".to_string(),
+                muxing_success: false,
+                final_file_size_bytes: None,
+                muxing_error: Some(format!("Could not locate the ffmpeg sidecar binary: {e}")),
+            };
+        }
+    };
+
+    let _ = std::fs::remove_file(output_path);
+
+    let video_str = video_path.to_string_lossy().to_string();
+    let mut args: Vec<String> = vec!["-y".to_string(), "-i".to_string(), video_str];
+    let audio_codec_used: String;
+
+    match (system_audio_path, mic_audio_path) {
+        (None, None) => {
+            args.extend(["-map".to_string(), "0:v:0".to_string(), "-c:v".to_string(), "copy".to_string(), "-an".to_string()]);
+            audio_codec_used = "none".to_string();
+        }
+        (Some(sys_path), None) => {
+            args.extend([
+                "-i".to_string(),
+                sys_path.to_string_lossy().to_string(),
+                "-map".to_string(),
+                "0:v:0".to_string(),
+                "-map".to_string(),
+                "1:a:0".to_string(),
+                "-c:v".to_string(),
+                "copy".to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
+            ]);
+            audio_codec_used = "aac".to_string();
+        }
+        (None, Some(mic_path)) => {
+            args.extend([
+                "-i".to_string(),
+                mic_path.to_string_lossy().to_string(),
+                "-map".to_string(),
+                "0:v:0".to_string(),
+                "-map".to_string(),
+                "1:a:0".to_string(),
+                "-c:v".to_string(),
+                "copy".to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
+            ]);
+            audio_codec_used = "aac".to_string();
+        }
+        (Some(sys_path), Some(mic_path)) => {
+            args.extend([
+                "-i".to_string(),
+                sys_path.to_string_lossy().to_string(),
+                "-i".to_string(),
+                mic_path.to_string_lossy().to_string(),
+                "-filter_complex".to_string(),
+                "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0[aout]".to_string(),
+                "-map".to_string(),
+                "0:v:0".to_string(),
+                "-map".to_string(),
+                "[aout]".to_string(),
+                "-c:v".to_string(),
+                "copy".to_string(),
+                "-c:a".to_string(),
+                "aac".to_string(),
+            ]);
+            audio_codec_used = "aac (mixed: system + microphone)".to_string();
+        }
+    }
+
+    args.extend(["-movflags".to_string(), "+faststart".to_string(), output_path.to_string_lossy().to_string()]);
+
+    let output = sidecar.args(args).output().await;
+
+    match output {
+        Ok(result) => {
+            let exit_code = result.status.code();
+            let output_exists = output_path.exists();
+            if result.status.success() && output_exists {
+                let final_file_size_bytes = std::fs::metadata(output_path).ok().map(|m| m.len());
+                MuxResult {
+                    mux_attempted: true,
+                    sidecar_invocation_succeeded: true,
+                    ffmpeg_exit_code: exit_code,
+                    final_muxed_path: Some(output_path.display().to_string()),
+                    muxing_method,
+                    video_stream_handling,
+                    audio_codec_used,
+                    muxing_success: true,
+                    final_file_size_bytes,
+                    muxing_error: None,
+                }
+            } else {
+                let reason = if !result.status.success() {
+                    format!("ffmpeg exited with a non-zero status: {exit_code:?}. stderr: {}", truncated_stderr(&result.stderr))
+                } else {
+                    "ffmpeg reported success but the expected output file does not exist.".to_string()
+                };
+                MuxResult {
+                    mux_attempted: true,
+                    sidecar_invocation_succeeded: true,
+                    ffmpeg_exit_code: exit_code,
+                    final_muxed_path: None,
+                    muxing_method,
+                    video_stream_handling,
+                    audio_codec_used,
+                    muxing_success: false,
+                    final_file_size_bytes: None,
+                    muxing_error: Some(reason),
+                }
+            }
+        }
+        Err(e) => MuxResult {
+            mux_attempted: true,
+            sidecar_invocation_succeeded: false,
+            ffmpeg_exit_code: None,
+            final_muxed_path: None,
+            muxing_method,
+            video_stream_handling,
+            audio_codec_used,
+            muxing_success: false,
+            final_file_size_bytes: None,
+            muxing_error: Some(format!("Could not run the ffmpeg sidecar: {e}")),
+        },
+    }
+}

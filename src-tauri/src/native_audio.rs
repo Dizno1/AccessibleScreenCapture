@@ -123,20 +123,37 @@ impl Default for AudioCaptureDiagnostics {
     }
 }
 
-/// Starts WASAPI loopback capture of the default render (playback)
-/// endpoint on a dedicated background thread - every WASAPI/COM
-/// object is created and used entirely within that thread (see the
-/// COM/thread ownership note above). Blocks briefly waiting for the
-/// worker to report whether initialization succeeded, then returns a
-/// receiver for captured PCM chunks, a handle to request stop, and
-/// the Instant the worker began capturing - the caller uses that
-/// Instant plus each AudioChunk's `elapsed` to convert chunk
+/// Which kind of WASAPI capture to start - the two differ only in
+/// which endpoint is opened and how it's labeled; the rest of the
+/// pipeline (mix format, PollingShared mode, read loop, drain-on-stop)
+/// is identical, since both are, from WASAPI's perspective, just a
+/// capture-direction stream on some endpoint.
+enum CaptureKind {
+    /// The classic WASAPI loopback trick: open the RENDER endpoint
+    /// (what's currently playing sound) but initialize in the CAPTURE
+    /// direction - captures system audio, per Microsoft's own
+    /// documented guidance.
+    SystemLoopback,
+    /// A genuine capture/input endpoint (a real microphone or other
+    /// recording device) - opened directly in the CAPTURE direction,
+    /// no loopback trick needed since the device already is a capture
+    /// endpoint.
+    Microphone,
+}
+
+/// Starts WASAPI capture on a dedicated background thread - every
+/// WASAPI/COM object is created and used entirely within that thread
+/// (see the COM/thread ownership note above). Blocks briefly waiting
+/// for the worker to report whether initialization succeeded, then
+/// returns a receiver for captured PCM chunks, a handle to request
+/// stop, and the Instant the worker began capturing - the caller uses
+/// that Instant plus each AudioChunk's `elapsed` to convert chunk
 /// timestamps into absolute Instants comparable to video's own
 /// first-frame timestamp, for capture-origin alignment. Capture
 /// continues on the worker thread until `stop_flag` is set. Never
 /// panics; every failure path returns Err with a specific message
 /// instead.
-pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
+fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
     let (chunk_tx, chunk_rx): (Sender<AudioChunk>, Receiver<AudioChunk>) = mpsc::channel();
     let (init_tx, init_rx) = mpsc::channel::<Result<(AudioCaptureDiagnostics, Instant), String>>();
     let stop_flag = Arc::new(AtomicBool::new(false));
@@ -159,19 +176,35 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
             }
         };
 
-        let device = match enumerator.get_default_device(&Direction::Render) {
+        // The one real difference between the two capture kinds: which
+        // endpoint direction to fetch from the enumerator. Both then
+        // initialize the client in Direction::Capture below - for
+        // loopback that's the documented trick (render endpoint,
+        // capture-direction client); for a real microphone, that's
+        // simply correct, since the device already is a capture
+        // endpoint.
+        let enumerator_direction = match kind {
+            CaptureKind::SystemLoopback => Direction::Render,
+            CaptureKind::Microphone => Direction::Capture,
+        };
+        let device_kind_label = match kind {
+            CaptureKind::SystemLoopback => "playback",
+            CaptureKind::Microphone => "microphone",
+        };
+
+        let device = match enumerator.get_default_device(&enumerator_direction) {
             Ok(device) => device,
             Err(e) => {
-                let _ = init_tx.send(Err(format!("Could not get the default playback device: {e}")));
+                let _ = init_tx.send(Err(format!("Could not get the default {device_kind_label} device: {e}")));
                 return;
             }
         };
-        let render_endpoint_name = device.get_friendlyname().ok();
+        let endpoint_name = device.get_friendlyname().ok();
 
         let mut audio_client = match device.get_iaudioclient() {
             Ok(client) => client,
             Err(e) => {
-                let _ = init_tx.send(Err(format!("Could not open an audio client on the default playback device: {e}")));
+                let _ = init_tx.send(Err(format!("Could not open an audio client on the default {device_kind_label} device: {e}")));
                 return;
             }
         };
@@ -212,14 +245,13 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
             buffer_duration_hns: min_period,
         };
 
-        // The classic WASAPI loopback trick, per Microsoft's own
-        // documented guidance: open the RENDER endpoint (the device
-        // that's actually playing sound) but initialize the client in
-        // the CAPTURE direction - this is what makes it a loopback
-        // capture of "whatever this device is currently playing"
-        // rather than a normal playback stream.
+        // Direction::Capture in both cases - for loopback this is the
+        // documented trick (render endpoint, capture-direction
+        // client); for a real microphone endpoint, initializing in
+        // the capture direction is simply the normal, correct way to
+        // record from it.
         if let Err(e) = audio_client.initialize_client(&mix_format, &Direction::Capture, &mode) {
-            let _ = init_tx.send(Err(format!("Could not initialize the loopback capture stream: {e}")));
+            let _ = init_tx.send(Err(format!("Could not initialize the {device_kind_label} capture stream: {e}")));
             return;
         }
 
@@ -232,14 +264,14 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
         };
 
         if let Err(e) = audio_client.start_stream() {
-            let _ = init_tx.send(Err(format!("Could not start the loopback capture stream: {e}")));
+            let _ = init_tx.send(Err(format!("Could not start the {device_kind_label} capture stream: {e}")));
             return;
         }
 
         let diagnostics = AudioCaptureDiagnostics {
             audio_requested: true,
             wasapi_initialized: true,
-            render_endpoint_name,
+            render_endpoint_name: endpoint_name,
             mix_sample_rate: Some(sample_rate),
             mix_channels: Some(channels),
             mix_bits_per_sample: Some(bits_per_sample),
@@ -328,4 +360,19 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
         Ok(Err(e)) => Err(e),
         Err(_) => Err("Audio worker thread ended unexpectedly during initialization.".to_string()),
     }
+}
+
+/// Starts WASAPI loopback capture of the default render (playback)
+/// endpoint - captures system audio. See `start_capture` for the
+/// shared implementation.
+pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
+    start_capture(CaptureKind::SystemLoopback)
+}
+
+/// Starts WASAPI capture of the default microphone (capture) endpoint.
+/// See `start_capture` for the shared implementation. Uses the
+/// Windows default recording device - no device-selection UI in this
+/// pass, per explicit scope.
+pub fn start_microphone_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
+    start_capture(CaptureKind::Microphone)
 }

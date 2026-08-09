@@ -44,23 +44,10 @@ const systemAudioOption = document.getElementById("option-system-audio");
 const microphoneOption = document.getElementById("option-microphone");
 const microphoneSelectWrapper = document.getElementById("microphone-select-wrapper");
 const microphoneSelect = document.getElementById("microphone-select");
-const microphoneNativeNotice = document.getElementById("microphone-native-notice");
 const screenshotButton = document.getElementById("screenshot-button");
 const recordToggleButton = document.getElementById("record-toggle-button");
 const pauseResumeButton = document.getElementById("pause-resume-button");
 const reviewSection = document.getElementById("review-section");
-
-// Native recording does not yet mix a microphone stream into its
-// FFmpeg pipeline (system audio via WASAPI is proven and wired in;
-// microphone is a separate, not-yet-implemented piece of
-// architecture). Disabled accessibly here rather than left checkable
-// with no actual effect - the browser fallback path (non-Tauri) is
-// unaffected and keeps working exactly as before.
-if (isTauri) {
-  microphoneOption.checked = false;
-  microphoneOption.disabled = true;
-  if (microphoneNativeNotice) microphoneNativeNotice.hidden = false;
-}
 const reviewHeading = document.getElementById("review-heading");
 const reviewPreview = document.getElementById("review-preview");
 const saveButton = document.getElementById("save-button");
@@ -174,7 +161,7 @@ initShortcuts();
 
 function setWorkflowLocked(locked) {
   systemAudioOption.disabled = locked;
-  microphoneOption.disabled = isTauri ? true : locked;
+  microphoneOption.disabled = locked;
   microphoneSelect.disabled = locked;
   screenshotButton.disabled = locked;
 
@@ -362,6 +349,19 @@ if (captureSoundToggle) {
 
 microphoneOption.addEventListener("change", async () => {
   if (!microphoneOption.checked) {
+    microphoneSelectWrapper.hidden = true;
+    return;
+  }
+
+  // Native recording always uses the Windows default recording
+  // device (see native_audio.rs) - no device picker or browser
+  // permission prompt is needed or shown here. The
+  // getUserMedia()-based device enumeration below is for the browser
+  // fallback path only, where it is the only way to offer device
+  // choice at all; running it in the native app would trigger
+  // exactly the kind of Chromium/WebView permission dialog native
+  // recording is meant to avoid.
+  if (isTauri) {
     microphoneSelectWrapper.hidden = true;
     return;
   }
@@ -1094,21 +1094,22 @@ async function startRecording() {
 
   if (isTauri) {
     // Native recording: no getDisplayMedia, no Chromium/WebView
-    // screen-sharing chooser. Microphone selection is preserved in
-    // the UI but does not yet feed into native recordings - see the
-    // combined announcement below, which says so plainly rather than
-    // silently ignoring the checkbox.
-    const micLabel = microphoneOption.checked
-      ? microphoneSelect.options[microphoneSelect.selectedIndex]?.textContent || "Default microphone"
-      : "Off";
-    const readinessParts = ["Recording requested.", "Primary monitor.", `System audio ${systemAudioOption.checked ? "on" : "off"}.`];
-    if (microphoneOption.checked) {
-      readinessParts.push(`Microphone selected, ${micLabel}, but not yet included in native recordings.`);
-    }
+    // screen-sharing chooser. System audio and microphone are both
+    // captured natively via WASAPI and combined into the final MP4.
+    // The microphone device dropdown is a browser-fallback-only
+    // control (native capture always uses the Windows default
+    // recording device - see native_audio.rs) so it isn't referenced
+    // here, only whether microphone capture is on or off.
+    const readinessParts = [
+      "Recording requested.",
+      "Primary monitor.",
+      `System audio ${systemAudioOption.checked ? "on" : "off"}.`,
+      `Microphone ${microphoneOption.checked ? "on" : "off"}.`,
+    ];
     announceRaw(readinessParts.join(" "));
 
     try {
-      const result = await startNativeRecording(systemAudioOption.checked);
+      const result = await startNativeRecording(systemAudioOption.checked, microphoneOption.checked);
       if (!result.started) {
         console.error("Native recording could not start:", result.startError);
         logDebug(`app.js: native recording start FAILED: ${result.startError}`);
