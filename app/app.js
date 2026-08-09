@@ -1629,8 +1629,9 @@ function initNativeCaptureTest() {
             proof.mixSampleRate != null && proof.mixChannels != null
               ? `${proof.mixSampleRate} Hz, ${proof.mixChannels} channel${proof.mixChannels === 1 ? "" : "s"}`
               : "unknown format";
+          const span = proof.capturedSpanSeconds != null ? `${proof.capturedSpanSeconds.toFixed(2)} seconds` : "unknown duration";
           parts.push(
-            `System audio captured from ${device} (${format}): ${proof.buffersCaptured} buffers, ${proof.framesCaptured} total frames.`
+            `System audio captured from ${device} (${format}): ${proof.buffersCaptured} buffers, ${proof.framesCaptured} total frames, spanning ${span} of real captured audio.`
           );
           if (proof.audioWavPath) {
             parts.push(

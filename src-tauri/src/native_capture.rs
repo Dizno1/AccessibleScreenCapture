@@ -99,6 +99,8 @@ static FIRST_FRAME_AT: Mutex<Option<Instant>> = Mutex::new(None);
 static ENCODER_FINISH_DURATION: Mutex<Option<Duration>> = Mutex::new(None);
 static AUDIO_BUFFERS_CAPTURED: AtomicU32 = AtomicU32::new(0);
 static AUDIO_FRAMES_CAPTURED: AtomicU32 = AtomicU32::new(0);
+static AUDIO_FIRST_CHUNK_ELAPSED: Mutex<Option<Duration>> = Mutex::new(None);
+static AUDIO_LAST_CHUNK_ELAPSED: Mutex<Option<Duration>> = Mutex::new(None);
 
 #[derive(Serialize)]
 pub struct NativeCaptureProof {
@@ -142,6 +144,7 @@ struct CaptureFlags {
 struct ProofHandler {
     output_path: PathBuf,
     encoder: Option<VideoEncoder>,
+    last_frame_at: Option<Instant>,
 }
 
 impl GraphicsCaptureApiHandler for ProofHandler {
@@ -151,8 +154,6 @@ impl GraphicsCaptureApiHandler for ProofHandler {
     fn new(context: Context<Self::Flags>) -> Result<Self, Self::Error> {
         FRAME_COUNT.store(0, Ordering::SeqCst);
         FRAMES_SUBMITTED.store(0, Ordering::SeqCst);
-        AUDIO_BUFFERS_CAPTURED.store(0, Ordering::SeqCst);
-        AUDIO_FRAMES_CAPTURED.store(0, Ordering::SeqCst);
         *FIRST_FRAME_SIZE.lock().unwrap() = None;
         *CAPTURE_ERROR.lock().unwrap() = None;
         *FIRST_FRAME_AT.lock().unwrap() = None;
@@ -160,6 +161,7 @@ impl GraphicsCaptureApiHandler for ProofHandler {
         Ok(ProofHandler {
             output_path: context.flags.output_path,
             encoder: None,
+            last_frame_at: None,
         })
     }
 
@@ -214,15 +216,60 @@ impl GraphicsCaptureApiHandler for ProofHandler {
             }
         }
 
+        // VIDEO DURATION FIX. Root cause confirmed from real test
+        // data: a requested 5-second capture with only 2 WGC
+        // callbacks produced an MP4 with ~0.033s of media - exactly
+        // 2 frames / 60fps. That's not a coincidence: it shows the
+        // encoder times frames by a fixed assumed rate (60fps) times
+        // sequential frame count, not by real elapsed wall-clock time
+        // between callbacks - confirmed indirectly, since accurate
+        // per-frame timestamps would have produced ~5s regardless of
+        // how few callbacks arrived. windows-capture's send_frame()
+        // takes no explicit timestamp parameter, and no confirmed API
+        // exists to override this per Frame, so the fix has to work
+        // within that constraint rather than against it: this
+        // callback now sends the CURRENT frame repeatedly - once for
+        // every ~1/60s of real time that elapsed since the previous
+        // callback - so the encoder's own fixed-rate timeline
+        // naturally accumulates to match real elapsed time instead of
+        // only advancing once per (rare) callback. This is the
+        // "generating appropriately timestamped duplicate frames"
+        // mechanism, implemented the only way available: repeated
+        // send_frame() calls on the same still-valid Frame reference,
+        // all within this one callback (a Frame is not valid to reuse
+        // once this callback returns, so catch-up can only happen
+        // here, not from a separate timer). Capped at a reasonable
+        // maximum so a very long gap (e.g. after an unusually static
+        // stretch) can't produce an excessive burst of encoder calls
+        // in one callback.
+        const ASSUMED_ENCODER_FPS: f64 = 60.0;
+        const MAX_CATCHUP_FRAMES: u32 = 600; // 10s worth at 60fps - a sane ceiling, not a hard requirement
+
+        let catchup_sends = match self.last_frame_at {
+            Some(previous) => {
+                let gap_secs = previous.elapsed().as_secs_f64();
+                ((gap_secs * ASSUMED_ENCODER_FPS).round() as u32).clamp(1, MAX_CATCHUP_FRAMES)
+            }
+            None => 1, // first frame - just send it once
+        };
+        self.last_frame_at = Some(Instant::now());
+
         if let Some(encoder) = self.encoder.as_mut() {
-            match encoder.send_frame(frame) {
-                Ok(()) => {
-                    FRAMES_SUBMITTED.fetch_add(1, Ordering::SeqCst);
+            let mut send_error: Option<String> = None;
+            for _ in 0..catchup_sends {
+                match encoder.send_frame(frame) {
+                    Ok(()) => {
+                        FRAMES_SUBMITTED.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(e) => {
+                        send_error = Some(format!("Could not send frame {count} to encoder: {e}"));
+                        break;
+                    }
                 }
-                Err(e) => {
-                    *CAPTURE_ERROR.lock().unwrap() = Some(format!("Could not send frame {count} to encoder: {e}"));
-                    self.encoder = None; // stop trying to encode further frames after a failure
-                }
+            }
+            if let Some(e) = send_error {
+                *CAPTURE_ERROR.lock().unwrap() = Some(e);
+                self.encoder = None; // stop trying to encode further frames after a failure
             }
         }
 
@@ -341,6 +388,11 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
     // this round. A failure here never aborts the video proof -
     // recorded as audio diagnostics, the video-only path continues
     // exactly as before.
+    AUDIO_BUFFERS_CAPTURED.store(0, Ordering::SeqCst);
+    AUDIO_FRAMES_CAPTURED.store(0, Ordering::SeqCst);
+    *AUDIO_FIRST_CHUNK_ELAPSED.lock().unwrap() = None;
+    *AUDIO_LAST_CHUNK_ELAPSED.lock().unwrap() = None;
+
     let mut audio_diagnostics = crate::native_audio::AudioCaptureDiagnostics {
         audio_requested: include_system_audio,
         ..Default::default()
@@ -371,9 +423,16 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
                         while let Ok(chunk) = receiver.try_recv() {
                             AUDIO_BUFFERS_CAPTURED.fetch_add(1, Ordering::SeqCst);
                             AUDIO_FRAMES_CAPTURED.fetch_add(chunk.frames, Ordering::SeqCst);
+                            {
+                                let mut first = AUDIO_FIRST_CHUNK_ELAPSED.lock().unwrap();
+                                if first.is_none() {
+                                    *first = Some(chunk.elapsed);
+                                }
+                            }
+                            *AUDIO_LAST_CHUNK_ELAPSED.lock().unwrap() = Some(chunk.elapsed);
                             accumulated.extend_from_slice(&chunk.pcm);
                         }
-                        std::thread::sleep(Duration::from_millis(20));
+                        std::thread::sleep(Duration::from_millis(10));
                     }
                     // Drain whatever arrived in the brief window
                     // between the last poll and the thread actually
@@ -381,6 +440,13 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
                     while let Ok(chunk) = receiver.try_recv() {
                         AUDIO_BUFFERS_CAPTURED.fetch_add(1, Ordering::SeqCst);
                         AUDIO_FRAMES_CAPTURED.fetch_add(chunk.frames, Ordering::SeqCst);
+                        {
+                            let mut first = AUDIO_FIRST_CHUNK_ELAPSED.lock().unwrap();
+                            if first.is_none() {
+                                *first = Some(chunk.elapsed);
+                            }
+                        }
+                        *AUDIO_LAST_CHUNK_ELAPSED.lock().unwrap() = Some(chunk.elapsed);
                         accumulated.extend_from_slice(&chunk.pcm);
                     }
                     accumulated
@@ -505,6 +571,18 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
 
     audio_diagnostics.buffers_captured = AUDIO_BUFFERS_CAPTURED.load(Ordering::SeqCst);
     audio_diagnostics.frames_captured = AUDIO_FRAMES_CAPTURED.load(Ordering::SeqCst) as u64;
+    // The real span between the first and last captured audio chunk -
+    // this is what actually answers "how much of the requested window
+    // did audio capture cover," distinct from wall-clock diagnostics
+    // elsewhere that only bound when capture started/stopped being
+    // requested, not when real packets were actually flowing.
+    audio_diagnostics.captured_span_seconds = match (
+        *AUDIO_FIRST_CHUNK_ELAPSED.lock().unwrap(),
+        *AUDIO_LAST_CHUNK_ELAPSED.lock().unwrap(),
+    ) {
+        (Some(first), Some(last)) => Some(last.saturating_sub(first).as_secs_f64()),
+        _ => None,
+    };
 
     let total_command_seconds = command_start.elapsed().as_secs_f64();
 

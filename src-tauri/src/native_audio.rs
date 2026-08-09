@@ -12,6 +12,21 @@
 // initializes, finds the right device, and receives real audio
 // buffers. It does not feed those buffers into the video encoder.
 //
+// AUDIO-DURATION FIX THIS ROUND. A real test captured only ~3.73s of
+// audio from a requested ~5s window, despite the stream running the
+// whole time. Root cause: the read loop read at most ONE queued
+// packet per poll tick (previously every 10ms) before sleeping again -
+// if WASAPI queued more than one packet's worth of audio between
+// ticks, only the first got read and the rest were silently lost when
+// the device's internal buffer wrapped around. Fixed by draining every
+// currently-queued packet in a tight inner loop before each sleep, so
+// the poll tick only determines how often we check for new work, not
+// how much of it we're allowed to consume once we find it. Also added
+// a final drain pass after stop is signaled but before the stream is
+// actually stopped, to catch anything that arrived in the last brief
+// window. Poll interval also tightened from 10ms to 5ms as a modest,
+// low-risk additional safety margin.
+//
 // THREE COMPILE-CORRECTNESS FIXES THIS ROUND:
 //
 //   1. initialize_mta() returns a raw HRESULT, not a Result - the
@@ -85,6 +100,8 @@ pub struct AudioCaptureDiagnostics {
     pub buffers_captured: u32,
     #[serde(rename = "framesCaptured")]
     pub frames_captured: u64,
+    #[serde(rename = "capturedSpanSeconds")]
+    pub captured_span_seconds: Option<f64>,
     #[serde(rename = "audioError")]
     pub audio_error: Option<String>,
 }
@@ -100,6 +117,7 @@ impl Default for AudioCaptureDiagnostics {
             mix_bits_per_sample: None,
             buffers_captured: 0,
             frames_captured: 0,
+            captured_span_seconds: None,
             audio_error: None,
         }
     }
@@ -223,6 +241,7 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
             mix_bits_per_sample: Some(bits_per_sample),
             buffers_captured: 0,
             frames_captured: 0,
+            captured_span_seconds: None,
             audio_error: None,
         };
 
@@ -237,6 +256,44 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
 
         let capture_start = Instant::now();
         while !stop_flag_for_thread.load(Ordering::SeqCst) {
+            // Drain every packet currently queued before sleeping -
+            // reading at most one packet per poll tick could let
+            // the device's buffer fill faster than we drain it,
+            // silently losing packets and shortening the captured
+            // audio even while the stream keeps running the whole
+            // time. This inner loop keeps reading until the queue is
+            // genuinely empty, then the outer loop sleeps once.
+            loop {
+                match capture_client.get_next_packet_size() {
+                    Ok(Some(frames_available)) if frames_available > 0 => {
+                        let mut buffer = vec![0u8; frames_available as usize * block_align as usize];
+                        match capture_client.read_from_device(&mut buffer) {
+                            Ok(_flags) => {
+                                let _ = chunk_tx.send(AudioChunk {
+                                    pcm: buffer,
+                                    frames: frames_available,
+                                    elapsed: capture_start.elapsed(),
+                                });
+                            }
+                            Err(_) => {
+                                // A transient read failure here doesn't end
+                                // the whole capture attempt - whatever was
+                                // captured before this point is still kept.
+                                break;
+                            }
+                        }
+                    }
+                    _ => break, // queue empty, or the size query itself failed transiently
+                }
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        // Stop was signaled - one last drain pass to catch anything
+        // that arrived in the brief window between the previous
+        // drain and the outer loop noticing stop_flag, before the
+        // stream is actually stopped.
+        loop {
             match capture_client.get_next_packet_size() {
                 Ok(Some(frames_available)) if frames_available > 0 => {
                     let mut buffer = vec![0u8; frames_available as usize * block_align as usize];
@@ -248,21 +305,11 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
                                 elapsed: capture_start.elapsed(),
                             });
                         }
-                        Err(_) => {
-                            // A transient read failure here doesn't end
-                            // the whole capture attempt - whatever was
-                            // captured before this point is still kept.
-                        }
+                        Err(_) => break,
                     }
                 }
-                _ => {
-                    // Nothing waiting yet, or the packet-size query
-                    // itself failed transiently - either way, just
-                    // wait for the next poll rather than treating this
-                    // as fatal.
-                }
+                _ => break,
             }
-            std::thread::sleep(Duration::from_millis(10));
         }
 
         let _ = audio_client.stop_stream();
