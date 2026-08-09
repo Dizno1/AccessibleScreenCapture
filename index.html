@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Screen Capture - AccessibleScreenCapture</title>
+<title>AccessibleScreenCapture</title>
 <link rel="stylesheet" href="app/styles.css">
 </head>
 <body>
@@ -13,6 +13,7 @@
 <header class="app-header">
   <h1>AccessibleScreenCapture</h1>
   <p class="app-tagline">Take screenshots and record your screen using only the keyboard.</p>
+  <p class="app-publisher">An Open Door Design application.</p>
 </header>
 
 <!-- Application-generated status announcements are restricted to approved capture, recording, save, cancellation, permission, and failure messages. -->
@@ -29,12 +30,13 @@
       <input type="checkbox" id="option-system-audio" checked>
       Include system audio, when available
     </label>
-    <p class="section-hint">Windows will separately ask whether to share system audio when the sharing dialog opens. Turn on "Also share system audio" there to include JAWS and other computer audio - this checkbox alone does not guarantee it.</p>
+    <p class="section-hint">Captured directly from Windows using this option - JAWS and other computer audio are included automatically when checked, with no separate dialog to confirm.</p>
 
     <label class="checkbox-option">
       <input type="checkbox" id="option-microphone">
       Include microphone audio
     </label>
+    <p id="microphone-native-notice" class="section-hint" hidden>Not yet available for recordings on this installation - microphone mixing into native recordings is planned but not implemented yet. System audio and video are not affected.</p>
 
     <div id="microphone-select-wrapper" hidden>
       <label for="microphone-select">Microphone</label>

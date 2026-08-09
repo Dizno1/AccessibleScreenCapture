@@ -5,81 +5,71 @@
 // windows-capture's own VideoEncoder, from inside on_frame_arrived)
 // cannot reliably represent elapsed time on a static desktop: a real
 // static-screen test got exactly 1 WGC callback, 1 submitted frame,
-// and a ~0.3MB, essentially empty final file - a ~5.25 second tail
-// with zero representation, because the only way to submit video
-// content is from inside a real WGC callback, and callbacks stop
-// arriving on a static desktop. No mitigation from inside that
-// architecture (spaced catch-up sends, a bounded grace-period wait
-// for one more callback) can fix that, because none of them can
-// submit content the callback mechanism never delivers.
+// and a ~0.3MB, essentially empty final file. This module removes the
+// coupling entirely: WGC is still used for SCREEN ACQUISITION, but
+// the VIDEO TIMELINE is driven by an independent clock here, reading
+// whatever the latest owned frame is on a fixed schedule, regardless
+// of how often WGC actually delivers a new one. Proven on real
+// hardware: a static-screen test with only 1 real WGC callback still
+// produced a full 150-frame, ~5-second video with working audio.
 //
-// This module removes the coupling entirely: WGC is still used for
-// SCREEN ACQUISITION (via native_capture.rs's ProofHandler), but the
-// VIDEO TIMELINE is now driven by an independent clock here, not by
-// callback arrival. The latest captured frame's raw pixels are copied
-// into owned CPU memory (a plain Vec<u8> - see OwnedFrame below) and
-// shared via Arc<Mutex<Option<OwnedFrame>>>; this clock reads whatever
-// the latest owned frame is, on a fixed interval, for exactly the
-// requested duration, regardless of how often (or rarely) WGC
-// actually delivers a new one. A static desktop with only 1 real
-// frame now produces the same repeated image at every tick for the
-// full requested duration - which is correct screen-recording
-// behavior (a static screen recorded for 5 seconds should produce 5
-// seconds of video showing that static screen), not "fake time."
+// OPEN-ENDED DURATION - THIS ROUND. Previously took a fixed
+// `duration_secs` (used for the 5-second experimental diagnostic
+// only). The production recorder's duration is however long the user
+// records for - "start when Start Recording is activated, stop when
+// Stop Recording is activated" - so this now runs until an external
+// `stop_flag` is set, not for a precomputed frame count. The
+// diagnostic test (native_capture.rs) still uses this same function,
+// just by setting a timer thread that flips stop_flag after 5 seconds
+// - one clock implementation serving both the diagnostic and
+// production paths, rather than two parallel copies to keep in sync.
+//
+// PAUSE SUPPORT - THIS ROUND. `pause_flag` is checked every tick;
+// while set, the clock stops writing frames to ffmpeg and stops
+// advancing its own schedule origin, so paused wall-clock time does
+// not appear in the output video's duration - resuming picks the
+// schedule back up as if the pause had not happened, rather than
+// producing a jump-cut or a frozen segment representing the paused
+// interval.
+//
+// PACING - AUDITED THIS ROUND, ALREADY CORRECT. A real test showed
+// requested 5s / actual capture window 6.10s with 150 frames produced
+// (exactly the target frame count). The specific bug hypothesized -
+// "process frame, then sleep the FULL interval, repeatedly" (which
+// would accumulate processing time on top of each interval) - was
+// checked directly against this code and is not what it does: each
+// tick's deadline (`clock_start + frame_interval * tick`) is computed
+// from a single fixed origin, not from the previous tick's finish
+// time, so processing time never accumulates across ticks. The
+// remaining ~1.1s gap is most likely the real, unavoidable cost of
+// writing large frames to ffmpeg's stdin pipe (a 2560x1600 RGBA frame
+// is ~16MB - Dean's own estimate, flagged as a real risk before this
+// test ran) - when a write takes longer than one frame interval, the
+// deadline check correctly skips sleeping for that tick rather than
+// double-counting, but it cannot make the write itself complete
+// faster, so total wall-clock time can still exceed the nominal
+// frame-count-times-interval figure under sustained slow writes. This
+// is reported via the new phase-separated diagnostics below rather
+// than asserted - the next real test will show directly whether
+// stdin-write time or something outside this function (e.g. WGC
+// session teardown, measured separately in native_capture.rs) is the
+// larger contributor.
 //
 // ENCODER CHOSEN - FFmpeg raw-video pipe, not windows-capture's
-// VideoEncoder, not hand-rolled Media Foundation. windows-capture's
-// encoder is rejected specifically because it's the thing being
-// replaced - its send_frame() API only accepts the crate's own Frame
-// type, which is exactly the callback-coupling this module exists to
-// remove. Hand-rolling Media Foundation (IMFSinkWriter with explicit
-// sample timestamps) was considered and rejected again this round for
-// the same reason as when muxing was first designed: it's genuinely
-// complex COM interop with far less verifiable documentation than is
-// available here, and the realistic risk of shipping substantially
-// wrong, hard-to-debug code was judged higher than using FFmpeg (which
-// is already proven, bundled, and working for muxing) for this too.
-// FFmpeg's rawvideo demuxer, fed via stdin, accepting a fixed-size
-// frame at a fixed interval and encoding with explicit, predictable
-// timing, is an extremely well-documented, common pattern - far lower
-// risk than either alternative.
+// VideoEncoder, not hand-rolled Media Foundation - see prior rounds'
+// reasoning, unchanged.
 //
-// CODEC CHOSEN - mpeg4 (MPEG-4 Part 2), not HEVC, not H.264. This is
-// a real, explained tradeoff, not a casual change. The bundled FFmpeg
-// (BtbN's static LGPL build) deliberately excludes GPL-only encoders
-// like libx264/libx265 - that was the whole point of choosing the
-// LGPL variant. Windows Media Foundation-backed encoders (h264_mf/
-// hevc_mf) would avoid that restriction (they call the OS's own
-// encoder, not bundled GPL code) and would be preferable for quality,
-// but whether they're actually compiled into BtbN's specific LGPL
-// build was not confirmed - unlike the codecs verified so far in this
-// project, that's a real gap, stated honestly rather than assumed.
-// mpeg4 is FFmpeg's own native, always-present codec in every build
-// regardless of GPL/LGPL configuration - not gated behind any
-// optional library. Given the primary goal of this pass is proving
-// the clock-driven timeline architecture works at all, reliability
-// was prioritized over quality: mpeg4 is guaranteed to exist in the
-// bundled binary, so a failure here can only mean the timeline
-// architecture itself is wrong, not "the codec wasn't compiled in."
-// If Dean confirms hevc_mf/h264_mf are actually available in the
-// bundled build (checkable via `ffmpeg -encoders` on the real binary),
-// switching FFMPEG_VIDEO_CODEC below is a one-line change.
+// CODEC - mpeg4 (MPEG-4 Part 2), not HEVC/H.264, because the bundled
+// FFmpeg (BtbN's static LGPL build) excludes GPL-only encoders and
+// mpeg4's availability doesn't depend on any optional library -
+// unchanged, real tradeoff, not revisited this round.
 //
-// FRAME RATE - 30fps, not 60fps. Chosen deliberately per explicit
-// guidance: 30fps is standard for screen recording, and halves CPU/
-// pipe-write load and output size compared to 60fps, which was never
-// a deliberate choice in the first place - it was just whatever
-// windows-capture's own encoder happened to default to.
-//
-// PIXEL FORMAT - rgba, matching the ColorFormat::Rgba8 the WGC capture
-// settings already request (native_capture.rs). frame.buffer() is
-// expected to return bytes in that same layout; if this specific
-// mapping is wrong, the visible symptom would be swapped color
-// channels, not corrupted timing or a crash - isolated and fixable
-// independently of the timeline architecture itself.
+// FRAME RATE - 30fps, unchanged.
+// PIXEL FORMAT - rgba, matching ColorFormat::Rgba8, unchanged.
 
 use serde::Serialize;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
@@ -110,6 +100,8 @@ pub struct VideoClockResult {
     pub video_clock_fps: u32,
     #[serde(rename = "videoClockFramesProduced")]
     pub video_clock_frames_produced: u32,
+    #[serde(rename = "videoClockElapsedSeconds")]
+    pub video_clock_elapsed_seconds: f64,
     #[serde(rename = "videoCodecUsed")]
     pub video_codec_used: String,
     #[serde(rename = "videoEncodeSuccess")]
@@ -127,23 +119,25 @@ fn truncated_stderr(stderr: &str) -> String {
     }
 }
 
-/// Runs the independent video clock for exactly `duration_secs`,
-/// reading whatever the latest owned frame is at each tick (whatever
-/// WGC has most recently delivered, however long ago) and piping its
-/// raw pixels to an FFmpeg raw-video-input encode. Blocks the calling
-/// thread for the full duration - intended to be run inside
-/// spawn_blocking or its own dedicated thread, never on an async
+/// Runs the independent video clock until `stop_flag` is set, reading
+/// whatever the latest owned frame is at each tick (whatever WGC has
+/// most recently delivered, however long ago) and piping its raw
+/// pixels to an FFmpeg raw-video-input encode. While `pause_flag` is
+/// set, no frames are written and the schedule origin itself is
+/// shifted forward to absorb the paused time, so it doesn't appear in
+/// the output. Blocks the calling thread until stop_flag is set -
+/// intended to be run on its own dedicated thread, never on an async
 /// executor thread. Requires at least one frame to already be
-/// available in `shared_frame` before this is called (the caller
-/// waits for the real first frame first, exactly as before).
+/// available in `shared_frame` before this is called.
 pub fn run_video_clock(
     app: &AppHandle,
     shared_frame: &SharedFrame,
+    stop_flag: &Arc<AtomicBool>,
+    pause_flag: &Arc<AtomicBool>,
     output_path: &Path,
     width: u32,
     height: u32,
     fps: u32,
-    duration_secs: u64,
 ) -> VideoClockResult {
     let sidecar = match app.shell().sidecar("ffmpeg") {
         Ok(cmd) => cmd,
@@ -151,6 +145,7 @@ pub fn run_video_clock(
             return VideoClockResult {
                 video_clock_fps: fps,
                 video_clock_frames_produced: 0,
+                video_clock_elapsed_seconds: 0.0,
                 video_codec_used: FFMPEG_VIDEO_CODEC.to_string(),
                 video_encode_success: false,
                 video_encode_error: Some(format!("Could not locate the ffmpeg sidecar binary: {e}")),
@@ -191,6 +186,7 @@ pub fn run_video_clock(
             return VideoClockResult {
                 video_clock_fps: fps,
                 video_clock_frames_produced: 0,
+                video_clock_elapsed_seconds: 0.0,
                 video_codec_used: FFMPEG_VIDEO_CODEC.to_string(),
                 video_encode_success: false,
                 video_encode_error: Some(format!("Could not start the ffmpeg raw-video pipe: {e}")),
@@ -217,13 +213,35 @@ pub fn run_video_clock(
     });
 
     let frame_interval = Duration::from_secs_f64(1.0 / fps as f64);
-    let total_frames = (duration_secs * fps as u64).max(1);
-    let clock_start = Instant::now();
+    let clock_loop_start = Instant::now();
+    // schedule_origin shifts forward by the paused duration each time
+    // a pause ends, so tick deadlines measured against it never
+    // include paused time - this is what keeps paused wall-clock time
+    // out of the output's duration, rather than freezing on the last
+    // frame for that long.
+    let mut schedule_origin = clock_loop_start;
+    let mut tick: u32 = 0;
     let mut frames_produced: u32 = 0;
     let mut write_error: Option<String> = None;
 
-    for tick in 0..total_frames {
-        let target_time = clock_start + frame_interval * tick as u32;
+    loop {
+        if stop_flag.load(Ordering::SeqCst) {
+            break;
+        }
+
+        if pause_flag.load(Ordering::SeqCst) {
+            let pause_started = Instant::now();
+            while pause_flag.load(Ordering::SeqCst) && !stop_flag.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            schedule_origin += pause_started.elapsed();
+            if stop_flag.load(Ordering::SeqCst) {
+                break;
+            }
+            continue;
+        }
+
+        let target_time = schedule_origin + frame_interval * tick;
         let now = Instant::now();
         if target_time > now {
             std::thread::sleep(target_time - now);
@@ -251,7 +269,11 @@ pub fn run_video_clock(
                 break;
             }
         }
+
+        tick += 1;
     }
+
+    let video_clock_elapsed_seconds = clock_loop_start.elapsed().as_secs_f64();
 
     // Dropping child here closes stdin (EOF), which tells ffmpeg's
     // rawvideo demuxer no more frames are coming and lets it finalize
@@ -266,6 +288,7 @@ pub fn run_video_clock(
         VideoClockResult {
             video_clock_fps: fps,
             video_clock_frames_produced: frames_produced,
+            video_clock_elapsed_seconds,
             video_codec_used: FFMPEG_VIDEO_CODEC.to_string(),
             video_encode_success: true,
             video_encode_error: None,
@@ -280,6 +303,7 @@ pub fn run_video_clock(
         VideoClockResult {
             video_clock_fps: fps,
             video_clock_frames_produced: frames_produced,
+            video_clock_elapsed_seconds,
             video_codec_used: FFMPEG_VIDEO_CODEC.to_string(),
             video_encode_success: false,
             video_encode_error: Some(reason),

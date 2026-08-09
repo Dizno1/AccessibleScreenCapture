@@ -184,6 +184,27 @@ export async function testNativeCapture(includeSystemAudio) {
   return invoke("test_native_capture", { includeSystemAudio });
 }
 
+export async function startNativeRecording(includeSystemAudio) {
+  return invoke("start_native_recording", { includeSystemAudio });
+}
+
+export async function stopNativeRecording() {
+  return invoke("stop_native_recording");
+}
+
+export async function pauseNativeRecording() {
+  return invoke("pause_native_recording");
+}
+
+export async function resumeNativeRecording() {
+  return invoke("resume_native_recording");
+}
+
+/** Reads a file from disk and returns its bytes as a Uint8Array. */
+export async function readNativeFile(path) {
+  return window.__TAURI__.fs.readFile(path);
+}
+
 export async function getOutputSettings() {
   return invoke("get_output_settings");
 }

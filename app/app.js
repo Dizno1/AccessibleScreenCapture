@@ -33,16 +33,34 @@ import {
   setSpeechVolume,
   testSpeechVoice,
   testNativeCapture,
+  startNativeRecording,
+  stopNativeRecording,
+  pauseNativeRecording,
+  resumeNativeRecording,
+  readNativeFile,
 } from "./tauri-bridge.js";
 
 const systemAudioOption = document.getElementById("option-system-audio");
 const microphoneOption = document.getElementById("option-microphone");
 const microphoneSelectWrapper = document.getElementById("microphone-select-wrapper");
 const microphoneSelect = document.getElementById("microphone-select");
+const microphoneNativeNotice = document.getElementById("microphone-native-notice");
 const screenshotButton = document.getElementById("screenshot-button");
 const recordToggleButton = document.getElementById("record-toggle-button");
 const pauseResumeButton = document.getElementById("pause-resume-button");
 const reviewSection = document.getElementById("review-section");
+
+// Native recording does not yet mix a microphone stream into its
+// FFmpeg pipeline (system audio via WASAPI is proven and wired in;
+// microphone is a separate, not-yet-implemented piece of
+// architecture). Disabled accessibly here rather than left checkable
+// with no actual effect - the browser fallback path (non-Tauri) is
+// unaffected and keeps working exactly as before.
+if (isTauri) {
+  microphoneOption.checked = false;
+  microphoneOption.disabled = true;
+  if (microphoneNativeNotice) microphoneNativeNotice.hidden = false;
+}
 const reviewHeading = document.getElementById("review-heading");
 const reviewPreview = document.getElementById("review-preview");
 const saveButton = document.getElementById("save-button");
@@ -65,6 +83,7 @@ let recordingStartTime = 0;
 // isn't something this app parses.
 let pausedDurationMs = 0;
 let pauseStartedAt = null;
+let isNativeRecordingPaused = false;
 let activeAudioContext = null;
 let captureCounter = 0;
 let descriptorEnabled = false;
@@ -155,7 +174,7 @@ initShortcuts();
 
 function setWorkflowLocked(locked) {
   systemAudioOption.disabled = locked;
-  microphoneOption.disabled = locked;
+  microphoneOption.disabled = isTauri ? true : locked;
   microphoneSelect.disabled = locked;
   screenshotButton.disabled = locked;
 
@@ -177,7 +196,7 @@ function renderRecordToggleButton() {
 
 function renderPauseResumeButton() {
   if (!pauseResumeButton) return;
-  const paused = activeRecorder?.state === "paused";
+  const paused = activeRecorder?.state === "paused" || isNativeRecordingPaused;
   const label = paused ? "Resume Recording" : "Pause Recording";
   pauseResumeButton.innerHTML = `${label} <span class="shortcut-hint" id="pause-resume-shortcut-hint">${shortcutDisplay.pauseResumeRecording}</span>`;
   pauseResumeButton.setAttribute("aria-pressed", paused ? "true" : "false");
@@ -267,12 +286,41 @@ function resumeRecording() {
 }
 
 function togglePauseResume() {
+  if (isTauri && isRecording) {
+    toggleNativePauseResume();
+    return;
+  }
   if (!activeRecorder || activeRecorder.state === "inactive") {
     announce("noRecordingActive");
     return;
   }
   if (activeRecorder.state === "paused") resumeRecording();
   else pauseRecording();
+}
+
+async function toggleNativePauseResume() {
+  try {
+    if (isNativeRecordingPaused) {
+      await resumeNativeRecording();
+      isNativeRecordingPaused = false;
+      diagnostics.lastPauseResumeAction = `Resumed at ${nowText()}`;
+      renderDiagnostics();
+      renderPauseResumeButton();
+      announce("recordingResumed");
+    } else {
+      await pauseNativeRecording();
+      isNativeRecordingPaused = true;
+      diagnostics.lastPauseResumeAction = `Paused at ${nowText()}`;
+      renderDiagnostics();
+      renderPauseResumeButton();
+      announce("recordingPaused");
+    }
+  } catch (error) {
+    console.error("Could not toggle native recording pause state:", error);
+    diagnostics.lastPauseResumeAction = `Pause/resume failed at ${nowText()}`;
+    renderDiagnostics();
+    announce(isNativeRecordingPaused ? "recordingResumeFailed" : "recordingPauseFailed");
+  }
 }
 
 renderScreenshotHint();
@@ -1044,6 +1092,57 @@ async function startRecording() {
   diagnostics.recordingRequestReceived = `Yes at ${nowText()}`;
   renderDiagnostics();
 
+  if (isTauri) {
+    // Native recording: no getDisplayMedia, no Chromium/WebView
+    // screen-sharing chooser. Microphone selection is preserved in
+    // the UI but does not yet feed into native recordings - see the
+    // combined announcement below, which says so plainly rather than
+    // silently ignoring the checkbox.
+    const micLabel = microphoneOption.checked
+      ? microphoneSelect.options[microphoneSelect.selectedIndex]?.textContent || "Default microphone"
+      : "Off";
+    const readinessParts = ["Recording requested.", "Primary monitor.", `System audio ${systemAudioOption.checked ? "on" : "off"}.`];
+    if (microphoneOption.checked) {
+      readinessParts.push(`Microphone selected, ${micLabel}, but not yet included in native recordings.`);
+    }
+    announceRaw(readinessParts.join(" "));
+
+    try {
+      const result = await startNativeRecording(systemAudioOption.checked);
+      if (!result.started) {
+        console.error("Native recording could not start:", result.startError);
+        logDebug(`app.js: native recording start FAILED: ${result.startError}`);
+        announce("recordingCouldNotStart");
+        setWorkflowLocked(false);
+        return;
+      }
+
+      recordingStartTime = Date.now();
+      pausedDurationMs = 0;
+      pauseStartedAt = null;
+      isNativeRecordingPaused = false;
+      isRecording = true;
+      recordToggleButton.disabled = false;
+      renderRecordToggleButton();
+      showPauseResumeButton();
+      diagnostics.recordingStartedDiag = `Yes at ${nowText()}`;
+      renderDiagnostics();
+      announce("recordingStarted");
+    } catch (error) {
+      console.error("Native recording start error:", error);
+      logDebug(`app.js: native recording start threw: ${error}`);
+      announce("recordingCouldNotStart");
+      setWorkflowLocked(false);
+    } finally {
+      isStartingCapture = false;
+    }
+    return;
+  }
+
+  // ---------- Browser fallback (Phase 1 reference environment only) ----------
+  // Not used by the real Windows application (isTauri is always true
+  // there) - kept only for testing this app in a plain browser.
+
   // One combined announcement rather than several separate ones in
   // quick succession - covers what Check Capture Readiness already
   // knows how to report (target, system audio, microphone) plus the
@@ -1211,11 +1310,81 @@ function stopRecording() {
     announce("recordingStopped");
   }
 
+  if (isTauri) {
+    stopNativeRecordingAndReview();
+    return;
+  }
+
   if (activeRecorder && activeRecorder.state !== "inactive") {
     activeRecorder.stop();
   } else {
     stopActiveStreams();
     setWorkflowLocked(false);
+  }
+}
+
+/**
+ * Stops the active native recording, reads the resulting final MP4
+ * into a Blob, and hands it to the same showReview()/Save/Discard
+ * workflow the browser recorder already uses - no changes needed
+ * there, since it only ever cared about receiving a Blob.
+ */
+async function stopNativeRecordingAndReview() {
+  pauseStartedAt = null;
+  isNativeRecordingPaused = false;
+  hidePauseResumeButton();
+
+  try {
+    const result = await stopNativeRecording();
+    logDebug(`app.js: native recording stopped: ${JSON.stringify(result)}`);
+    setWorkflowLocked(false);
+
+    // Same reasoning as the browser path: bring the app forward
+    // before any DOM focus call, since a .focus() inside a
+    // backgrounded native window doesn't produce an OS-level focus
+    // event a screen reader acts on.
+    await showMainWindow();
+
+    if (!result.finalMuxedPath) {
+      console.error("Native recording produced no final file:", result.stopError, result.mux?.muxingError);
+      announce("recordingFailed");
+      focusCaptureControl("recording");
+      return;
+    }
+
+    const bytes = await readNativeFile(result.finalMuxedPath);
+    const blob = new Blob([bytes], { type: "video/mp4" });
+    // recordingDurationSeconds already excludes paused time - the
+    // Rust backend tracks pause intervals itself now and is
+    // authoritative for native recordings, unlike the old browser/
+    // MediaRecorder path where pausedDurationMs (tracked here in JS)
+    // was the only record of paused time. Subtracting it again here
+    // was a real bug - double-counting paused time out of a duration
+    // that had already had it removed once.
+    const durationSeconds = result.recordingDurationSeconds;
+
+    diagnostics.recordingBlobSize = `${blob.size} bytes`;
+    diagnostics.recordingMimeType = "video/mp4";
+    renderDiagnostics();
+
+    if (blob.size === 0) {
+      announce("recordingFailed");
+      focusCaptureControl("recording");
+      return;
+    }
+
+    showReview({
+      kind: "recording",
+      blob,
+      suggestedName: `Recording - ${timestampForFilename()}.mp4`,
+      durationSeconds,
+    });
+  } catch (error) {
+    console.error("Native recording stop error:", error);
+    logDebug(`app.js: native recording stop threw: ${error}`);
+    setWorkflowLocked(false);
+    announce("recordingFailed");
+    focusCaptureControl("recording");
   }
 }
 
@@ -1228,15 +1397,13 @@ recordToggleButton.addEventListener("click", toggleRecording);
 if (pauseResumeButton) pauseResumeButton.addEventListener("click", togglePauseResume);
 registerShortcut({ ctrl: true, alt: true, key: "r", action: toggleRecording });
 
-if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+if (!isTauri && (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia)) {
   recordToggleButton.disabled = true;
-  if (!isTauri) screenshotButton.disabled = true;
+  screenshotButton.disabled = true;
   const notice = document.createElement("p");
   notice.setAttribute("role", "alert");
   notice.className = "error-notice";
-  notice.textContent = isTauri
-    ? "This installation's WebView cannot record the screen. Screenshots still work normally."
-    : "This browser does not support screen capture. Please use a current version of Chrome or Edge on Windows.";
+  notice.textContent = "This browser does not support screen capture. Please use a current version of Chrome or Edge on Windows.";
   document.getElementById("controls-heading").insertAdjacentElement("afterend", notice);
 }
 

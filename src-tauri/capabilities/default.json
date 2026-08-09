@@ -14,6 +14,12 @@
     "notification:allow-notify",
     "dialog:default",
     "fs:default",
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        { "path": "$APPCONFIG/**" }
+      ]
+    },
     "autostart:default",
     {
       "identifier": "shell:allow-execute",

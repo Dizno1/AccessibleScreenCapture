@@ -342,7 +342,7 @@ impl GraphicsCaptureApiHandler for ProofHandler {
 // fall back to the PCM tag, which may not be byte-for-byte correct for
 // every possible device format, but keeps the file structurally valid
 // either way.
-fn write_wav_file(path: &std::path::Path, pcm: &[u8], sample_rate: u32, channels: u16, bits_per_sample: u16) -> Result<(), String> {
+pub(crate) fn write_wav_file(path: &std::path::Path, pcm: &[u8], sample_rate: u32, channels: u16, bits_per_sample: u16) -> Result<(), String> {
     let format_tag: u16 = if bits_per_sample == 32 { 3 } else { 1 }; // 3 = IEEE float, 1 = integer PCM
     let block_align = channels * (bits_per_sample / 8);
     let byte_rate = sample_rate * block_align as u32;
@@ -516,24 +516,39 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
                     // depends on WGC callback arrival at all past this
                     // point - run_video_clock owns its own schedule
                     // and reads whatever the latest owned frame is on
-                    // every tick, blocking for exactly the requested
-                    // duration regardless of how many (or how few)
-                    // more real callbacks arrive during that time. A
-                    // completely static desktop now produces the same
-                    // repeated image at every tick, which is correct
-                    // screen-recording behavior - not a workaround.
-                    // See native_video_encode.rs for the full
-                    // architecture reasoning, including why the
-                    // previous callback-driven approach (proven to
-                    // fail on a real static-screen test: 1 callback, 1
-                    // frame, ~0.3MB file) was replaced rather than
-                    // patched again.
-                    let result = run_video_clock(app, &shared_frame, &output_path, width, height, VIDEO_CLOCK_FPS, REQUESTED_CAPTURE_SECS);
+                    // every tick, running until stop_flag is set
+                    // regardless of how many (or how few) more real
+                    // callbacks arrive during that time. A completely
+                    // static desktop now produces the same repeated
+                    // image at every tick, which is correct screen-
+                    // recording behavior - not a workaround. See
+                    // native_video_encode.rs for the full architecture
+                    // reasoning, including why the previous callback-
+                    // driven approach (proven to fail on a real
+                    // static-screen test: 1 callback, 1 frame, ~0.3MB
+                    // file) was replaced rather than patched again.
+                    //
+                    // This diagnostic test still wants a fixed 5-second
+                    // run, so a small timer thread flips stop_flag
+                    // after that - the clock function itself is now
+                    // open-ended (this is the same function the
+                    // production recorder uses for a user-controlled
+                    // duration; the diagnostic just bounds its own run
+                    // externally rather than needing a separate
+                    // fixed-duration code path).
+                    let video_stop_flag = Arc::new(AtomicBool::new(false));
+                    let video_pause_flag = Arc::new(AtomicBool::new(false));
+                    let timer_stop_flag = video_stop_flag.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_secs(REQUESTED_CAPTURE_SECS));
+                        timer_stop_flag.store(true, Ordering::SeqCst);
+                    });
+                    let result = run_video_clock(app, &shared_frame, &video_stop_flag, &video_pause_flag, &output_path, width, height, VIDEO_CLOCK_FPS);
                     crate::debug_log::log(
                         app,
                         &format!(
-                            "native_capture: video clock finished, success={}, frames_produced={}, error={:?}",
-                            result.video_encode_success, result.video_clock_frames_produced, result.video_encode_error
+                            "native_capture: video clock finished, success={}, frames_produced={}, elapsed={:.2}s, error={:?}",
+                            result.video_encode_success, result.video_clock_frames_produced, result.video_clock_elapsed_seconds, result.video_encode_error
                         ),
                     );
                     video_clock_result = Some(result);

@@ -25,6 +25,7 @@ mod native_audio;
 mod native_capture;
 mod native_mux;
 mod native_video_encode;
+mod native_recording;
 mod native_speech;
 mod output_settings;
 mod recording_save;
@@ -33,6 +34,7 @@ use capture_context::get_capture_context;
 use debug_log::{clear_debug_log, get_debug_log, log_debug_message};
 use descriptor::{get_context_and_mark_reported, get_descriptor_enabled, set_descriptor_enabled, DescriptorState};
 use native_capture::test_native_capture;
+use native_recording::{pause_native_recording, resume_native_recording, start_native_recording, stop_native_recording};
 use native_speech::{get_speech_voices, speak_status, test_speech_voice};
 use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice, set_speech_volume};
 use recording_save::{
@@ -732,6 +734,10 @@ pub fn run() {
             get_speech_voices,
             test_speech_voice,
             test_native_capture,
+            start_native_recording,
+            pause_native_recording,
+            resume_native_recording,
+            stop_native_recording,
             begin_recording_save,
             append_recording_chunk,
             finish_recording_save,

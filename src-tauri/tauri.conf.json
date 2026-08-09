@@ -34,10 +34,11 @@
     "active": true,
     "targets": ["msi", "nsis"],
     "publisher": "Open Door Design",
+    "copyright": "Copyright © Open Door Design",
     "category": "Utility",
     "shortDescription": "Accessible screen capture for Windows.",
     "externalBin": ["binaries/ffmpeg"],
-    "longDescription": "Professional audio-free screenshot and screen recording tool designed from the ground up for keyboard and screen reader users.",
+    "longDescription": "Screenshot and screen recording tool designed from the ground up for keyboard and screen reader users, with native system audio capture.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
