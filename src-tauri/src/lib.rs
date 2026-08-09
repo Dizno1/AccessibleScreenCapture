@@ -23,6 +23,7 @@ mod debug_log;
 mod descriptor;
 mod native_audio;
 mod native_capture;
+mod native_mux;
 mod native_speech;
 mod output_settings;
 mod recording_save;
@@ -600,6 +601,7 @@ pub fn run() {
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_autostart::init(

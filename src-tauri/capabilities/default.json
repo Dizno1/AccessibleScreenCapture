@@ -14,6 +14,16 @@
     "notification:allow-notify",
     "dialog:default",
     "fs:default",
-    "autostart:default"
+    "autostart:default",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/ffmpeg",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    }
   ]
 }

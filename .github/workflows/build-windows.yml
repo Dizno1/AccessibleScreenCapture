@@ -25,6 +25,119 @@ jobs:
         with:
           node-version: 22
 
+      - name: Prepare ffmpeg sidecar for Tauri
+        # Native A/V muxing (src-tauri/src/native_mux.rs) needs a real
+        # ffmpeg.exe at the exact Tauri sidecar path before either
+        # build path below runs - this step obtains it automatically
+        # so nobody has to prepare it by hand.
+        #
+        # SOURCE: BtbN/FFmpeg-Builds (github.com/BtbN/FFmpeg-Builds) -
+        # a well-known, actively maintained (11k+ stars), GitHub
+        # Actions-driven build provider.
+        #
+        # ARTIFACT VARIANT: static "lgpl" (NOT "lgpl-shared"). The
+        # shared variant ships the libav* family as separate DLLs
+        # that ffmpeg.exe depends on at runtime - bundling only
+        # ffmpeg.exe from that build (as an earlier version of this
+        # step did) produces an incomplete, unsafe sidecar that would
+        # fail to run without those DLLs also being copied. The
+        # static "lgpl" build is fully self-contained: one ffmpeg.exe
+        # with no external runtime dependencies, which is exactly
+        # what a single-executable Tauri sidecar needs. Still LGPL,
+        # still excludes GPL-only components (libx264/libx265), which
+        # this project doesn't need anyway since video is only ever
+        # stream-copied, never encoded - AAC encoding (the one codec
+        # operation this project performs) uses FFmpeg's own built-in
+        # native encoder, present in this build too.
+        #
+        # REPRODUCIBILITY - stated accurately, not oversold. This uses
+        # BtbN's floating "latest" release alias
+        # (github.com/BtbN/FFmpeg-Builds/releases/download/latest/...),
+        # which is NOT byte-for-byte reproducible - the artifact behind
+        # that URL changes over time as BtbN's own daily build
+        # automation replaces it. This is acceptable for the current
+        # experimental build phase because the provider is explicit,
+        # the artifact family is explicit, and - see below - the
+        # checksum is verified for every single build, so a corrupted
+        # or unexpectedly-swapped download is caught immediately even
+        # though the exact bytes aren't pinned long-term. A specific
+        # retained dated/monthly release tag can replace this URL
+        # later if strict reproducibility is required before a public
+        # release - not done in this pass.
+        #
+        # CHECKSUM: BtbN publishes a machine-readable checksums.sha256
+        # manifest alongside every release, including the "latest"
+        # alias. Downloaded from the same release and verified against
+        # the downloaded zip before extraction - the build fails if
+        # they don't match, rather than extracting an unverified file.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $hostTuple = $null
+          try {
+            $hostTuple = (rustc --print host-tuple).Trim()
+          } catch {
+            Write-Host "rustc --print host-tuple unavailable, falling back to rustc -Vv"
+          }
+          if (-not $hostTuple) {
+            $verboseInfo = rustc -Vv
+            $hostLine = $verboseInfo | Select-String "^host:"
+            if (-not $hostLine) {
+              throw "Could not determine the Rust target triple from either 'rustc --print host-tuple' or 'rustc -Vv'."
+            }
+            $hostTuple = ($hostLine.Line -split ":\s*")[1].Trim()
+          }
+          Write-Host "Determined target triple: $hostTuple"
+
+          $releaseBase = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          $artifactName = "ffmpeg-master-latest-win64-lgpl.zip"
+          $ffmpegUrl = "$releaseBase/$artifactName"
+          $checksumUrl = "$releaseBase/checksums.sha256"
+          $downloadPath = "ffmpeg-download.zip"
+          $checksumPath = "checksums.sha256"
+
+          Write-Host "Downloading ffmpeg from $ffmpegUrl"
+          Invoke-WebRequest -Uri $ffmpegUrl -OutFile $downloadPath
+
+          Write-Host "Downloading checksum manifest from $checksumUrl"
+          Invoke-WebRequest -Uri $checksumUrl -OutFile $checksumPath
+
+          $checksumLine = Get-Content $checksumPath | Where-Object { $_ -match [regex]::Escape($artifactName) }
+          if (-not $checksumLine) {
+            throw "No checksum entry for $artifactName was found in the downloaded checksums.sha256 manifest - cannot verify this download."
+          }
+          $expectedHash = ($checksumLine -split "\s+")[0].Trim().ToLower()
+          $actualHash = (Get-FileHash -Path $downloadPath -Algorithm SHA256).Hash.ToLower()
+
+          Write-Host "Expected SHA-256: $expectedHash"
+          Write-Host "Actual SHA-256:   $actualHash"
+          if ($expectedHash -ne $actualHash) {
+            throw "Checksum verification FAILED for $artifactName - downloaded file does not match the published checksums.sha256 entry. Refusing to extract or bundle it."
+          }
+          Write-Host "Checksum verified successfully."
+
+          $extractDir = "ffmpeg-extracted"
+          Expand-Archive -Path $downloadPath -DestinationPath $extractDir -Force
+
+          $ffmpegExe = Get-ChildItem -Path $extractDir -Filter "ffmpeg.exe" -Recurse | Select-Object -First 1
+          if (-not $ffmpegExe) {
+            throw "ffmpeg.exe was not found anywhere inside the downloaded archive - the archive layout may have changed upstream."
+          }
+          Write-Host "Found ffmpeg.exe at $($ffmpegExe.FullName)"
+
+          $binariesDir = "src-tauri/binaries"
+          New-Item -ItemType Directory -Force -Path $binariesDir | Out-Null
+          $sidecarPath = Join-Path $binariesDir "ffmpeg-$hostTuple.exe"
+          Copy-Item -Path $ffmpegExe.FullName -Destination $sidecarPath -Force
+
+          if (-not (Test-Path $sidecarPath)) {
+            throw "Expected sidecar binary was not created at $sidecarPath."
+          }
+          Write-Host "ffmpeg sidecar prepared at $sidecarPath"
+
+          & $sidecarPath -version
+
       - name: Generate Cargo lockfile and dependency diagnostics
         if: github.event_name == 'workflow_dispatch'
         shell: pwsh

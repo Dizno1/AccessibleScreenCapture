@@ -92,6 +92,7 @@ const FIRST_FRAME_TIMEOUT_SECS: u64 = 10; // generous margin over observed real 
 const TARGET_UPDATE_INTERVAL_MS: u64 = 33; // ~30fps ceiling on real-change reporting, not a forced/guaranteed rate - see FRAME DELIVERY RATE note above
 const OUTPUT_FILE_NAME: &str = "native-capture-test.mp4";
 const AUDIO_FILE_NAME: &str = "native-capture-test-audio.wav";
+const FINAL_MUX_FILE_NAME: &str = "native-capture-test-final.mp4";
 
 static FRAME_COUNT: AtomicU32 = AtomicU32::new(0);
 static FRAMES_SUBMITTED: AtomicU32 = AtomicU32::new(0);
@@ -144,6 +145,8 @@ pub struct NativeCaptureProof {
     retained_audio_frames: u64,
     #[serde(rename = "expectedWavDurationSeconds")]
     expected_wav_duration_seconds: Option<f64>,
+    #[serde(flatten)]
+    mux: Option<crate::native_mux::MuxResult>,
 }
 
 #[derive(Clone)]
@@ -861,6 +864,7 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
         post_roll_discarded_seconds,
         retained_audio_frames,
         expected_wav_duration_seconds,
+        mux: None, // populated by test_native_capture after this function returns - see there
     })
 }
 
@@ -876,7 +880,38 @@ fn run_capture_proof(app: &AppHandle, include_system_audio: bool) -> Result<Nati
 /// reported in the result, never a hard error for the whole command.
 #[tauri::command]
 pub async fn test_native_capture(app: AppHandle, include_system_audio: bool) -> Result<NativeCaptureProof, String> {
-    tauri::async_runtime::spawn_blocking(move || run_capture_proof(&app, include_system_audio))
+    let app_for_mux = app.clone();
+    let mut proof = tauri::async_runtime::spawn_blocking(move || run_capture_proof(&app, include_system_audio))
         .await
-        .map_err(|e| format!("Native capture proof task failed: {e}"))?
+        .map_err(|e| format!("Native capture proof task failed: {e}"))??;
+
+    // Muxing only attempted when both proven source files exist -
+    // never a hard failure for the whole command either way, per
+    // explicit error-handling instruction: the video/audio capture
+    // result is preserved and returned regardless of whether muxing
+    // succeeds. See native_mux.rs for the full architecture reasoning
+    // and the real, currently-unresolved packaging gap (a real
+    // ffmpeg.exe build must be bundled before this can succeed).
+    if let (Some(video_path), Some(audio_path)) = (proof.video_path.clone(), proof.audio_wav_path.clone()) {
+        if let Ok(output_dir) = app_for_mux.path().app_config_dir() {
+            let output_path = output_dir.join(FINAL_MUX_FILE_NAME);
+            let mux_result = crate::native_mux::mux_video_and_audio(
+                &app_for_mux,
+                std::path::Path::new(&video_path),
+                std::path::Path::new(&audio_path),
+                &output_path,
+            )
+            .await;
+            crate::debug_log::log(
+                &app_for_mux,
+                &format!(
+                    "native_capture: mux attempt finished, success={}, path={:?}, error={:?}",
+                    mux_result.muxing_success, mux_result.final_muxed_path, mux_result.muxing_error
+                ),
+            );
+            proof.mux = Some(mux_result);
+        }
+    }
+
+    Ok(proof)
 }

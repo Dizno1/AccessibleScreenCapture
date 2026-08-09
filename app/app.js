@@ -1650,6 +1650,16 @@ function initNativeCaptureTest() {
       } else {
         parts.push("System audio was not requested for this test.");
       }
+
+      if (proof.muxingSuccess) {
+        const size = proof.finalFileSizeBytes != null ? `${(proof.finalFileSizeBytes / 1024 / 1024).toFixed(1)} MB` : "unknown size";
+        parts.push(
+          `Combined video and audio file written to ${proof.finalMuxedPath} (${size}). Video was copied without re-encoding; audio was encoded to AAC.`
+        );
+      } else if (proof.muxingError) {
+        parts.push(`Combining video and audio failed: ${proof.muxingError}`);
+      }
+
       result.textContent = parts.join(" ");
       logDebug(`app.js: native capture test finished: ${JSON.stringify(proof)}`);
     } catch (error) {

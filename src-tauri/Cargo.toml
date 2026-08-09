@@ -12,6 +12,15 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
+# For the ffmpeg sidecar used to mux native video + WASAPI audio
+# (src-tauri/src/native_mux.rs) - see that module's own comment for
+# why a sidecar rather than raw Media Foundation or a Rust muxing
+# crate. The Windows GitHub Actions workflow
+# (.github/workflows/build-windows.yml) automatically downloads,
+# checksum-verifies, target-triple-renames, and supplies the real
+# ffmpeg.exe sidecar binary before Tauri packaging - no manual step
+# is required for builds that go through that workflow.
+tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-autostart = "2"
