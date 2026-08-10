@@ -12,7 +12,7 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "AccessibleScreenCapture",
+        "title": "AccessibleScreenCapture - Open Door Design",
         "label": "main",
         "width": 900,
         "height": 900,
@@ -34,7 +34,7 @@
     "active": true,
     "targets": ["msi", "nsis"],
     "publisher": "Open Door Design",
-    "copyright": "Copyright © Open Door Design",
+    "copyright": "Copyright © 2026 Open Door Design",
     "category": "Utility",
     "shortDescription": "Accessible screen capture for Windows.",
     "externalBin": ["binaries/ffmpeg"],

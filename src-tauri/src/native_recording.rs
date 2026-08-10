@@ -264,27 +264,48 @@ fn trim_and_write_audio(
             continue;
         }
 
-        // PAUSE/RESUME AUDIT FIX (originally applied to system audio
-        // only; now shared by both sources). Skip any chunk whose
-        // midpoint falls within a completed pause interval - chunk-
-        // midpoint granularity, not sample-accurate at a pause
-        // boundary, but a real, meaningful exclusion rather than
-        // none at all.
-        let chunk_mid_abs = chunk_start_abs + Duration::from_secs_f64(chunk_duration / 2.0);
-        let in_pause = pause_intervals.iter().any(|(pause_start, pause_end)| chunk_mid_abs >= *pause_start && chunk_mid_abs < *pause_end);
-        if in_pause {
+        // Keep only portions of this chunk that are both inside the
+        // recording window and outside every pause interval. The old
+        // midpoint test could retain speech from a chunk that crossed a
+        // pause boundary. Splitting at the actual pause boundaries makes
+        // pause removal sample-accurate to the captured PCM frame.
+        let window_start_abs = capture_origin;
+        let window_end_abs = capture_origin + Duration::from_secs_f64(window_end);
+        let keep_start = if chunk_start_abs < window_start_abs { window_start_abs } else { chunk_start_abs };
+        let keep_end = if chunk_end_abs > window_end_abs { window_end_abs } else { chunk_end_abs };
+        if keep_start >= keep_end {
             continue;
         }
 
-        let trim_start_secs = (0.0 - start_offset).max(0.0);
-        let trim_end_secs = (end_offset - window_end).max(0.0);
-        let trim_start_frames = ((trim_start_secs * sample_rate as f64).round() as usize).min(chunk.frames as usize);
-        let trim_end_frames = ((trim_end_secs * sample_rate as f64).round() as usize).min(chunk.frames as usize - trim_start_frames.min(chunk.frames as usize));
+        let mut segments = vec![(keep_start, keep_end)];
+        for (pause_start, pause_end) in pause_intervals {
+            let mut next = Vec::new();
+            for (seg_start, seg_end) in segments {
+                if *pause_end <= seg_start || *pause_start >= seg_end {
+                    next.push((seg_start, seg_end));
+                    continue;
+                }
+                if *pause_start > seg_start {
+                    next.push((seg_start, (*pause_start).min(seg_end)));
+                }
+                if *pause_end < seg_end {
+                    next.push(((*pause_end).max(seg_start), seg_end));
+                }
+            }
+            segments = next;
+            if segments.is_empty() { break; }
+        }
 
-        let start_byte = trim_start_frames * block_align;
-        let end_byte = chunk.pcm.len().saturating_sub(trim_end_frames * block_align);
-        if start_byte < end_byte && end_byte <= chunk.pcm.len() {
-            retained_pcm.extend_from_slice(&chunk.pcm[start_byte..end_byte]);
+        for (seg_start, seg_end) in segments {
+            let start_secs = seg_start.duration_since(chunk_start_abs).as_secs_f64();
+            let end_secs = seg_end.duration_since(chunk_start_abs).as_secs_f64();
+            let start_frame = ((start_secs * sample_rate as f64).round() as usize).min(chunk.frames as usize);
+            let end_frame = ((end_secs * sample_rate as f64).round() as usize).min(chunk.frames as usize);
+            let start_byte = start_frame * block_align;
+            let end_byte = end_frame * block_align;
+            if start_byte < end_byte && end_byte <= chunk.pcm.len() {
+                retained_pcm.extend_from_slice(&chunk.pcm[start_byte..end_byte]);
+            }
         }
     }
 

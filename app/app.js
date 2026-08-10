@@ -1237,18 +1237,8 @@ async function startRecording() {
     // Native recording: no getDisplayMedia, no Chromium/WebView
     // screen-sharing chooser. System audio and microphone are both
     // captured natively via WASAPI and combined into the final MP4.
-    // The microphone device dropdown is a browser-fallback-only
-    // control (native capture always uses the Windows default
-    // recording device - see native_audio.rs) so it isn't referenced
-    // here, only whether microphone capture is on or off.
-    const readinessParts = [
-      "Recording requested.",
-      "Primary monitor.",
-      `System audio ${systemAudioOption.checked ? "on" : "off"}.`,
-      `Microphone ${microphoneOption.checked ? "on" : "off"}.`,
-    ];
-    announceRaw(readinessParts.join(" "));
-
+    // Native microphone selection is populated from real WASAPI
+    // capture endpoints and the selected device ID is passed to Rust.
     try {
       const result = await startNativeRecording(systemAudioOption.checked, microphoneOption.checked, microphoneOption.checked ? nativeMicrophoneDeviceId : null);
       if (!result.started) {
@@ -1446,11 +1436,10 @@ function stopRecording() {
   diagnostics.recordingStoppedDiag = `Yes at ${nowText()}`;
   renderDiagnostics();
 
-  if (isTauri && !isAppFocused()) {
-    announceRaw("Recording stopped.");
-  } else {
-    announceRecordingState("recordingStopped");
-  }
+  // Recording-state feedback is governed exclusively by the three-way
+  // Recording status feedback setting. Do not bypass it when the app
+  // is unfocused, otherwise Status sounds/Silence can still speak.
+  announceRecordingState("recordingStopped");
 
   if (isTauri) {
     stopNativeRecordingAndReview();
@@ -1961,6 +1950,13 @@ async function initOutputChannelSettings() {
   if (isTauri && settings.microphoneDeviceId) {
     nativeMicrophoneDeviceId = settings.microphoneDeviceId;
     diagnostics.currentMicSelection = settings.microphoneDeviceName || "Default microphone";
+  }
+  // If microphone capture is already checked when the installed app
+  // starts, expose/populate the native selector immediately. Previously
+  // it appeared only after a change event, which left an already-checked
+  // option misleadingly stuck on the default device.
+  if (isTauri && microphoneOption.checked) {
+    await populateNativeMicrophoneList(nativeMicrophoneDeviceId, settings.microphoneDeviceName || null);
   }
   const feedbackRadios = document.querySelectorAll('input[name="recording-status-feedback"]');
   feedbackRadios.forEach((radio) => {
