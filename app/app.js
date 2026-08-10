@@ -32,6 +32,8 @@ import {
   setSpeechRate,
   setSpeechVolume,
   setRecordingStatusFeedback,
+  listNativeMicrophones,
+  setMicrophoneDevice,
   testSpeechVoice,
   startNativeRecording,
   stopNativeRecording,
