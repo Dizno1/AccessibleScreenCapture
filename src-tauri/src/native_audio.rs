@@ -424,28 +424,43 @@ pub struct MicrophoneDeviceInfo {
 /// rather than failing the whole enumeration - one bad device
 /// shouldn't hide every other one from the picker.
 pub fn list_microphone_devices() -> Result<Vec<MicrophoneDeviceInfo>, String> {
-    initialize_mta().ok().map_err(|e| format!("Could not initialize COM (MTA) for device enumeration: {e}"))?;
+    // Tauri command handlers may run on a thread whose COM apartment has
+    // already been initialized differently. Enumerate on our own worker
+    // thread so WASAPI always gets the MTA apartment it expects instead of
+    // failing with RPC_E_CHANGED_MODE and leaving the microphone picker hidden.
+    let (tx, rx) = mpsc::channel::<Result<Vec<MicrophoneDeviceInfo>, String>>();
+    std::thread::spawn(move || {
+        let result = (|| -> Result<Vec<MicrophoneDeviceInfo>, String> {
+            initialize_mta().ok().map_err(|e| format!("Could not initialize COM (MTA) for device enumeration: {e}"))?;
 
-    let enumerator = DeviceEnumerator::new().map_err(|e| format!("Could not create a device enumerator: {e}"))?;
-    let collection = enumerator
-        .get_device_collection(&Direction::Capture)
-        .map_err(|e| format!("Could not enumerate capture devices: {e}"))?;
+            let enumerator = DeviceEnumerator::new()
+                .map_err(|e| format!("Could not create a device enumerator: {e}"))?;
+            let collection = enumerator
+                .get_device_collection(&Direction::Capture)
+                .map_err(|e| format!("Could not enumerate capture devices: {e}"))?;
 
-    let mut devices = Vec::new();
-    for device_result in &collection {
-        let device = match device_result {
-            Ok(d) => d,
-            Err(_) => continue,
-        };
-        let id = match device.get_id() {
-            Ok(id) => id,
-            Err(_) => continue,
-        };
-        let name = device.get_friendlyname().unwrap_or_else(|_| "Unnamed device".to_string());
-        devices.push(MicrophoneDeviceInfo { id, name });
-    }
+            let mut devices = Vec::new();
+            for device_result in &collection {
+                let device = match device_result {
+                    Ok(d) => d,
+                    Err(_) => continue,
+                };
+                let id = match device.get_id() {
+                    Ok(id) => id,
+                    Err(_) => continue,
+                };
+                let name = device
+                    .get_friendlyname()
+                    .unwrap_or_else(|_| "Unnamed device".to_string());
+                devices.push(MicrophoneDeviceInfo { id, name });
+            }
+            Ok(devices)
+        })();
+        let _ = tx.send(result);
+    });
 
-    Ok(devices)
+    rx.recv()
+        .map_err(|e| format!("Microphone enumeration worker ended unexpectedly: {e}"))?
 }
 
 #[tauri::command]

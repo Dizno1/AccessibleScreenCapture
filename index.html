@@ -29,10 +29,12 @@
         <li>Alt+Ctrl+Space takes a screenshot.</li>
         <li>Alt+Ctrl+R starts or stops a recording.</li>
         <li>Alt+Ctrl+P pauses or resumes an active recording.</li>
+        <li>Alt+Ctrl+D turns the Capture Context Descriptor on or off.</li>
+        <li>Alt+Ctrl+X checks capture readiness.</li>
         <li>These shortcuts work anywhere in Windows, not only while AccessibleScreenCapture has focus. Ordinary application controls are also available for the same actions.</li>
         <li>After a screenshot or recording, the result is available in Review Capture - Save Capture keeps it, Discard Capture removes it without saving.</li>
         <li>Recording Options determine whether system audio and microphone audio are included in a recording.</li>
-        <li>Recording status feedback (in Output Settings) controls whether recording started, paused, resumed, and stopped are spoken, played as a sound, or silent.</li>
+        <li>Recording status feedback in Recording Options controls whether recording started, paused, resumed, and stopped are spoken, played as a sound, or silent.</li>
         <li>Keyboard shortcuts can be customized further down the page, in Keyboard Shortcuts.</li>
       </ul>
     </div>
@@ -61,6 +63,23 @@
         <option value="">Default microphone</option>
       </select>
     </div>
+
+    <fieldset id="recording-status-feedback-group">
+      <legend>Recording status feedback</legend>
+      <p class="section-hint">Controls only recording started, paused, resumed, and stopped. Choose Spoken status, Status sounds, or Silence. This does not affect the screenshot sound, errors, or other important messages.</p>
+      <label class="radio-option">
+        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-spoken" value="spoken">
+        Spoken status
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-sounds" value="sounds">
+        Status sounds
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-silence" value="silence">
+        Silence
+      </label>
+    </fieldset>
   </section>
 
   <!-- ============ Capture Controls ============ -->
@@ -191,22 +210,6 @@
     </label>
     <p class="section-hint">Displays a Windows toast notification independently of speech. A toast is a visual channel and is not guaranteed to be read by a screen reader - it supplements speech, it doesn't substitute for it.</p>
 
-    <fieldset id="recording-status-feedback-group">
-      <legend>Recording status feedback</legend>
-      <p class="section-hint">Controls how recording started, paused, resumed, and stopped are communicated. This is separate from the out-of-focus speech setting above - Spoken status still follows that setting and your current window focus. This does not affect the screenshot sound, errors, or other important messages.</p>
-      <label class="radio-option">
-        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-spoken" value="spoken">
-        Spoken status
-      </label>
-      <label class="radio-option">
-        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-sounds" value="sounds">
-        Status sounds
-      </label>
-      <label class="radio-option">
-        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-silence" value="silence">
-        Silence
-      </label>
-    </fieldset>
 
     <h3>Speech voice, rate, and volume</h3>
     <label for="speech-voice-select">Speech voice</label>
@@ -229,12 +232,6 @@
 
     <button type="button" id="speech-voice-test" class="secondary-button">Test Speech Voice</button>
   </section>
-
-  <div class="product-information" aria-label="Product information">
-    <p>AccessibleScreenCapture</p>
-    <p>Version 2.0.0</p>
-    <p>Copyright 2026 Open Door Design</p>
-  </div>
 
   <!-- ============ Diagnostics (desktop only) ============ -->
   <!-- Plain visible text, never in a live region - navigate here manually when troubleshooting; nothing here is spoken automatically. -->
@@ -364,6 +361,12 @@
     <pre id="debug-log-output" class="debug-log-output"></pre>
 
   </section>
+
+<footer class="product-information" aria-label="Product information">
+    <p>AccessibleScreenCapture</p>
+    <p>Version 2.0.0</p>
+    <p>Copyright 2026 Open Door Design</p>
+  </footer>
 
 </main>
 
