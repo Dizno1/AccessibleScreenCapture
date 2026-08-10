@@ -364,7 +364,7 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
                     Ok(Some(frames_available)) if frames_available > 0 => {
                         let mut buffer = vec![0u8; frames_available as usize * block_align as usize];
                         match capture_client.read_from_device(&mut buffer) {
-                            Ok(flags) => {
+                            Ok((frames_read, buffer_info)) => {
                                 // BufferFlags - confirmed real API
                                 // (docs.rs/wasapi's own BufferFlags
                                 // page: data_discontinuity, silent,
@@ -381,7 +381,7 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
                                 // trust whatever bytes happen to be
                                 // there. Zeroed here rather than
                                 // trusting unverified buffer content.
-                                if flags.silent {
+                                if buffer_info.flags.silent {
                                     buffer.fill(0);
                                 }
                                 // Checked AFTER any silent-flag
@@ -389,12 +389,12 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
                                 // chunk is always has_signal=false -
                                 // see the AudioChunk field docs for
                                 // why this specific ordering matters.
-                                let has_signal = !flags.silent && buffer.iter().any(|&b| b != 0);
+                                let has_signal = !buffer_info.flags.silent && buffer.iter().any(|&b| b != 0);
                                 let _ = chunk_tx.send(AudioChunk {
                                     pcm: buffer,
-                                    frames: frames_available,
+                                    frames: frames_read,
                                     elapsed: capture_start.elapsed(),
-                                    wasapi_silent: flags.silent,
+                                    wasapi_silent: buffer_info.flags.silent,
                                     has_signal,
                                 });
                             }
@@ -421,19 +421,19 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
                 Ok(Some(frames_available)) if frames_available > 0 => {
                     let mut buffer = vec![0u8; frames_available as usize * block_align as usize];
                     match capture_client.read_from_device(&mut buffer) {
-                        Ok(flags) => {
+                        Ok((frames_read, buffer_info)) => {
                             // Same silent-flag handling as the main
                             // drain loop above - see that comment for
                             // the full explanation.
-                            if flags.silent {
+                            if buffer_info.flags.silent {
                                 buffer.fill(0);
                             }
-                            let has_signal = !flags.silent && buffer.iter().any(|&b| b != 0);
+                            let has_signal = !buffer_info.flags.silent && buffer.iter().any(|&b| b != 0);
                             let _ = chunk_tx.send(AudioChunk {
                                 pcm: buffer,
-                                frames: frames_available,
+                                frames: frames_read,
                                 elapsed: capture_start.elapsed(),
-                                wasapi_silent: flags.silent,
+                                wasapi_silent: buffer_info.flags.silent,
                                 has_signal,
                             });
                         }
