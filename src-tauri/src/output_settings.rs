@@ -34,6 +34,35 @@ pub struct OutputSettings {
     pub speech_rate: i32,
     #[serde(rename = "speechVolume", default = "default_volume")]
     pub speech_volume: u16,
+    // Recording status feedback (Version 2.0.0) - a separate axis from
+    // speak_outside_app above, which governs whether ANY out-of-focus
+    // announcement (including this one, when set to "spoken") uses
+    // native SAPI speech versus staying silent out-of-focus. This
+    // setting instead governs WHICH FORM the four recording-state
+    // events (start/stop/pause/resume) take: routed through the
+    // existing announce() mechanism ("spoken", which itself still
+    // respects speak_outside_app and focus - unchanged), a bundled
+    // status sound ("sounds"), or neither ("silence"). Screenshot
+    // shutter behavior is deliberately unaffected - separate setting.
+    #[serde(rename = "recordingStatusFeedback", default = "default_recording_status_feedback")]
+    pub recording_status_feedback: String,
+    // Persisted native microphone selection (Version 2.0.0). None
+    // means "use the Windows default recording device." Both the ID
+    // (used to actually resolve the device at recording time) and
+    // the display name (so the UI can show a meaningful selection
+    // without a live re-enumeration on every settings load) are
+    // stored - if the device becomes unavailable later, resolving it
+    // fails explicitly (see native_audio.rs) rather than silently
+    // substituting a different device.
+    #[serde(rename = "microphoneDeviceId", default)]
+    pub microphone_device_id: Option<String>,
+    #[serde(rename = "microphoneDeviceName", default)]
+    pub microphone_device_name: Option<String>,
+    // Instructions disclosure expand/collapse state (Version 2.0.0) -
+    // expanded by default for a first-time user, remembered
+    // thereafter exactly as the user last left it.
+    #[serde(rename = "instructionsExpanded", default = "default_true")]
+    pub instructions_expanded: bool,
 }
 
 fn default_true() -> bool {
@@ -48,6 +77,10 @@ fn default_volume() -> u16 {
     DEFAULT_SPEECH_VOLUME
 }
 
+fn default_recording_status_feedback() -> String {
+    "spoken".to_string()
+}
+
 impl Default for OutputSettings {
     fn default() -> Self {
         OutputSettings {
@@ -56,6 +89,10 @@ impl Default for OutputSettings {
             speech_voice_id: None,
             speech_rate: DEFAULT_SPEECH_RATE,
             speech_volume: DEFAULT_SPEECH_VOLUME,
+            recording_status_feedback: default_recording_status_feedback(),
+            microphone_device_id: None,
+            microphone_device_name: None,
+            instructions_expanded: true,
         }
     }
 }
@@ -158,4 +195,32 @@ pub fn set_speech_volume(app: AppHandle, volume: u16) -> Result<u16, String> {
     settings.speech_volume = clamped;
     save(&app, &settings)?;
     Ok(clamped)
+}
+
+#[tauri::command]
+pub fn set_recording_status_feedback(app: AppHandle, value: String) -> Result<String, String> {
+    let normalized = match value.as_str() {
+        "spoken" | "sounds" | "silence" => value,
+        _ => return Err(format!("Invalid recording status feedback value: {value}")),
+    };
+    let mut settings = load(&app);
+    settings.recording_status_feedback = normalized.clone();
+    save(&app, &settings)?;
+    Ok(normalized)
+}
+
+#[tauri::command]
+pub fn set_microphone_device(app: AppHandle, device_id: Option<String>, device_name: Option<String>) -> Result<(), String> {
+    let mut settings = load(&app);
+    settings.microphone_device_id = device_id;
+    settings.microphone_device_name = device_name;
+    save(&app, &settings)
+}
+
+#[tauri::command]
+pub fn set_instructions_expanded(app: AppHandle, expanded: bool) -> Result<bool, String> {
+    let mut settings = load(&app);
+    settings.instructions_expanded = expanded;
+    save(&app, &settings)?;
+    Ok(settings.instructions_expanded)
 }

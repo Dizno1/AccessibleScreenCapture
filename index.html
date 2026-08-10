@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AccessibleScreenCapture</title>
+<title>AccessibleScreenCapture - Open Door Design</title>
 <link rel="stylesheet" href="app/styles.css">
 </head>
 <body>
@@ -20,6 +20,23 @@
 <div id="status-announcer" class="visually-hidden" role="status" aria-live="polite"></div>
 
 <main id="main-content">
+
+  <!-- ============ Instructions ============ -->
+  <section>
+    <button type="button" id="instructions-toggle" aria-expanded="true" aria-controls="instructions-content">Instructions</button>
+    <div id="instructions-content">
+      <ul>
+        <li>Alt+Ctrl+Space takes a screenshot.</li>
+        <li>Alt+Ctrl+R starts or stops a recording.</li>
+        <li>Alt+Ctrl+P pauses or resumes an active recording.</li>
+        <li>These shortcuts work anywhere in Windows, not only while AccessibleScreenCapture has focus. Ordinary application controls are also available for the same actions.</li>
+        <li>After a screenshot or recording, the result is available in Review Capture - Save Capture keeps it, Discard Capture removes it without saving.</li>
+        <li>Recording Options determine whether system audio and microphone audio are included in a recording.</li>
+        <li>Recording status feedback (in Output Settings) controls whether recording started, paused, resumed, and stopped are spoken, played as a sound, or silent.</li>
+        <li>Keyboard shortcuts can be customized further down the page, in Keyboard Shortcuts.</li>
+      </ul>
+    </div>
+  </section>
 
   <!-- ============ Recording Options ============ -->
   <section aria-labelledby="recording-options-heading" id="audio-options-section">
@@ -125,23 +142,23 @@
       <h3>Change shortcuts</h3>
       <p class="section-hint">These shortcuts work anywhere on Windows, even when another application has focus.</p>
       <div class="shortcut-editor-row">
-        <span>Take Screenshot: <span id="screenshot-shortcut-current">Alt+Ctrl+Space</span></span>
+        <span aria-hidden="true">Take Screenshot: <span id="screenshot-shortcut-current">Alt+Ctrl+Space</span></span>
         <button type="button" id="screenshot-shortcut-change" class="secondary-button">Change Take Screenshot shortcut</button>
       </div>
       <div class="shortcut-editor-row">
-        <span>Start or Stop Recording: <span id="record-toggle-shortcut-current">Alt+Ctrl+R</span></span>
+        <span aria-hidden="true">Start or Stop Recording: <span id="record-toggle-shortcut-current">Alt+Ctrl+R</span></span>
         <button type="button" id="record-toggle-shortcut-change" class="secondary-button">Change Start or Stop Recording shortcut</button>
       </div>
       <div class="shortcut-editor-row">
-        <span>Toggle Capture Context Descriptor: <span id="descriptor-shortcut-current">Alt+Ctrl+D</span></span>
+        <span aria-hidden="true">Toggle Capture Context Descriptor: <span id="descriptor-shortcut-current">Alt+Ctrl+D</span></span>
         <button type="button" id="descriptor-shortcut-change" class="secondary-button">Change Toggle Capture Context Descriptor shortcut</button>
       </div>
       <div class="shortcut-editor-row">
-        <span>Check Capture Readiness: <span id="capture-readiness-shortcut-current">Alt+Ctrl+C</span></span>
+        <span aria-hidden="true">Check Capture Readiness: <span id="capture-readiness-shortcut-current">Alt+Ctrl+C</span></span>
         <button type="button" id="capture-readiness-shortcut-change" class="secondary-button">Change Check Capture Readiness shortcut</button>
       </div>
       <div class="shortcut-editor-row">
-        <span>Pause or Resume Recording: <span id="pause-resume-shortcut-current">Alt+Ctrl+P</span></span>
+        <span aria-hidden="true">Pause or Resume Recording: <span id="pause-resume-shortcut-current">Alt+Ctrl+P</span></span>
         <button type="button" id="pause-resume-shortcut-change" class="secondary-button">Change Pause or Resume Recording shortcut</button>
       </div>
       <button type="button" id="shortcut-restore-defaults" class="secondary-button">Restore Default Shortcuts</button>
@@ -173,6 +190,23 @@
       Show Windows notifications
     </label>
     <p class="section-hint">Displays a Windows toast notification independently of speech. A toast is a visual channel and is not guaranteed to be read by a screen reader - it supplements speech, it doesn't substitute for it.</p>
+
+    <fieldset id="recording-status-feedback-group">
+      <legend>Recording status feedback</legend>
+      <p class="section-hint">Controls how recording started, paused, resumed, and stopped are communicated. This is separate from the out-of-focus speech setting above - Spoken status still follows that setting and your current window focus. This does not affect the screenshot sound, errors, or other important messages.</p>
+      <label class="radio-option">
+        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-spoken" value="spoken">
+        Spoken status
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-sounds" value="sounds">
+        Status sounds
+      </label>
+      <label class="radio-option">
+        <input type="radio" name="recording-status-feedback" id="recording-status-feedback-silence" value="silence">
+        Silence
+      </label>
+    </fieldset>
 
     <h3>Speech voice, rate, and volume</h3>
     <label for="speech-voice-select">Speech voice</label>
@@ -291,6 +325,10 @@
         <dd id="diag-mic-resolved">N/A</dd>
       </div>
       <div class="shortcut-row">
+        <dt>Final native recording mux status</dt>
+        <dd id="diag-final-mux-status">N/A</dd>
+      </div>
+      <div class="shortcut-row">
         <dt>Last save error</dt>
         <dd id="diag-save-error">N/A</dd>
       </div>
@@ -319,10 +357,6 @@
     <p id="debug-log-status" role="status" aria-live="polite" class="section-hint"></p>
     <pre id="debug-log-output" class="debug-log-output"></pre>
 
-    <h3>Native capture proof</h3>
-    <p class="section-hint">Independent of the working recorder. Writes diagnostic video and audio files to this app's own folder, not anywhere you choose, and attempts to combine them into one playable file. Honors the Include System Audio setting above.</p>
-    <button type="button" id="native-capture-test" class="secondary-button">Test Native Capture (Experimental)</button>
-    <p id="native-capture-result" role="status" aria-live="polite" class="section-hint"></p>
   </section>
 
 </main>

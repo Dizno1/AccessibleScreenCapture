@@ -366,7 +366,7 @@ pub struct ProductionRecordingStopResult {
 /// genuinely underway; the caller does not block for the recording's
 /// duration - call stop_native_recording() later to end it.
 #[tauri::command]
-pub async fn start_native_recording(app: AppHandle, include_system_audio: bool, include_microphone: bool) -> Result<ProductionRecordingStartResult, String> {
+pub async fn start_native_recording(app: AppHandle, include_system_audio: bool, include_microphone: bool, microphone_device_id: Option<String>) -> Result<ProductionRecordingStartResult, String> {
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let mut session_slot = ACTIVE_SESSION.lock().unwrap();
@@ -402,7 +402,9 @@ pub async fn start_native_recording(app: AppHandle, include_system_audio: bool, 
         // begins, exactly as the diagnostic path already does for
         // system audio - so neither misses real content at the start.
         let (system_audio_diagnostics, system_audio) = start_and_accumulate_audio(include_system_audio, crate::native_audio::start_loopback_capture);
-        let (mic_audio_diagnostics, mic_audio) = start_and_accumulate_audio(include_microphone, crate::native_audio::start_microphone_capture);
+        let mic_device_id_for_start = microphone_device_id.clone();
+        let (mic_audio_diagnostics, mic_audio) =
+            start_and_accumulate_audio(include_microphone, move || crate::native_audio::start_microphone_capture(mic_device_id_for_start));
 
         let primary_monitor = match Monitor::primary() {
             Ok(m) => m,

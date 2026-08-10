@@ -4,27 +4,17 @@ A screen-reader-first Windows tool for taking screenshots and recording the scre
 
 ## Status
 
-**Native Windows application, version 1.0.6. Phase 2 is active and is the production target.**
+**Native Windows application, version 2.0.0. This is the completed free recorder.**
 
-**1.0.5 was a real success**: a genuine ~82-second, 3.1MB recording saved as a valid WebM (VP9 video, Opus audio), native SAPI speech was heard outside the app, and the descriptor correctly spoke external applications. It also surfaced two release-blocking problems: **JAWS stopped producing speech** after the app's native speech was used (had to be restarted), and the app reported **"Not Responding"** during both recording and screenshot saves.
+AccessibleScreenCapture now records natively on Windows - no Chromium/WebView screen-sharing chooser anywhere in the installed application. Screenshots and screen recordings both use Windows Graphics Capture directly. System audio and microphone audio are both captured natively via WASAPI (system audio through the standard loopback trick on the default playback device; microphone through a real capture-direction input device, with genuine device enumeration and selection - not just the Windows default). An independent, clock-driven video pipeline (not tied to how often the screen actually changes) feeds a bundled FFmpeg sidecar, which muxes video with 0, 1, or 2 audio sources into the final MP4. Pause and Resume genuinely exclude paused time from video, both audio sources, and the reported/reviewed duration. Review Capture, Save, Discard, and Recent Captures are unchanged in their accessible behavior throughout this migration.
 
-**1.0.6 (this version)** treats the JAWS problem as a genuine safety issue, not a routine bug. The exact mechanism was not reproduced or proven in this environment (no Windows machine, no JAWS available) - said honestly rather than guessed at. Rather than ship one guess and hope: **"Speak status outside AccessibleScreenCapture" now defaults to Off**, and several concrete defensive measures were added alongside it (save-dialog gating, a descriptor speech cooldown, deliberate resource cleanup on exit). Also added: SAPI voice selection and speech rate control, a fix for the "Not Responding" reports (dialog calls now run via `spawn_blocking` and are properly parented to the main window), descriptor terminology clarification, an on-demand capture-readiness check, and (a later round, same version number) Pause/Resume Recording via Alt+Ctrl+P. See "What changed in 1.0.6" below.
+Recording status feedback (start/stop/pause/resume) is now a three-way choice - Spoken status, Status sounds (real, bundled Open Door Design-created sounds), or Silence - kept separate from the existing "Speak status outside AccessibleScreenCapture" safety setting below, which still governs the JAWS-related speech-safety behavior described in the historical entries below and still needs to be turned on explicitly.
 
-**Most recent round (same version number): a Windows-workflow audit.** Real testing found a second, blank "AccessibleScreenCapture" window appearing on every launch - root cause found and fixed (a missing standard Rust attribute meant the app was built with a console subsystem, so Windows allocated a real console window alongside the GUI one). Also fixed: Review Capture focus not reliably landing after a recording/screenshot completed via a global shortcut from another application. Native Windows Graphics Capture was investigated, documented, and deliberately *not* attempted this pass - see `docs/Roadmap.md`, "Windows-oriented workflow audit," for the full reasoning.
+The free recorder is now considered feature-complete: native capture, native audio (system + microphone), Review Capture, and accessible output settings. A later version will introduce editing capability and a Pro tier - not part of this release.
 
-1.0.6 has **not** itself been through a build yet. The voice-enumeration COM code is the least-certain code in this project so far - see `docs/Roadmap.md`, "What's honestly still open."
+## Historical status (superseded by the above, kept for context)
 
-- **1.0.2/1.0.3** attempted fixes for recording save and notification reliability that real testing found incomplete.
-- **1.0.4** stopped guessing and instrumented the pipeline instead - a shared, file-based debug log covering the save path, the notification path, and the descriptor's foreground-window detection. That log produced real evidence: the descriptor correctly detects external applications, and `notify()`'s underlying Windows API call reliably reports success - but the user still hears nothing through JAWS. A Windows toast succeeding is a visual event, not a spoken one.
-- **1.0.5 (this version)** replaces two mechanisms rather than repairing them again, based on that evidence, plus fixes an unrelated playback-accessibility defect found during testing:
-  1. **Native speech (SAPI)** as the actual spoken channel, independent of and no longer relying on the toast notification succeeding.
-  2. **A chunked save pipeline for recordings** (screenshots are untouched), replacing sending an entire recording as one base64 IPC argument - a poor transport for video-sized data even though it works fine for a small screenshot.
-  3. **Custom, persistent playback controls**, replacing the native `<video>` element's controls after testing found its Pause button became hard to reach once time-elapsed content appeared.
-- 1.0.5 has **not** itself been through a build yet. See "What's honestly still open" in `docs/Roadmap.md`.
-
-**Note on the version number:** the directive requesting this pass said to bump 1.0.3 → 1.0.4, written without accounting for 1.0.4 (the instrumentation pass) already existing as a tested build. Reusing that number for different content would break Windows Installer's upgrade detection, so this is 1.0.5.
-
-Phase 1 (the browser prototype) is complete and frozen except for bug fixes - see `docs/Vision.md`, `docs/Screen Reader First Principles.md`, and `docs/Roadmap.md` for the full picture.
+The entries below describe the pre-native, browser-based (`getDisplayMedia`) production recording era. That architecture has been replaced by the native pipeline described above - the entries are kept as an accurate historical record of that development, not as a description of current behavior. The JAWS speech-safety caution they describe is still real and still applies to the current native speech implementation, since it has not been re-verified since.
 
 ## What changed in 1.0.6
 
@@ -43,7 +33,7 @@ This pass replaces architecture rather than repairing it again, per explicit dir
 1. **Native speech, `src-tauri/src/native_speech.rs` (new).** A dedicated background thread owns one SAPI `ISpVoice` COM object for the app's lifetime (COM objects like this are apartment-affine, so one persistent thread rather than one object per call) and speaks text received over a channel, exposed as a new `speak_status` command. Every call uses `SPF_ASYNC | SPF_PURGEBEFORESPEAK` - SAPI's own "interrupt and replace what's queued" behavior, which satisfies "don't build a speech backlog" without custom queue logic. Required two new features (`Win32_Media_Speech`, `Win32_System_Com`) on the already-present `windows` crate dependency - same crate, same version, not an upgrade.
 2. **Two independent, persisted settings** (`src-tauri/src/output_settings.rs`, new): "Speak status outside AccessibleScreenCapture" and "Show Windows notifications," both on by default. `app/announcer.js` now routes to native speech, a toast, both, or neither when unfocused, based on these - the toast is optional visual reinforcement now, not the only channel.
 3. **Chunked recording save, `src-tauri/src/recording_save.rs` (new), recordings only.** `begin_recording_save` opens the Save As dialog first and creates the destination file (nothing transfers if canceled); the frontend streams the recording in bounded 512KB chunks via `append_recording_chunk`; `finish_recording_save` verifies the actual on-disk byte count matches what was sent rather than trusting success silently; `abort_recording_save` cleans up a partial file on cancellation or failure. Screenshot save is completely unchanged.
-4. **Custom, persistent playback controls, `app/app.js`.** The native `<video>` controls are disabled and hidden from the accessibility tree (`aria-hidden`) in favor of app-owned Play/Pause (one toggle, relabeled in place), Stop Playback, Rewind 5 Seconds, Forward 5 Seconds, a plain-text time display (never a live-region announcement), and an on-demand "Announce Playback Position" button. Built once per capture, then only ever updated in place - never recreated - so focus is never disturbed as playback progresses.
+4. **Custom, persistent playback controls, `app/app.js` (historical 1.0.5 behavior).** The native `<video>` controls were disabled and hidden from the accessibility tree (`aria-hidden`) in favor of app-owned Play/Pause, Stop Playback, Rewind 5 Seconds, Forward 5 Seconds, a plain-text time display, and an on-demand "Announce Playback Position" button. In 2.0.0, the redundant Stop Playback control was removed; the current Review Capture controls use Play/Pause, Rewind 5 Seconds, Forward 5 Seconds, Announce Playback Position, Save Capture, and Discard Capture.
 5. **Descriptor delivery updated, detection untouched.** `capture_context.rs` was not modified this pass - 1.0.4 already proved detection was correct. Descriptor announcements now share the same speech/notification routing as everything else.
 6. **1.0.4's per-poll debug-log flood removed** from `descriptor.rs` - it did its diagnostic job; only real state changes are logged now.
 
@@ -98,7 +88,7 @@ Also added: visible "Screenshot target: Primary monitor" text and a matching tra
 
 ## Installation
 
-Install the produced `.msi` like any other Windows application: run it, follow the installer, launch AccessibleScreenCapture from the Start Menu. Uninstall through Windows Settings > Apps. Because the version number changed to 1.0.5 in both `Cargo.toml` and `tauri.conf.json` (and nothing else about the application identity changed), Windows Installer recognizes this as an upgrade over an existing installation.
+Install the produced `.msi` like any other Windows application: run it, follow the installer, and launch AccessibleScreenCapture from the Start Menu. Uninstall through Windows Settings > Apps. The current Windows application version is 2.0.0, published by Open Door Design.
 
 ## Running the browser prototype (Phase 1, reference only)
 
@@ -124,61 +114,91 @@ npx tauri build    # produce the real .msi / .exe installers
 
 `npx tauri build` (and `dev`) runs `scripts/prepare-dist.js` automatically, which copies the root `index.html` and `app/` folder into a gitignored `dist/` folder. `index.html` and `app/` remain the single source of truth for both the browser prototype and the desktop app; `dist/` is always regenerated, never hand-edited.
 
-Since 1.0.2 changed no Rust code and no dependency versions, no `Cargo.toml` reconciliation is expected this time beyond whatever was already needed for 1.0.1.
-
 ### Building via GitHub Actions
 
 `.github/workflows/build-windows.yml` builds real installers on a `windows-latest` GitHub Actions runner - unchanged this pass. Push a `v*` tag (or run the workflow manually) and it opens a draft Release with the built `.msi` and `.exe` attached.
 
 ## Project files
 
-`index.html` and `app/` are the shared frontend, used by both the browser prototype and the desktop app. The Review / Save / Discard / Recent Captures workflow is unchanged from Phase 1 throughout.
+`index.html` and `app/` are the shared frontend used by both the browser reference build and the Windows desktop application. The installed Tauri application uses the native Windows screenshot and recording paths; browser capture APIs remain only as fallback/reference behavior outside the installed Windows application.
 
-`app/app.js` controls screenshot capture, recording, review, saving, focus management, Recent Captures, all three global shortcut listeners, the shortcut-rebinding settings UI, the Capture Context Descriptor's on/off toggle, focus-aware confirmation, unified pending-capture protection, recording start/stop feedback, system audio guidance, microphone device refresh, the Diagnostics panel, and the optional capture sound. New in 1.0.5: the chunked recording-save client logic (`saveRecordingChunked`, `arrayBufferToBase64`), the custom persistent playback controls (`buildRecordingPlaybackControls`), and wiring for the two new output-channel settings.
+`app/app.js` controls capture and review workflows, recording options, microphone selection, recording-status feedback, screenshot shutter playback, Review Capture, Recent Captures, focus management, global shortcut handling, shortcut customization, Capture Context Descriptor controls, Output Settings, and Diagnostics.
 
-`app/announcer.js` limits application-generated live-region messages to an approved set (`announce`) plus a small set of specific, templated messages (`announceRaw`). Reworked in 1.0.5: when unfocused, routes to native speech, a toast notification, both, or neither, based on the two independent output settings, instead of only ever using the toast.
+`app/announcer.js` handles application-generated status and error announcements. Recording-state confirmation is separately controlled by the 2.0.0 Spoken status / Status sounds / Silence setting so recording tones are not played on top of spoken recording-state messages.
 
-`app/tauri-bridge.js` feature-detects the desktop runtime and wraps the native commands. New in 1.0.5: `speakStatus`, `getOutputSettings`, `setSpeakOutsideApp`, `setShowNotifications`, `beginRecordingSave`, `appendRecordingChunk`, `finishRecordingSave`, `abortRecordingSave`.
+`app/tauri-bridge.js` feature-detects the desktop runtime and wraps the native commands used by screenshots, native recording, audio capture, microphone enumeration and selection, output settings, saving, diagnostics, and other Windows-specific functions.
 
-`app/shortcuts.js`, `app/save.js`, `app/duration.js` - unchanged.
+`app/assets/sound/screenshots/` contains the custom screenshot shutter sound.
 
-`app/styles.css` - new in 1.0.5: styling for the persistent playback controls.
+`app/assets/sound/recording/` contains the custom recording start, stop, pause, and resume sounds.
+
+`app/shortcuts.js`, `app/save.js`, and `app/duration.js` provide shared shortcut, save, and duration helpers.
+
+`app/styles.css` contains application styling, including the persistent Review Capture controls and disclosure/settings presentation.
 
 `src-tauri/` is the native backend:
 
-- `src/lib.rs` - tray icon and menu, minimize-to-tray, registration/persistence/rebinding for all three global shortcuts, native screenshot capture, native "Save As" for screenshots, native notifications, optional Windows autostart. New in 1.0.5: wires in the three new modules below and starts the speech worker at startup.
-- `src/capture_context.rs` - reports the active application, window title, window state, monitor, and size/position via Win32. Unchanged again this pass, per the directive - 1.0.4 already proved detection correct.
-- `src/descriptor.rs` - the Capture Context Descriptor's on/off state and background watcher. 1.0.4's per-poll debug-log flood removed this pass; only real state changes are logged now.
-- `src/debug_log.rs` - the shared, file-based diagnostic log both Rust and JS write into. Unchanged this pass, still used throughout the new modules below.
-- `src/native_speech.rs` - new in 1.0.5: a dedicated thread owning one SAPI `ISpVoice` COM object, exposed as `speak_status`.
-- `src/output_settings.rs` - new in 1.0.5: the two independent, persisted "speak outside app" / "show notifications" settings.
-- `src/recording_save.rs` - new in 1.0.5: the chunked save pipeline for recordings (`begin_recording_save` / `append_recording_chunk` / `finish_recording_save` / `abort_recording_save`).
-- `src/main.rs` - entry point. Unchanged.
-- `tauri.conf.json` - window, bundle, and identity configuration. App identity unchanged: name "AccessibleScreenCapture", publisher "Open Door Design", version now "1.0.5".
-- `Cargo.toml` - new in 1.0.5: `Win32_Media_Speech` and `Win32_System_Com` features added to the already-present `windows` crate dependency (same crate, same version, not an upgrade).
-- `capabilities/default.json`, `icons/` - unchanged.
+- `src/lib.rs` - Tauri setup, command registration, global shortcuts, tray behavior, native screenshot support, notifications, settings integration, and application lifecycle wiring.
+- `src/native_recording.rs` - production native Windows recording lifecycle, including Start/Stop/Pause/Resume coordination and final recording assembly.
+- `src/native_video_encode.rs` - independent clock-driven video output so recording duration does not depend on how often the screen changes.
+- `src/native_audio.rs` - WASAPI system-audio and microphone capture, including real microphone-device enumeration and selection.
+- `src/native_mux.rs` - FFmpeg-based final video/audio muxing and audio-source mixing.
+- `src/capture_context.rs` - active application/window context reporting for the Capture Context Descriptor.
+- `src/descriptor.rs` - Capture Context Descriptor state and background watcher.
+- `src/debug_log.rs` - shared diagnostic logging.
+- `src/native_speech.rs` - native SAPI speech worker.
+- `src/output_settings.rs` - persisted output/status settings, including recording feedback and microphone selection.
+- `src/recording_save.rs` - recording save support.
+- `src/main.rs` - application entry point.
+- `tauri.conf.json` - Windows application, bundle, identity, publisher, version, and copyright configuration.
+- `Cargo.toml` / `Cargo.lock` - Rust dependencies and locked versions.
+- `capabilities/default.json` - Tauri capability permissions.
+- `binaries/` - build-time sidecar location used by the automated FFmpeg packaging workflow.
+- `icons/` - Windows application icons.
 
-`scripts/prepare-dist.js`, `.github/workflows/build-windows.yml` - unchanged.
+`scripts/prepare-dist.js` generates the desktop frontend build from the shared source files.
 
-The `docs/` folder contains the vision, screen-reader-first principles, the roadmap, and a manual testing checklist - all updated for 1.0.5.
+`.github/workflows/build-windows.yml` builds the Windows installers and automatically acquires, verifies, target-renames, and packages the FFmpeg sidecar before Tauri packaging.
+
+The `docs/` folder contains design history, roadmap material, screen-reader-first principles, and testing documentation. Historical entries for 1.x remain for development context; they do not describe the current 2.0.0 production architecture.
 
 ## Completed functionality
 
-From Phase 1 and 1.0.0/1.0.1 (verified): screenshot and recording capture, Review/Save/Discard, Recent Captures, Windows-safe filenames, natural-language duration, workflow locking, resource cleanup, native screenshot save, three fully reconfigurable global shortcuts with duplicate prevention and preserve-previous-on-failure, system tray, and the independent Capture Context Descriptor.
+AccessibleScreenCapture 2.0.0 is the completed free, non-editing recorder.
 
-From 1.0.2/1.0.3/1.0.4 (behavior/infrastructure that exists but, per real testing, didn't fully solve what it was meant to - see "What changed in 1.0.5"): focus-aware routing logic, specific confirmation messages, save-failure error handling, recording start/stop feedback, system audio guidance, microphone device refresh, optional capture-confirmation sound, and the shared debug log.
+Current 2.0.0 functionality includes:
 
-New in 1.0.5 (architecture replacements, not yet built/verified - see "What changed in 1.0.5"):
+- Native Windows screenshots.
+- Native Windows screen recording without the Chromium screen-sharing chooser.
+- Clock-driven video output that remains full-length even when the screen is static.
+- Native WASAPI system-audio capture.
+- Native WASAPI microphone capture.
+- Accessible microphone-device enumeration, selection, and persistence.
+- Video-only, system-audio-only, microphone-only, and combined system-audio-plus-microphone recording.
+- Pause and Resume with paused time excluded from the recorded timeline.
+- Bundled FFmpeg sidecar for final MP4 creation and audio mixing.
+- Review Capture with Play/Pause, Rewind 5 Seconds, Forward 5 Seconds, Announce Playback Position, Save Capture, and Discard Capture.
+- Recent Captures.
+- Custom screenshot shutter confirmation sound.
+- Three recording-status feedback choices: Spoken status, Status sounds, or Silence.
+- Custom recording start, stop, pause, and resume sounds.
+- Reconfigurable global keyboard shortcuts.
+- Capture Context Descriptor.
+- Native speech, Windows notifications, voice/rate/volume controls, and diagnostics.
+- Open Door Design publisher identity.
 
-- Native speech (SAPI) as the actual spoken channel for status while unfocused, independent of Windows toast notifications.
-- Two independent settings controlling whether speech and/or notifications fire.
-- A chunked save pipeline for recordings, replacing the base64-over-one-IPC-argument transport (screenshots unaffected).
-- Custom, persistent playback controls replacing the native video element's controls.
+## Release status
 
-## Remaining work
+The current release candidate is **AccessibleScreenCapture 2.0.0**.
 
-See "What's honestly still open" and "Later work" in `docs/Roadmap.md`. Most notably: none of 1.0.6 has been tested on a real machine yet, and the SAPI voice-enumeration COM code is the least-certain code written in this project so far.
+This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
+
+Editing is not part of this free recorder release.
 
 ## Next development phase
 
-Get a real 1.0.6 build through `.github/workflows/build-windows.yml` - expect the voice-enumeration COM code to be the most likely source of a compiler error this round. Then work through `docs/Testing Checklist.md`, with real, repeated JAWS testing of native speech as the single most important item - that's the actual safety confirmation this pass can't provide on its own. Native Windows recording architecture remains the phase after this, gated on JAWS safety being genuinely confirmed.
+After 2.0.0 completes final Windows acceptance testing, the next development phase will add recording-editing capability. That editing work is planned as a separate version and will form the basis of the Pro edition rather than being mixed into this free recorder release.
+
+## Copyright
+
+Copyright 2026 Open Door Design.

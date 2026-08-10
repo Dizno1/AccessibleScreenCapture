@@ -170,6 +170,22 @@ export async function setSpeechVolume(volume) {
   return invoke("set_speech_volume", { volume });
 }
 
+export async function setRecordingStatusFeedback(value) {
+  return invoke("set_recording_status_feedback", { value });
+}
+
+export async function listNativeMicrophones() {
+  return invoke("list_native_microphones");
+}
+
+export async function setMicrophoneDevice(deviceId, deviceName) {
+  return invoke("set_microphone_device", { deviceId, deviceName });
+}
+
+export async function setInstructionsExpanded(expanded) {
+  return invoke("set_instructions_expanded", { expanded });
+}
+
 export async function testSpeechVoice() {
   return invoke("test_speech_voice");
 }
@@ -184,8 +200,8 @@ export async function testNativeCapture(includeSystemAudio) {
   return invoke("test_native_capture", { includeSystemAudio });
 }
 
-export async function startNativeRecording(includeSystemAudio, includeMicrophone) {
-  return invoke("start_native_recording", { includeSystemAudio, includeMicrophone });
+export async function startNativeRecording(includeSystemAudio, includeMicrophone, microphoneDeviceId) {
+  return invoke("start_native_recording", { includeSystemAudio, includeMicrophone, microphoneDeviceId });
 }
 
 export async function stopNativeRecording() {

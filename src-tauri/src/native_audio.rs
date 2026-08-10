@@ -137,8 +137,13 @@ enum CaptureKind {
     /// A genuine capture/input endpoint (a real microphone or other
     /// recording device) - opened directly in the CAPTURE direction,
     /// no loopback trick needed since the device already is a capture
-    /// endpoint.
-    Microphone,
+    /// endpoint. Some(id) selects a specific device by its real
+    /// WASAPI device ID (see list_microphone_devices below) - if
+    /// that device can't be resolved (unplugged, disabled), this
+    /// fails explicitly rather than silently falling back to the
+    /// Windows default. None uses the Windows default recording
+    /// device.
+    Microphone(Option<String>),
 }
 
 /// Starts WASAPI capture on a dedicated background thread - every
@@ -183,20 +188,42 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
         // capture-direction client); for a real microphone, that's
         // simply correct, since the device already is a capture
         // endpoint.
-        let enumerator_direction = match kind {
+        let enumerator_direction = match &kind {
             CaptureKind::SystemLoopback => Direction::Render,
-            CaptureKind::Microphone => Direction::Capture,
+            CaptureKind::Microphone(_) => Direction::Capture,
         };
-        let device_kind_label = match kind {
+        let device_kind_label = match &kind {
             CaptureKind::SystemLoopback => "playback",
-            CaptureKind::Microphone => "microphone",
+            CaptureKind::Microphone(_) => "microphone",
         };
 
-        let device = match enumerator.get_default_device(&enumerator_direction) {
-            Ok(device) => device,
-            Err(e) => {
-                let _ = init_tx.send(Err(format!("Could not get the default {device_kind_label} device: {e}")));
-                return;
+        // MICROPHONE DEVICE SELECTION. If a specific device ID was
+        // requested, resolve it via DeviceEnumerator::get_device() -
+        // confirmed real API (docs.rs/wasapi's own DeviceEnumerator
+        // page). If that device can't be resolved (unplugged,
+        // disabled since it was selected), this fails explicitly with
+        // a clear error rather than silently falling back to the
+        // default device - the caller surfaces this to the user
+        // rather than recording from an unexpected device unannounced.
+        let selected_device_id = match &kind {
+            CaptureKind::Microphone(Some(id)) => Some(id.clone()),
+            _ => None,
+        };
+        let device = if let Some(id) = &selected_device_id {
+            match enumerator.get_device(id) {
+                Ok(device) => device,
+                Err(e) => {
+                    let _ = init_tx.send(Err(format!("The selected microphone device is unavailable: {e}")));
+                    return;
+                }
+            }
+        } else {
+            match enumerator.get_default_device(&enumerator_direction) {
+                Ok(device) => device,
+                Err(e) => {
+                    let _ = init_tx.send(Err(format!("Could not get the default {device_kind_label} device: {e}")));
+                    return;
+                }
             }
         };
         let endpoint_name = device.get_friendlyname().ok();
@@ -369,10 +396,59 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
     start_capture(CaptureKind::SystemLoopback)
 }
 
-/// Starts WASAPI capture of the default microphone (capture) endpoint.
-/// See `start_capture` for the shared implementation. Uses the
-/// Windows default recording device - no device-selection UI in this
-/// pass, per explicit scope.
-pub fn start_microphone_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
-    start_capture(CaptureKind::Microphone)
+/// Starts WASAPI capture of a microphone (capture) endpoint - a
+/// specific device if `device_id` is Some (see list_microphone_devices
+/// for how to obtain a real device ID), or the Windows default
+/// recording device if None. See `start_capture` for the shared
+/// implementation.
+pub fn start_microphone_capture(device_id: Option<String>) -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
+    start_capture(CaptureKind::Microphone(device_id))
+}
+
+/// One available microphone (capture-direction) device, for populating
+/// a device-selection control. `id` is the real WASAPI device ID
+/// (stable across app restarts, suitable for persisting a selection)
+/// - pass it back to start_microphone_capture to use this specific
+/// device.
+#[derive(serde::Serialize)]
+pub struct MicrophoneDeviceInfo {
+    pub id: String,
+    pub name: String,
+}
+
+/// Enumerates all active capture-direction (recording/input) devices,
+/// via DeviceEnumerator::get_device_collection() - confirmed real API
+/// (docs.rs/wasapi's own DeviceEnumerator page lists this method
+/// explicitly: "Get an IMMDeviceCollection of all active playback or
+/// capture devices"). A device whose name can't be read is skipped
+/// rather than failing the whole enumeration - one bad device
+/// shouldn't hide every other one from the picker.
+pub fn list_microphone_devices() -> Result<Vec<MicrophoneDeviceInfo>, String> {
+    initialize_mta().ok().map_err(|e| format!("Could not initialize COM (MTA) for device enumeration: {e}"))?;
+
+    let enumerator = DeviceEnumerator::new().map_err(|e| format!("Could not create a device enumerator: {e}"))?;
+    let collection = enumerator
+        .get_device_collection(&Direction::Capture)
+        .map_err(|e| format!("Could not enumerate capture devices: {e}"))?;
+
+    let mut devices = Vec::new();
+    for device_result in &collection {
+        let device = match device_result {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let id = match device.get_id() {
+            Ok(id) => id,
+            Err(_) => continue,
+        };
+        let name = device.get_friendlyname().unwrap_or_else(|_| "Unnamed device".to_string());
+        devices.push(MicrophoneDeviceInfo { id, name });
+    }
+
+    Ok(devices)
+}
+
+#[tauri::command]
+pub fn list_native_microphones() -> Result<Vec<MicrophoneDeviceInfo>, String> {
+    list_microphone_devices()
 }

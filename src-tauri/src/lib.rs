@@ -36,7 +36,8 @@ use descriptor::{get_context_and_mark_reported, get_descriptor_enabled, set_desc
 use native_capture::test_native_capture;
 use native_recording::{pause_native_recording, resume_native_recording, start_native_recording, stop_native_recording};
 use native_speech::{get_speech_voices, speak_status, test_speech_voice};
-use output_settings::{get_output_settings, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice, set_speech_volume};
+use native_audio::list_native_microphones;
+use output_settings::{get_output_settings, set_instructions_expanded, set_microphone_device, set_recording_status_feedback, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice, set_speech_volume};
 use recording_save::{
     abort_recording_save, append_recording_chunk, begin_recording_save, finish_recording_save,
     RecordingSaveState,
@@ -634,7 +635,7 @@ pub fn run() {
                 ));
             }
 
-            debug_log::log(&handle, "=== app started, version 1.0.6, AUMID set ===");
+            debug_log::log(&handle, "=== app started, version 2.0.0, AUMID set ===");
             output_settings::apply_persisted_speech_settings(&handle);
             debug_log::log(&handle, "=== native speech worker starting ===");
 
@@ -731,6 +732,10 @@ pub fn run() {
             set_speech_voice,
             set_speech_rate,
             set_speech_volume,
+            set_recording_status_feedback,
+            list_native_microphones,
+            set_microphone_device,
+            set_instructions_expanded,
             get_speech_voices,
             test_speech_voice,
             test_native_capture,

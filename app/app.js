@@ -31,13 +31,14 @@ import {
   setSpeechVoice,
   setSpeechRate,
   setSpeechVolume,
+  setRecordingStatusFeedback,
   testSpeechVoice,
-  testNativeCapture,
   startNativeRecording,
   stopNativeRecording,
   pauseNativeRecording,
   resumeNativeRecording,
   readNativeFile,
+  setInstructionsExpanded,
 } from "./tauri-bridge.js";
 
 const systemAudioOption = document.getElementById("option-system-audio");
@@ -71,6 +72,7 @@ let recordingStartTime = 0;
 let pausedDurationMs = 0;
 let pauseStartedAt = null;
 let isNativeRecordingPaused = false;
+let recordingStatusFeedback = "spoken";
 let activeAudioContext = null;
 let captureCounter = 0;
 let descriptorEnabled = false;
@@ -114,6 +116,7 @@ const diagnostics = {
   pendingCaptureState: "Empty",
   lastPauseResumeAction: "None yet",
   pauseResumeShortcutStatus: "Not checked yet",
+  finalMuxStatus: "N/A",
 };
 
 function nowText() {
@@ -142,6 +145,7 @@ function renderDiagnostics() {
     recentCapturesUpdated: "diag-recent-updated",
     currentMicSelection: "diag-mic-selection",
     resolvedMicDevice: "diag-mic-resolved",
+    finalMuxStatus: "diag-final-mux-status",
     lastSaveError: "diag-save-error",
     recordingChunksTransferred: "diag-chunks-transferred",
     recordingFinalFileSize: "diag-final-size",
@@ -230,7 +234,7 @@ function pauseRecording() {
     diagnostics.lastPauseResumeAction = `Paused at ${nowText()}`;
     renderDiagnostics();
     renderPauseResumeButton();
-    announce("recordingPaused");
+    announceRecordingState("recordingPaused");
   } catch (error) {
     console.error("Could not pause recording:", error);
     logDebug(`pauseRecording: FAILED: ${error}`);
@@ -262,7 +266,7 @@ function resumeRecording() {
     diagnostics.lastPauseResumeAction = `Resumed at ${nowText()}`;
     renderDiagnostics();
     renderPauseResumeButton();
-    announce("recordingResumed");
+    announceRecordingState("recordingResumed");
   } catch (error) {
     console.error("Could not resume recording:", error);
     logDebug(`resumeRecording: FAILED: ${error}`);
@@ -293,14 +297,14 @@ async function toggleNativePauseResume() {
       diagnostics.lastPauseResumeAction = `Resumed at ${nowText()}`;
       renderDiagnostics();
       renderPauseResumeButton();
-      announce("recordingResumed");
+      announceRecordingState("recordingResumed");
     } else {
       await pauseNativeRecording();
       isNativeRecordingPaused = true;
       diagnostics.lastPauseResumeAction = `Paused at ${nowText()}`;
       renderDiagnostics();
       renderPauseResumeButton();
-      announce("recordingPaused");
+      announceRecordingState("recordingPaused");
     }
   } catch (error) {
     console.error("Could not toggle native recording pause state:", error);
@@ -309,6 +313,62 @@ async function toggleNativePauseResume() {
     announce(isNativeRecordingPaused ? "recordingResumeFailed" : "recordingPauseFailed");
   }
 }
+
+/**
+ * Instructions disclosure. aria-expanded on the button and the
+ * hidden attribute on the content are kept in sync as the single
+ * source of truth for expanded/collapsed state - no separate class
+ * or flag to drift out of sync with them. Escape is handled with a
+ * keydown listener scoped to the content element itself, so it only
+ * ever fires when focus is within the instructions (native DOM event
+ * bubbling) - this cannot intercept Escape anywhere else in the
+ * application, by construction, not by a global check.
+ */
+function initInstructionsDisclosure() {
+  const button = document.getElementById("instructions-toggle");
+  const content = document.getElementById("instructions-content");
+  if (!button || !content) return;
+
+  function setExpanded(expanded) {
+    button.setAttribute("aria-expanded", expanded ? "true" : "false");
+    content.hidden = !expanded;
+  }
+
+  async function persist(expanded) {
+    if (!isTauri) return;
+    try {
+      await setInstructionsExpanded(expanded);
+    } catch (error) {
+      console.error("Could not save instructions expanded state:", error);
+    }
+  }
+
+  button.addEventListener("click", () => {
+    const nowExpanded = button.getAttribute("aria-expanded") !== "true";
+    setExpanded(nowExpanded);
+    persist(nowExpanded);
+  });
+
+  content.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    if (button.getAttribute("aria-expanded") !== "true") return; // already collapsed - do nothing
+    setExpanded(false);
+    persist(false);
+    button.focus();
+  });
+
+  if (isTauri) {
+    getOutputSettings()
+      .then((settings) => {
+        setExpanded(settings.instructionsExpanded !== false);
+      })
+      .catch((error) => {
+        console.error("Could not load instructions expanded state:", error);
+      });
+  }
+}
+
+initInstructionsDisclosure();
 
 renderScreenshotHint();
 renderRecordToggleButton();
@@ -321,22 +381,56 @@ renderRecordToggleButton();
  */
 function playScreenshotSound() {
   if (!playCaptureSound) return;
+  playSoundAsset("app/assets/sound/screenshots/screenshot-shutter-v2.wav");
+}
+
+/**
+ * Plays a real, bundled WAV asset (an Open Door Design-created sound,
+ * not a generated tone). Used for the screenshot shutter and the four
+ * recording-status sounds. Paths are relative to index.html, matching
+ * how the rest of the app references bundled files - prepare-dist.js
+ * copies app/ recursively, so these assets are already part of the
+ * packaged build with no separate bundling step required.
+ */
+function playSoundAsset(relativePath) {
   try {
-    const context = new (window.AudioContext || window.webkitAudioContext)();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.value = 880;
-    gain.gain.setValueAtTime(0.15, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + 0.15);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.15);
-    oscillator.addEventListener("ended", () => context.close().catch(() => {}));
+    const audio = new Audio(relativePath);
+    audio.play().catch((error) => console.error(`Could not play sound asset ${relativePath}:`, error));
   } catch (error) {
-    console.error("Could not play capture sound:", error);
+    console.error(`Could not play sound asset ${relativePath}:`, error);
   }
+}
+
+const RECORDING_STATUS_SOUND_PATHS = {
+  recordingStarted: "app/assets/sound/recording/recording-start.wav",
+  recordingStopped: "app/assets/sound/recording/recording-stop.wav",
+  recordingPaused: "app/assets/sound/recording/recording-pause.wav",
+  recordingResumed: "app/assets/sound/recording/recording-resume.wav",
+};
+
+/**
+ * Routes one of the four recording-state events (start/stop/pause/
+ * resume) according to the Recording status feedback setting:
+ * "spoken" delegates entirely to the existing announce() mechanism
+ * (which already correctly handles focus and the separate speak-
+ * outside-app setting - unchanged here), "sounds" plays the matching
+ * bundled WAV instead (audible regardless of window focus, since it
+ * goes through the system audio output rather than speech/live-
+ * region channels), and "silence" does neither. A recording event
+ * therefore never produces both speech and its status sound - the
+ * three modes are mutually exclusive by construction, not by a
+ * separate check at each call site.
+ */
+function announceRecordingState(key) {
+  if (recordingStatusFeedback === "sounds") {
+    const soundPath = RECORDING_STATUS_SOUND_PATHS[key];
+    if (soundPath) playSoundAsset(soundPath);
+    return;
+  }
+  if (recordingStatusFeedback === "silence") {
+    return;
+  }
+  announce(key);
 }
 
 const captureSoundToggle = document.getElementById("capture-sound-toggle");
@@ -347,22 +441,66 @@ if (captureSoundToggle) {
   });
 }
 
+let nativeMicrophoneDeviceId = null;
+
+/**
+ * Populates the microphone select with real native WASAPI capture
+ * devices (via list_native_microphones - a plain enumeration, no
+ * stream is opened, so no permission prompt of any kind). Re-selects
+ * the persisted device by ID if it is still present in the list;
+ * otherwise falls back to Default microphone and reports the
+ * previously selected device is no longer available, rather than
+ * silently recording from a different device.
+ */
+async function populateNativeMicrophoneList(persistedId, persistedName) {
+  try {
+    const devices = await listNativeMicrophones();
+    microphoneSelect.innerHTML = '<option value="">Default microphone</option>';
+    devices.forEach((device) => {
+      const option = document.createElement("option");
+      option.value = device.id;
+      option.textContent = device.name;
+      microphoneSelect.appendChild(option);
+    });
+
+    if (persistedId) {
+      const stillPresent = devices.some((d) => d.id === persistedId);
+      if (stillPresent) {
+        microphoneSelect.value = persistedId;
+        nativeMicrophoneDeviceId = persistedId;
+      } else {
+        microphoneSelect.value = "";
+        nativeMicrophoneDeviceId = null;
+        diagnostics.currentMicSelection = `${persistedName || "a previously selected device"} (no longer available - using Default microphone)`;
+        renderDiagnostics();
+        announceRaw(`The previously selected microphone, ${persistedName || "device"}, is no longer available. Using the default microphone instead.`);
+      }
+    } else {
+      microphoneSelect.value = "";
+      nativeMicrophoneDeviceId = null;
+    }
+    microphoneSelectWrapper.hidden = false;
+  } catch (error) {
+    console.error("Could not list native microphone devices:", error);
+    microphoneSelectWrapper.hidden = true;
+  }
+}
+
 microphoneOption.addEventListener("change", async () => {
   if (!microphoneOption.checked) {
     microphoneSelectWrapper.hidden = true;
     return;
   }
 
-  // Native recording always uses the Windows default recording
-  // device (see native_audio.rs) - no device picker or browser
-  // permission prompt is needed or shown here. The
-  // getUserMedia()-based device enumeration below is for the browser
-  // fallback path only, where it is the only way to offer device
-  // choice at all; running it in the native app would trigger
-  // exactly the kind of Chromium/WebView permission dialog native
-  // recording is meant to avoid.
+  // Native recording: enumerate real WASAPI capture devices - a
+  // plain enumeration, not opening a stream, so no permission prompt
+  // of any kind. The getUserMedia()-based enumeration below is for
+  // the browser fallback path only, where it is the only way to
+  // offer device choice at all; running it in the native app would
+  // trigger exactly the kind of Chromium/WebView permission dialog
+  // native recording is meant to avoid.
   if (isTauri) {
-    microphoneSelectWrapper.hidden = true;
+    await populateNativeMicrophoneList(nativeMicrophoneDeviceId, diagnostics.currentMicSelection);
     return;
   }
 
@@ -387,6 +525,21 @@ microphoneOption.addEventListener("change", async () => {
     announce("permissionDenied");
     microphoneOption.checked = false;
     microphoneSelectWrapper.hidden = true;
+  }
+});
+
+microphoneSelect.addEventListener("change", async () => {
+  if (!isTauri) return; // browser fallback does not persist a device selection
+  const selectedOption = microphoneSelect.options[microphoneSelect.selectedIndex];
+  const deviceId = microphoneSelect.value || null;
+  const deviceName = deviceId ? selectedOption.textContent : null;
+  nativeMicrophoneDeviceId = deviceId;
+  diagnostics.currentMicSelection = deviceName || "Default microphone";
+  renderDiagnostics();
+  try {
+    await setMicrophoneDevice(deviceId, deviceName);
+  } catch (error) {
+    console.error("Could not save microphone device selection:", error);
   }
 });
 
@@ -530,11 +683,6 @@ function buildRecordingPlaybackControls(video) {
   forwardButton.className = "secondary-button";
   forwardButton.textContent = "Forward 5 Seconds";
 
-  const stopButton = document.createElement("button");
-  stopButton.type = "button";
-  stopButton.className = "secondary-button";
-  stopButton.textContent = "Stop Playback";
-
   const announceButton = document.createElement("button");
   announceButton.type = "button";
   announceButton.className = "secondary-button";
@@ -545,7 +693,7 @@ function buildRecordingPlaybackControls(video) {
   timeDisplay.setAttribute("aria-hidden", "true");
   timeDisplay.textContent = "0 seconds of 0 seconds";
 
-  container.append(playPauseButton, rewindButton, forwardButton, stopButton, announceButton, timeDisplay);
+  container.append(playPauseButton, rewindButton, forwardButton, announceButton, timeDisplay);
 
   function currentPositionText() {
     const current = formatDuration(video.currentTime || 0);
@@ -569,13 +717,6 @@ function buildRecordingPlaybackControls(video) {
   video.addEventListener("play", () => setPlayingState(true));
   video.addEventListener("pause", () => setPlayingState(false));
   video.addEventListener("ended", () => setPlayingState(false));
-
-  stopButton.addEventListener("click", () => {
-    video.pause();
-    video.currentTime = 0;
-    setPlayingState(false);
-    updateTimeDisplay();
-  });
 
   rewindButton.addEventListener("click", () => {
     video.currentTime = Math.max(0, video.currentTime - 5);
@@ -601,7 +742,7 @@ function buildRecordingPlaybackControls(video) {
 
 function showReview(capture) {
   pendingCapture = capture;
-  diagnostics.pendingCaptureState = `${capture.kind} waiting since ${nowText()}`;
+  diagnostics.pendingCaptureState = `${capture.kind} awaiting save or discard, captured at ${nowText()}`;
   renderDiagnostics();
   revokeReviewObjectUrl();
   reviewPreview.innerHTML = "";
@@ -1109,7 +1250,7 @@ async function startRecording() {
     announceRaw(readinessParts.join(" "));
 
     try {
-      const result = await startNativeRecording(systemAudioOption.checked, microphoneOption.checked);
+      const result = await startNativeRecording(systemAudioOption.checked, microphoneOption.checked, microphoneOption.checked ? nativeMicrophoneDeviceId : null);
       if (!result.started) {
         console.error("Native recording could not start:", result.startError);
         logDebug(`app.js: native recording start FAILED: ${result.startError}`);
@@ -1128,7 +1269,7 @@ async function startRecording() {
       showPauseResumeButton();
       diagnostics.recordingStartedDiag = `Yes at ${nowText()}`;
       renderDiagnostics();
-      announce("recordingStarted");
+      announceRecordingState("recordingStarted");
     } catch (error) {
       console.error("Native recording start error:", error);
       logDebug(`app.js: native recording start threw: ${error}`);
@@ -1282,7 +1423,7 @@ async function startRecording() {
     showPauseResumeButton();
     diagnostics.recordingStartedDiag = `Yes at ${nowText()}`;
     renderDiagnostics();
-    announce("recordingStarted");
+    announceRecordingState("recordingStarted");
   } catch (error) {
     console.error("Recording start error:", error);
     if (displayStream) displayStream.getTracks().forEach((track) => track.stop());
@@ -1308,7 +1449,7 @@ function stopRecording() {
   if (isTauri && !isAppFocused()) {
     announceRaw("Recording stopped.");
   } else {
-    announce("recordingStopped");
+    announceRecordingState("recordingStopped");
   }
 
   if (isTauri) {
@@ -1366,6 +1507,24 @@ async function stopNativeRecordingAndReview() {
 
     diagnostics.recordingBlobSize = `${blob.size} bytes`;
     diagnostics.recordingMimeType = "video/mp4";
+    // The device WASAPI actually resolved and used, not merely what
+    // was requested - distinct from currentMicSelection (the user's
+    // selection) since a selected device could theoretically differ
+    // from what got resolved, and this reports reality either way.
+    if (result.micAudio) {
+      if (result.micAudio.audioRequested) {
+        diagnostics.resolvedMicDevice = result.micAudio.audioError
+          ? `Failed: ${result.micAudio.audioError}`
+          : result.micAudio.renderEndpointName || "Unknown device";
+      } else {
+        diagnostics.resolvedMicDevice = "N/A";
+      }
+    }
+    diagnostics.finalMuxStatus = result.mux
+      ? result.mux.muxingSuccess
+        ? `Succeeded (${result.mux.audioCodecUsed || "video only"})`
+        : `Failed: ${result.mux.muxingError || "unknown error"}`
+      : "Not attempted (video only, no audio sources)";
     renderDiagnostics();
 
     if (blob.size === 0) {
@@ -1708,7 +1867,6 @@ function initDiagnostics() {
   section.hidden = false;
   renderDiagnostics();
   initDebugLogViewer();
-  initNativeCaptureTest();
 }
 
 /**
@@ -1746,101 +1904,6 @@ function initDebugLogViewer() {
     } catch (error) {
       console.error("Could not clear debug log:", error);
       if (status) status.textContent = "Could not clear the debug log.";
-    }
-  });
-}
-
-/**
- * Wires the experimental native-capture test button. Entirely
- * separate from the working recorder - this never touches
- * startRecording/stopRecording or anything in the capture workflow.
- */
-function initNativeCaptureTest() {
-  const button = document.getElementById("native-capture-test");
-  const result = document.getElementById("native-capture-result");
-  if (!button || !result) return;
-
-  button.addEventListener("click", async () => {
-    const wantsAudio = systemAudioOption.checked;
-    result.textContent = "Testing native capture. This runs for about five seconds of actual capture, plus setup time.";
-    logDebug(`app.js: native capture test requested, includeSystemAudio=${wantsAudio}`);
-    try {
-      const proof = await testNativeCapture(wantsAudio);
-      const fmt = (value) => (value != null ? value.toFixed(2) : "unknown");
-
-      const parts = [
-        `Requested ${proof.requestedCaptureSeconds} seconds of capture.`,
-        `Initialization took ${fmt(proof.initializationSeconds)} seconds.`,
-        `Actual capture window was ${proof.captureDurationSeconds.toFixed(2)} seconds.`,
-        `Total command time was ${fmt(proof.totalCommandSeconds)} seconds.`,
-        `${proof.framesReceived} real screen-change callbacks received.`,
-      ];
-      if (proof.videoClockFps != null) {
-        parts.push(
-          `Independent video clock ran at ${proof.videoClockFps} fps and produced ${proof.videoClockFramesProduced} video frames using codec ${proof.videoCodecUsed} - this no longer depends on how many real screen changes occurred, so a static screen and an active screen should both produce a full-length video.`
-        );
-        if (!proof.videoEncodeSuccess && proof.videoEncodeError) {
-          parts.push(`Video encoding reported an error: ${proof.videoEncodeError}`);
-        }
-      }
-      const dimensions =
-        proof.frameWidth != null && proof.frameHeight != null ? `${proof.frameWidth} by ${proof.frameHeight} pixels` : "unknown dimensions";
-      parts.push(`First frame ${dimensions}.`);
-      if (proof.captureError) {
-        parts.push(`Capture reported an error: ${proof.captureError}`);
-      } else if (proof.videoPath) {
-        parts.push(`A short diagnostic video was written to ${proof.videoPath}. Play it manually to check length and smoothness - this test cannot inspect the file's own contents.`);
-      } else {
-        parts.push("No video file was produced this time.");
-      }
-
-      if (proof.audioRequested) {
-        if (proof.audioError) {
-          parts.push(`System audio was requested but this app's own WASAPI capture could not start: ${proof.audioError}`);
-        } else if (proof.wasapiInitialized) {
-          const device = proof.renderEndpointName || "the default playback device";
-          const format =
-            proof.mixSampleRate != null && proof.mixChannels != null
-              ? `${proof.mixSampleRate} Hz, ${proof.mixChannels} channel${proof.mixChannels === 1 ? "" : "s"}`
-              : "unknown format";
-          const span = proof.capturedSpanSeconds != null ? `${proof.capturedSpanSeconds.toFixed(2)} seconds` : "unknown duration";
-          parts.push(
-            `System audio from ${device} (${format}): ${proof.buffersCaptured} buffers, ${proof.framesCaptured} total frames captured over ${span} of raw capture time.`
-          );
-          const preRoll = proof.preRollDiscardedSeconds != null ? proof.preRollDiscardedSeconds.toFixed(2) : "unknown";
-          const postRoll = proof.postRollDiscardedSeconds != null ? proof.postRollDiscardedSeconds.toFixed(2) : "unknown";
-          const savedDuration = proof.expectedWavDurationSeconds != null ? proof.expectedWavDurationSeconds.toFixed(2) : "unknown";
-          parts.push(
-            `Trimmed to align with video's actual capture window: ${preRoll} seconds discarded from the start, ${postRoll} seconds discarded from the end. Saved audio duration: ${savedDuration} seconds (${proof.retainedAudioFrames} frames).`
-          );
-          if (proof.audioWavPath) {
-            parts.push(`Written to a separate audio file at ${proof.audioWavPath}.`);
-          } else {
-            parts.push("No audio file was produced this time.");
-          }
-        }
-      } else {
-        parts.push("System audio was not requested for this test.");
-      }
-
-      if (proof.muxAttempted === false) {
-        parts.push("Combining video and audio was not attempted, since the video and/or audio source file was not produced.");
-      } else if (proof.muxingSuccess) {
-        const size = proof.finalFileSizeBytes != null ? `${(proof.finalFileSizeBytes / 1024 / 1024).toFixed(1)} MB` : "unknown size";
-        parts.push(
-          `Combined video and audio file written to ${proof.finalMuxedPath} (${size}). Video was copied without re-encoding; audio was encoded to AAC.`
-        );
-      } else {
-        const exitInfo = proof.ffmpegExitCode != null ? ` (ffmpeg exit code ${proof.ffmpegExitCode})` : "";
-        parts.push(`Combining video and audio failed${exitInfo}: ${proof.muxingError || "unknown error"}`);
-      }
-
-      result.textContent = parts.join(" ");
-      logDebug(`app.js: native capture test finished: ${JSON.stringify(proof)}`);
-    } catch (error) {
-      console.error("Native capture test failed:", error);
-      result.textContent = `Native capture failed: ${error}`;
-      logDebug(`app.js: native capture test FAILED: ${error}`);
     }
   });
 }
@@ -1894,6 +1957,23 @@ async function initOutputChannelSettings() {
   section.hidden = false;
   speakCheckbox.checked = settings.speakOutsideApp;
   notifyCheckbox.checked = settings.showNotifications;
+  recordingStatusFeedback = settings.recordingStatusFeedback || "spoken";
+  if (isTauri && settings.microphoneDeviceId) {
+    nativeMicrophoneDeviceId = settings.microphoneDeviceId;
+    diagnostics.currentMicSelection = settings.microphoneDeviceName || "Default microphone";
+  }
+  const feedbackRadios = document.querySelectorAll('input[name="recording-status-feedback"]');
+  feedbackRadios.forEach((radio) => {
+    radio.checked = radio.value === recordingStatusFeedback;
+    radio.addEventListener("change", async () => {
+      if (!radio.checked) return;
+      try {
+        recordingStatusFeedback = await setRecordingStatusFeedback(radio.value);
+      } catch (error) {
+        console.error("Could not save recording status feedback setting:", error);
+      }
+    });
+  });
 
   speakCheckbox.addEventListener("change", async () => {
     try {
