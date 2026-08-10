@@ -80,6 +80,20 @@ pub struct AudioChunk {
     pub pcm: Vec<u8>,
     pub frames: u32,
     pub elapsed: Duration,
+    // Was WASAPI's own silent flag set on this packet - see the
+    // BufferFlags handling in the read loop below. Tracked
+    // separately from has_signal so diagnostics can report both the
+    // raw WASAPI signal and the actual byte-level result distinctly.
+    pub wasapi_silent: bool,
+    // Does this chunk's PCM contain at least one non-zero byte, after
+    // any WASAPI-silent zero-fill has already been applied. A
+    // WASAPI-silent chunk is always false here (it was just zeroed).
+    // A chunk WASAPI did not flag silent could still be all zeros in
+    // practice (e.g. a genuinely quiet moment) - that's fine and
+    // expected, not itself a failure signal; what matters for the
+    // overall recording is whether ANY retained chunk has real
+    // non-zero content, checked downstream in native_recording.rs.
+    pub has_signal: bool,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -100,6 +114,15 @@ pub struct AudioCaptureDiagnostics {
     pub buffers_captured: u32,
     #[serde(rename = "framesCaptured")]
     pub frames_captured: u64,
+    // WASAPI-silent tracking, distinguished from real signal presence
+    // (see AudioChunk's own field docs in this module) - a packet
+    // being present is not proof it contains audible content.
+    #[serde(rename = "wasapiSilentPackets")]
+    pub wasapi_silent_packets: u32,
+    #[serde(rename = "wasapiSilentFrames")]
+    pub wasapi_silent_frames: u64,
+    #[serde(rename = "nonSilentSignalDetected")]
+    pub non_silent_signal_detected: bool,
     #[serde(rename = "capturedSpanSeconds")]
     pub captured_span_seconds: Option<f64>,
     #[serde(rename = "audioError")]
@@ -117,6 +140,9 @@ impl Default for AudioCaptureDiagnostics {
             mix_bits_per_sample: None,
             buffers_captured: 0,
             frames_captured: 0,
+            wasapi_silent_packets: 0,
+            wasapi_silent_frames: 0,
+            non_silent_signal_detected: false,
             captured_span_seconds: None,
             audio_error: None,
         }
@@ -304,6 +330,9 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
             mix_bits_per_sample: Some(bits_per_sample),
             buffers_captured: 0,
             frames_captured: 0,
+            wasapi_silent_packets: 0,
+            wasapi_silent_frames: 0,
+            non_silent_signal_detected: false,
             captured_span_seconds: None,
             audio_error: None,
         };
@@ -335,11 +364,38 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
                     Ok(Some(frames_available)) if frames_available > 0 => {
                         let mut buffer = vec![0u8; frames_available as usize * block_align as usize];
                         match capture_client.read_from_device(&mut buffer) {
-                            Ok(_flags) => {
+                            Ok(flags) => {
+                                // BufferFlags - confirmed real API
+                                // (docs.rs/wasapi's own BufferFlags
+                                // page: data_discontinuity, silent,
+                                // timestamp_error). Previously
+                                // discarded via a wildcard binding,
+                                // never inspected. Per Microsoft's own
+                                // WASAPI documentation, when the
+                                // silent flag is set the buffer's
+                                // actual byte content is not
+                                // guaranteed to be real silence (it
+                                // may be stale data from a previous
+                                // buffer) - the correct handling is to
+                                // treat it as silence explicitly, not
+                                // trust whatever bytes happen to be
+                                // there. Zeroed here rather than
+                                // trusting unverified buffer content.
+                                if flags.silent {
+                                    buffer.fill(0);
+                                }
+                                // Checked AFTER any silent-flag
+                                // zero-fill above, so a WASAPI-silent
+                                // chunk is always has_signal=false -
+                                // see the AudioChunk field docs for
+                                // why this specific ordering matters.
+                                let has_signal = !flags.silent && buffer.iter().any(|&b| b != 0);
                                 let _ = chunk_tx.send(AudioChunk {
                                     pcm: buffer,
                                     frames: frames_available,
                                     elapsed: capture_start.elapsed(),
+                                    wasapi_silent: flags.silent,
+                                    has_signal,
                                 });
                             }
                             Err(_) => {
@@ -365,11 +421,20 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
                 Ok(Some(frames_available)) if frames_available > 0 => {
                     let mut buffer = vec![0u8; frames_available as usize * block_align as usize];
                     match capture_client.read_from_device(&mut buffer) {
-                        Ok(_flags) => {
+                        Ok(flags) => {
+                            // Same silent-flag handling as the main
+                            // drain loop above - see that comment for
+                            // the full explanation.
+                            if flags.silent {
+                                buffer.fill(0);
+                            }
+                            let has_signal = !flags.silent && buffer.iter().any(|&b| b != 0);
                             let _ = chunk_tx.send(AudioChunk {
                                 pcm: buffer,
                                 frames: frames_available,
                                 elapsed: capture_start.elapsed(),
+                                wasapi_silent: flags.silent,
+                                has_signal,
                             });
                         }
                         Err(_) => break,

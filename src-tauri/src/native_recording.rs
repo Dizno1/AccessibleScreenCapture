@@ -232,13 +232,13 @@ fn trim_and_write_audio(
     window_end: f64,
     pause_intervals: &[(Instant, Instant)],
     output_path: &PathBuf,
-) -> Option<PathBuf> {
+) -> (Option<PathBuf>, u64, bool) {
     let sample_rate = diagnostics.mix_sample_rate.unwrap_or(48_000);
     let channels = diagnostics.mix_channels.unwrap_or(2);
     let bits_per_sample = diagnostics.mix_bits_per_sample.unwrap_or(32);
     let block_align = (channels as usize) * (bits_per_sample as usize / 8);
     if block_align == 0 {
-        return None;
+        return (None, 0, false);
     }
 
     let mut retained_pcm: Vec<u8> = Vec::new();
@@ -310,13 +310,24 @@ fn trim_and_write_audio(
     }
 
     if retained_pcm.is_empty() {
-        return None;
+        return (None, 0, false);
     }
 
+    let retained_frames = (retained_pcm.len() / block_align) as u64;
+
+    // THE AUTHORITATIVE SIGNAL CHECK. This is the actual bytes that
+    // will be written to the final WAV - checking here, rather than
+    // trusting per-chunk has_signal flags alone, directly answers
+    // "does the file that's about to be produced contain any real
+    // signal," which is what final microphone success actually
+    // depends on (a chunk with real signal that gets entirely
+    // trimmed away by pause/window exclusion should NOT count).
+    let has_signal = retained_pcm.iter().any(|&b| b != 0);
+
     if crate::native_capture::write_wav_file(output_path, &retained_pcm, sample_rate, channels, bits_per_sample).is_ok() {
-        Some(output_path.clone())
+        (Some(output_path.clone()), retained_frames, has_signal)
     } else {
-        None
+        (None, 0, false)
     }
 }
 
@@ -368,6 +379,10 @@ pub struct ProductionRecordingStopResult {
     pub mic_audio: AudioCaptureDiagnostics,
     #[serde(rename = "micIncludedInFinalMux")]
     pub mic_included_in_final_mux: bool,
+    #[serde(rename = "micRetainedFrames")]
+    pub mic_retained_frames: u64,
+    #[serde(rename = "micWavCreated")]
+    pub mic_wav_created: bool,
     #[serde(rename = "systemAudioIncludedInFinalMux")]
     pub system_audio_included_in_final_mux: bool,
     #[serde(rename = "finalMuxedPath")]
@@ -426,6 +441,32 @@ pub async fn start_native_recording(app: AppHandle, include_system_audio: bool, 
         let mic_device_id_for_start = microphone_device_id.clone();
         let (mic_audio_diagnostics, mic_audio) =
             start_and_accumulate_audio(include_microphone, move || crate::native_audio::start_microphone_capture(mic_device_id_for_start));
+
+        // THE CORE FIX. start_and_accumulate_audio absorbs a failed
+        // microphone start into diagnostics.audio_error and returns
+        // None for the source - previously the caller (here) just
+        // continued anyway, producing a recording that silently
+        // omitted the explicitly requested microphone while still
+        // reporting "recording started" normally. If microphone was
+        // requested and failed to start, abort here, before video
+        // acquisition even begins, rather than starting a recording
+        // that will not contain what the user asked for.
+        if include_microphone && mic_audio.is_none() {
+            if let Some(s) = &system_audio {
+                s.stop_flag.store(true, Ordering::SeqCst);
+            }
+            let device_context = microphone_device_id
+                .as_ref()
+                .map(|id| format!(" (device ID {id})"))
+                .unwrap_or_default();
+            return Ok(ProductionRecordingStartResult {
+                started: false,
+                start_error: Some(format!(
+                    "The selected microphone{device_context} could not be started: {}",
+                    mic_audio_diagnostics.audio_error.as_deref().unwrap_or("unknown error")
+                )),
+            });
+        }
 
         let primary_monitor = match Monitor::primary() {
             Ok(m) => m,
@@ -658,20 +699,85 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
             system_audio_diagnostics.frames_captured = chunks.iter().map(|c| c.frames as u64).sum();
             if !chunks.is_empty() {
                 let wav_path = output_dir.join(SOURCE_SYSTEM_AUDIO_FILE_NAME);
-                system_audio_wav_path =
+                let (path, _retained_frames, _has_signal) =
                     trim_and_write_audio(&chunks, &system_audio_diagnostics, origin, source.capture_start, window_end, &pause_snapshot, &wav_path);
+                system_audio_wav_path = path;
             }
         }
     }
 
     let mut mic_audio_wav_path: Option<PathBuf> = None;
+    let mut mic_retained_frames: u64 = 0;
     if let (Some(source), Some(origin)) = (mic_audio, first_frame_at) {
         if let Ok(chunks) = source.join_handle.join() {
             mic_audio_diagnostics.buffers_captured = chunks.len() as u32;
             mic_audio_diagnostics.frames_captured = chunks.iter().map(|c| c.frames as u64).sum();
+            mic_audio_diagnostics.wasapi_silent_packets = chunks.iter().filter(|c| c.wasapi_silent).count() as u32;
+            mic_audio_diagnostics.wasapi_silent_frames = chunks.iter().filter(|c| c.wasapi_silent).map(|c| c.frames as u64).sum();
             if !chunks.is_empty() {
                 let wav_path = output_dir.join(SOURCE_MIC_AUDIO_FILE_NAME);
-                mic_audio_wav_path = trim_and_write_audio(&chunks, &mic_audio_diagnostics, origin, source.capture_start, window_end, &pause_snapshot, &wav_path);
+                let (path, retained, has_signal) = trim_and_write_audio(&chunks, &mic_audio_diagnostics, origin, source.capture_start, window_end, &pause_snapshot, &wav_path);
+                mic_audio_wav_path = path;
+                mic_retained_frames = retained;
+                mic_audio_diagnostics.non_silent_signal_detected = has_signal;
+            }
+        }
+
+        // THE CORE FIX THIS ROUND. A non-empty, correctly-sized WAV
+        // is NOT sufficient evidence of successful microphone
+        // capture - it can be entirely composed of WASAPI-silent
+        // zero-filled packets (a real, observed failure mode: the
+        // endpoint initializes, WASAPI reports a stream, every packet
+        // is flagged silent, the previous round's fix correctly
+        // zero-filled those packets rather than trusting stale
+        // buffer content, but a WAV made entirely of zeros still
+        // passed every previous check - non-empty, correct size,
+        // real frame count). If microphone was requested, a real WAV
+        // was produced, but that WAV's own retained bytes contain no
+        // non-zero signal at all, this is now treated as a genuine
+        // microphone failure - not "recording succeeded, minus the
+        // microphone," and not silently muxed in as if it were real
+        // captured speech.
+        if mic_audio_diagnostics.audio_requested && mic_audio_wav_path.is_some() && !mic_audio_diagnostics.non_silent_signal_detected {
+            mic_audio_wav_path = None;
+            mic_audio_diagnostics.audio_error = Some(format!(
+                "The selected microphone initialized and captured {} frames, but the entire retained audio was silent (WASAPI reported {} of {} packets as silent) - no usable voice or sound was recorded from this microphone.",
+                mic_audio_diagnostics.frames_captured, mic_audio_diagnostics.wasapi_silent_packets, mic_audio_diagnostics.buffers_captured
+            ));
+        }
+
+        // PART 3/4 - VERIFY REAL PCM ARRIVED, NOT JUST THAT WASAPI
+        // INITIALIZED. Successful initialization (handled at start
+        // time, above) is necessary but not sufficient - the device
+        // could initialize cleanly and still deliver nothing usable
+        // (e.g. every packet flagged silent, a format mismatch that
+        // silently drops samples during trimming, or genuinely no
+        // sound reaching the endpoint). If microphone was requested
+        // and reached this point (meaning start-time initialization
+        // succeeded), but zero frames ended up retained, that is
+        // still a real microphone failure - explicitly reported here,
+        // not silently accepted as "recording succeeded, minus the
+        // microphone the user asked for."
+        if mic_audio_diagnostics.audio_requested && mic_audio_wav_path.is_none() && mic_audio_diagnostics.audio_error.is_none() {
+            mic_audio_diagnostics.audio_error = Some(format!(
+                "The selected microphone initialized successfully but no usable audio was captured ({} buffers, {} frames captured before trimming - all were outside the recording window, during a pause, or empty).",
+                mic_audio_diagnostics.buffers_captured, mic_audio_diagnostics.frames_captured
+            ));
+        }
+
+        // PART 4 - VERIFY THE WAV FILE ITSELF, NOT JUST THE PATH
+        // VARIABLE. trim_and_write_audio already only returns Some
+        // when it wrote real, non-empty PCM, but this double-checks
+        // the actual file on disk rather than trusting the in-memory
+        // path alone - defensive against any write-time failure that
+        // left a path assigned but no real usable file behind it.
+        if let Some(path) = &mic_audio_wav_path {
+            let file_ok = std::fs::metadata(path).map(|m| m.len() > 44).unwrap_or(false); // 44 bytes = bare WAV header, no payload
+            if !file_ok {
+                mic_audio_wav_path = None;
+                if mic_audio_diagnostics.audio_error.is_none() {
+                    mic_audio_diagnostics.audio_error = Some("The microphone WAV file was not created or contains no audio payload.".to_string());
+                }
             }
         }
     }
@@ -719,6 +825,8 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         system_audio: system_audio_diagnostics,
         mic_audio: mic_audio_diagnostics,
         mic_included_in_final_mux,
+        mic_retained_frames,
+        mic_wav_created: mic_audio_wav_path.is_some(),
         system_audio_included_in_final_mux,
         final_muxed_path,
         mux: mux_result,

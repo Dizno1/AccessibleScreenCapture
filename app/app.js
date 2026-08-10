@@ -1246,7 +1246,12 @@ async function startRecording() {
       if (!result.started) {
         console.error("Native recording could not start:", result.startError);
         logDebug(`app.js: native recording start FAILED: ${result.startError}`);
-        announce("recordingCouldNotStart");
+        // Speak the actual, specific reason (e.g. which microphone
+        // failed and why) rather than a generic "could not start" -
+        // a mic-selection failure previously only reached the
+        // console, leaving the user with no accessible explanation
+        // for why nothing happened.
+        announceRaw(result.startError || "Recording could not start.");
         setWorkflowLocked(false);
         return;
       }
