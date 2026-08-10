@@ -34,23 +34,24 @@ compliance case.
 
 ## Reproducibility - stated accurately
 
-The workflow uses BtbN's floating `latest` release alias, **which is
-NOT byte-for-byte reproducible** - the artifact behind that URL
-changes over time as BtbN's own daily build automation replaces it.
-This is acceptable for the current experimental build phase because
-the provider is explicit, the artifact family is explicit, and the
-checksum is verified on every single build (see below), so a
-corrupted or unexpectedly different download is always caught even
-though the exact bytes aren't pinned long-term. A specific retained
-dated/monthly release tag (e.g. `autobuild-YYYY-MM-DD-HH-MM`) can
-replace this URL later if strict reproducibility is required before a
-public release - not done in this pass, and not a tag this project
-has picked out yet.
+The workflow is pinned to a specific verified BtbN release tag,
+`autobuild-2026-08-09-13-03`, rather than the floating `latest`
+release alias. The floating alias was tried first, but returned a
+real HTTP 404 ("Not Found") during an actual GitHub Actions run -
+independent of the reproducibility tradeoff it was originally chosen
+for, it simply didn't reliably resolve. The pinned dated tag is more
+reproducible than the floating alias ever was (a dated release's
+assets aren't silently replaced by BtbN's own daily automation the
+way "latest" is) and, unlike the floating alias, actually works.
+BtbN's retention policy keeps the last 14 daily builds and the last
+build of each month for 2 years - if this specific tag is eventually
+pruned, update the release tag in the workflow step to a newer dated
+`autobuild-YYYY-MM-DD-HH-MM` release.
 
 ## Checksum verification
 
 BtbN publishes a machine-readable `checksums.sha256` manifest
-alongside every release, including the `latest` alias. The workflow
+alongside every release, including this pinned one. The workflow
 downloads it from the same release, computes the SHA-256 of the
 downloaded FFmpeg zip, and fails the build immediately if they don't
 match - the archive is never extracted or bundled unverified.
@@ -62,9 +63,9 @@ The workflow step is a normal PowerShell script in
 it does, and the same steps can be run manually if CI is ever
 unavailable: download `ffmpeg-master-latest-win64-lgpl.zip` and
 `checksums.sha256` from
-`github.com/BtbN/FFmpeg-Builds/releases/download/latest/`, verify the
-SHA-256 matches the manifest entry, extract it, find `ffmpeg.exe`
-inside, and copy it to
+`github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-09-13-03/`,
+verify the SHA-256 matches the manifest entry, extract it, find
+`ffmpeg.exe` inside, and copy it to
 `src-tauri/binaries/ffmpeg-<target-triple>.exe` (find the target
 triple via `rustc --print host-tuple`).
 

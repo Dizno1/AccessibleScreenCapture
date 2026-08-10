@@ -50,26 +50,38 @@ jobs:
         # operation this project performs) uses FFmpeg's own built-in
         # native encoder, present in this build too.
         #
-        # REPRODUCIBILITY - stated accurately, not oversold. This uses
-        # BtbN's floating "latest" release alias
-        # (github.com/BtbN/FFmpeg-Builds/releases/download/latest/...),
-        # which is NOT byte-for-byte reproducible - the artifact behind
-        # that URL changes over time as BtbN's own daily build
-        # automation replaces it. This is acceptable for the current
-        # experimental build phase because the provider is explicit,
-        # the artifact family is explicit, and - see below - the
-        # checksum is verified for every single build, so a corrupted
-        # or unexpectedly-swapped download is caught immediately even
-        # though the exact bytes aren't pinned long-term. A specific
-        # retained dated/monthly release tag can replace this URL
-        # later if strict reproducibility is required before a public
-        # release - not done in this pass.
+        # REPRODUCIBILITY - now pinned to a specific verified BtbN
+        # release tag, not the floating "latest" alias. The floating
+        # alias (github.com/BtbN/FFmpeg-Builds/releases/download/
+        # latest/...) returned HTTP 404 ("Not Found") during a real
+        # GitHub Actions run - BtbN's own floating alias evidently
+        # doesn't reliably resolve at all times, which is a genuine
+        # reliability problem independent of the reproducibility
+        # tradeoff that was previously (accurately) stated as the
+        # reason to prefer it. Pinned instead to
+        # autobuild-2026-08-09-13-03 - a specific, independently
+        # verified dated release (confirmed to exist, confirmed to
+        # publish the same ffmpeg-master-latest-win64-lgpl.zip
+        # filename and a checksums.sha256 manifest, both under this
+        # same dated tag - BtbN's master-branch autobuilds keep the
+        # "master-latest" filename convention on every dated release,
+        # not just the floating alias; only the release tag segment
+        # of the URL changes to pin a specific date). This is
+        # genuinely more reproducible than the floating alias (a
+        # dated tag's assets don't get silently replaced the way
+        # "latest" does) and, unlike "latest", actually works. BtbN's
+        # own retention policy keeps the last 14 daily builds, and the
+        # last build of each month for 2 years - this specific tag is
+        # very recent, so it will remain resolvable for a long time
+        # even under the short-term retention window; if it does
+        # eventually get pruned, this is the exact line to update to
+        # a newer dated tag.
         #
         # CHECKSUM: BtbN publishes a machine-readable checksums.sha256
-        # manifest alongside every release, including the "latest"
-        # alias. Downloaded from the same release and verified against
-        # the downloaded zip before extraction - the build fails if
-        # they don't match, rather than extracting an unverified file.
+        # manifest alongside every release, including this pinned one.
+        # Downloaded from the same release and verified against the
+        # downloaded zip before extraction - the build fails if they
+        # don't match, rather than extracting an unverified file.
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -90,7 +102,7 @@ jobs:
           }
           Write-Host "Determined target triple: $hostTuple"
 
-          $releaseBase = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest"
+          $releaseBase = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-09-13-03"
           $artifactName = "ffmpeg-master-latest-win64-lgpl.zip"
           $ffmpegUrl = "$releaseBase/$artifactName"
           $checksumUrl = "$releaseBase/checksums.sha256"
