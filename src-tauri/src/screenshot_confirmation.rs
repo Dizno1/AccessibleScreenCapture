@@ -103,8 +103,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": data_url,
-                    "detail": "low"
+                    "url": data_url
                 }
             },
             {
@@ -118,7 +117,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     let client = model
         .create_chat_client()
         .temperature(0.1)
-        .max_tokens(96);
+        .max_tokens(64);
 
     let response_result = client.complete_chat(&[user_message], None).await;
 

@@ -595,7 +595,7 @@ async function screenshotBlobToConfirmationBase64(blob) {
     // application/window and major visible content. Sending the full 2560x1600
     // capture can consume hundreds of thousands of visual tokens in a local VLM.
     // Bound the longest edge while preserving aspect ratio.
-    const maxEdge = 1280;
+    const maxEdge = 512;
     const scale = Math.min(1, maxEdge / Math.max(imageBitmap.width, imageBitmap.height));
     const width = Math.max(1, Math.round(imageBitmap.width * scale));
     const height = Math.max(1, Math.round(imageBitmap.height * scale));
@@ -617,7 +617,7 @@ async function screenshotBlobToConfirmationBase64(blob) {
           else reject(new Error("Screenshot Confirmation could not resize the screenshot."));
         },
         "image/jpeg",
-        0.82,
+        0.70,
       );
     });
 
