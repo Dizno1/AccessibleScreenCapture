@@ -587,6 +587,46 @@ function blobToBase64(blob) {
   });
 }
 
+
+async function screenshotBlobToConfirmationBase64(blob) {
+  const imageBitmap = await createImageBitmap(blob);
+  try {
+    // Screenshot Confirmation only needs enough detail to identify the main
+    // application/window and major visible content. Sending the full 2560x1600
+    // capture can consume hundreds of thousands of visual tokens in a local VLM.
+    // Bound the longest edge while preserving aspect ratio.
+    const maxEdge = 1280;
+    const scale = Math.min(1, maxEdge / Math.max(imageBitmap.width, imageBitmap.height));
+    const width = Math.max(1, Math.round(imageBitmap.width * scale));
+    const height = Math.max(1, Math.round(imageBitmap.height * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) {
+      throw new Error("Screenshot Confirmation could not prepare the screenshot image.");
+    }
+
+    context.drawImage(imageBitmap, 0, 0, width, height);
+
+    const resizedBlob = await new Promise((resolve, reject) => {
+      canvas.toBlob(
+        (result) => {
+          if (result) resolve(result);
+          else reject(new Error("Screenshot Confirmation could not resize the screenshot."));
+        },
+        "image/jpeg",
+        0.82,
+      );
+    });
+
+    return blobToBase64(resizedBlob);
+  } finally {
+    imageBitmap.close();
+  }
+}
+
 function base64ToBlob(base64, mimeType) {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -878,7 +918,7 @@ async function confirmPendingScreenshot() {
     "Preparing private Screenshot Confirmation. The first use may download a local vision model and can take several minutes. The screenshot stays on this computer.";
 
   try {
-    const dataBase64 = await blobToBase64(pendingCapture.blob);
+    const dataBase64 = await screenshotBlobToConfirmationBase64(pendingCapture.blob);
     const description = await confirmScreenshotLocal(dataBase64);
     screenshotConfirmationStatus.textContent = "Screenshot Confirmation complete.";
     screenshotConfirmationText.textContent = description;

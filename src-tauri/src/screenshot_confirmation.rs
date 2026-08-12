@@ -92,7 +92,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         .await
         .map_err(|error| format!("The private Screenshot Confirmation model could not be loaded: {error}"))?;
 
-    let data_url = format!("data:image/png;base64,{data_base64}");
+    let data_url = format!("data:image/jpeg;base64,{data_base64}");
 
     // Foundry Local's chat client follows the OpenAI chat-completion message
     // shape. Constructing the multimodal message through serde keeps this code
@@ -103,7 +103,8 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
             {
                 "type": "image_url",
                 "image_url": {
-                    "url": data_url
+                    "url": data_url,
+                    "detail": "low"
                 }
             },
             {
@@ -117,7 +118,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     let client = model
         .create_chat_client()
         .temperature(0.1)
-        .max_tokens(120);
+        .max_tokens(96);
 
     let response_result = client.complete_chat(&[user_message], None).await;
 
