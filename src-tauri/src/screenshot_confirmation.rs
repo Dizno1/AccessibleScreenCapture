@@ -34,8 +34,20 @@ pub async fn confirm_screenshot_local(data_base64: String) -> Result<String, Str
         return Err("The screenshot is too large for Screenshot Confirmation.".to_string());
     }
 
+    let foundry_library_dir = tauri::path::resource_dir()
+        .map_err(|error| format!("Screenshot Confirmation could not locate application resources: {error}"))?
+        .join("foundry-local");
+
+    if !foundry_library_dir.join("Microsoft.AI.Foundry.Local.Core.dll").is_file() {
+        return Err(format!(
+            "Private Screenshot Confirmation runtime is missing from the installation: {}",
+            foundry_library_dir.display()
+        ));
+    }
+
     let manager = FoundryLocalManager::create(
         FoundryLocalConfig::new("accessible_screen_capture_screenshot_confirmation")
+            .library_path(&foundry_library_dir)
     )
     .map_err(|error| format!("Private Screenshot Confirmation could not start: {error}"))?;
 

@@ -164,7 +164,7 @@ The `docs/` folder contains design history, roadmap material, screen-reader-firs
 
 ## Completed functionality
 
-AccessibleScreenCapture 2.0.0 is the completed free, non-editing recorder.
+AccessibleScreenCapture 2.1.0 Beta is the completed free, non-editing recorder.
 
 Current 2.0.0 functionality includes:
 
@@ -189,7 +189,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture 2.0.0**.
+The current release candidate is **AccessibleScreenCapture 2.1.0 Beta**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 

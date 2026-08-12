@@ -178,4 +178,4 @@ Folded Check Capture Readiness's kind of information (target, system audio state
 
 A prototype branch can add an on-demand **Confirm Screenshot** control to Review Capture. It uses Microsoft Foundry Local with the `qwen3.5-vision` model so the screenshot remains on the user's computer. The requested output is intentionally short: identify the main application/window and principal visible content, with obvious cropping or an unintended foreground window called out when apparent.
 
-This is experimental work and is not part of the AccessibleScreenCapture 2.0.0 release.
+This experimental Screenshot Confirmation work is the focus of AccessibleScreenCapture 2.1.0 Beta.

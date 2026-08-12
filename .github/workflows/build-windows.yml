@@ -164,6 +164,53 @@ jobs:
           "Resolved dependency tree for image:" | Out-File -FilePath dependency-resolution.txt -Append -Encoding utf8
           cargo tree --manifest-path src-tauri/Cargo.toml -i image 2>&1 | Tee-Object -FilePath dependency-resolution.txt -Append
 
+      - name: Stage Foundry Local native runtime for Tauri
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # foundry-local-sdk's build.rs downloads the exact native Core/WinML
+          # libraries selected by Cargo into its OUT_DIR. Force that build script
+          # to run now, then stage those resolved DLLs as Tauri resources.
+          cargo check --manifest-path src-tauri/Cargo.toml
+
+          $buildRoot = "src-tauri/target/debug/build"
+          if (-not (Test-Path $buildRoot)) {
+            throw "Cargo build output was not found at $buildRoot."
+          }
+
+          $coreDll = Get-ChildItem -Path $buildRoot -Filter "Microsoft.AI.Foundry.Local.Core.dll" -Recurse |
+            Where-Object { $_.FullName -match '\\out\\' } |
+            Sort-Object LastWriteTime -Descending |
+            Select-Object -First 1
+
+          if (-not $coreDll) {
+            throw "Microsoft.AI.Foundry.Local.Core.dll was not found in the foundry-local-sdk Cargo OUT_DIR after cargo check."
+          }
+
+          $nativeDir = $coreDll.Directory.FullName
+          Write-Host "Found Foundry Local native runtime at $nativeDir"
+
+          $resourceDir = "src-tauri/resources/foundry-local"
+          New-Item -ItemType Directory -Force -Path $resourceDir | Out-Null
+          Remove-Item -Path (Join-Path $resourceDir "*") -Force -Recurse -ErrorAction SilentlyContinue
+
+          $dlls = @(Get-ChildItem -Path $nativeDir -Filter "*.dll" -File)
+          if ($dlls.Count -eq 0) {
+            throw "No Foundry Local native DLLs were found beside Microsoft.AI.Foundry.Local.Core.dll."
+          }
+
+          foreach ($dll in $dlls) {
+            Copy-Item -Path $dll.FullName -Destination $resourceDir -Force
+            Write-Host "Staged Foundry runtime DLL: $($dll.Name)"
+          }
+
+          if (-not (Test-Path (Join-Path $resourceDir "Microsoft.AI.Foundry.Local.Core.dll"))) {
+            throw "Foundry Local Core DLL was not staged successfully."
+          }
+
+          Write-Host "Foundry Local runtime staged for the Tauri installer."
+
       - name: Build Windows application for manual run
         if: github.event_name == 'workflow_dispatch'
         uses: tauri-apps/tauri-action@v0
