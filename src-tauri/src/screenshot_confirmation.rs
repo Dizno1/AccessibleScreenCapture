@@ -2,7 +2,7 @@
 //!
 //! This module deliberately uses Foundry Local rather than a cloud API.
 //! The screenshot stays on the user's computer. On first use, Foundry
-//! Local may download the qwen3.5-vision model; later confirmations use
+//! Local may download the qwen3-vl-2b-instruct model; later confirmations use
 //! the locally cached model.
 //!
 //! The goal is deliberately narrow: tell a blind user whether the
@@ -14,7 +14,7 @@ use foundry_local_sdk::{
 };
 use serde_json::json;
 
-const MODEL_ALIAS: &str = "qwen3.5-vision";
+const MODEL_ALIAS: &str = "qwen3-vl-2b-instruct";
 const CONFIRMATION_PROMPT: &str = concat!(
     "Help a blind user confirm whether this screenshot captured what they intended. ",
     "In one or two short sentences, identify the main application or window and the ",
