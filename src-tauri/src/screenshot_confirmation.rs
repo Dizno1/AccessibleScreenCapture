@@ -8,6 +8,7 @@
 //! The goal is deliberately narrow: tell a blind user whether the
 //! screenshot appears to contain what they intended to capture.
 
+use tauri::{Manager, path::BaseDirectory};
 use foundry_local_sdk::{
     ChatCompletionRequestMessage, FoundryLocalConfig, FoundryLocalManager,
 };
@@ -23,7 +24,7 @@ const CONFIRMATION_PROMPT: &str = concat!(
 );
 
 #[tauri::command]
-pub async fn confirm_screenshot_local(data_base64: String) -> Result<String, String> {
+pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String) -> Result<String, String> {
     if data_base64.trim().is_empty() {
         return Err("Screenshot Confirmation did not receive image data.".to_string());
     }
@@ -34,11 +35,27 @@ pub async fn confirm_screenshot_local(data_base64: String) -> Result<String, Str
         return Err("The screenshot is too large for Screenshot Confirmation.".to_string());
     }
 
-    let foundry_library_dir = tauri::path::resource_dir()
-        .map_err(|error| format!("Screenshot Confirmation could not locate application resources: {error}"))?
-        .join("foundry-local");
+    let core_dll_path = app
+        .path()
+        .resolve(
+            "resources/foundry-local/Microsoft.AI.Foundry.Local.Core.dll",
+            BaseDirectory::Resource,
+        )
+        .map_err(|error| {
+            format!(
+                "Screenshot Confirmation could not locate its private local runtime: {error}"
+            )
+        })?;
 
-    if !foundry_library_dir.join("Microsoft.AI.Foundry.Local.Core.dll").is_file() {
+    let foundry_library_dir = core_dll_path
+        .parent()
+        .ok_or_else(|| {
+            "Screenshot Confirmation could not determine the Foundry Local runtime directory."
+                .to_string()
+        })?
+        .to_path_buf();
+
+    if !core_dll_path.is_file() {
         return Err(format!(
             "Private Screenshot Confirmation runtime is missing from the installation: {}",
             foundry_library_dir.display()
