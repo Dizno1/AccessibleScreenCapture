@@ -25,6 +25,16 @@ jobs:
         with:
           node-version: 22
 
+      - name: Prepare frontend distribution
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          node scripts/prepare-dist.js
+          if (-not (Test-Path "dist/index.html")) {
+            throw "Frontend preparation failed: dist/index.html was not created."
+          }
+          Write-Host "Frontend distribution prepared successfully."
+
       - name: Prepare ffmpeg sidecar for Tauri
         # Native A/V muxing needs a real static LGPL ffmpeg.exe at the
         # exact Tauri sidecar path before either Windows build path runs.
