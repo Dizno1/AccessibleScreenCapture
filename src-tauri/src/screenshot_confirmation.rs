@@ -129,7 +129,8 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
                 }
             ],
             "max_output_tokens": 64,
-            "temperature": 0.1
+            "temperature": 0.1,
+            "stream": true
         });
 
         let http = reqwest::Client::builder()
@@ -152,39 +153,102 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
             })?;
 
         let status = response.status();
-        let body: serde_json::Value = response
-            .json()
+        let response_text = response
+            .text()
             .await
             .map_err(|error| format!("Screenshot Confirmation received an unreadable local response: {error}"))?;
 
         if !status.is_success() {
-            let detail = body
-                .pointer("/error/message")
-                .and_then(|value| value.as_str())
-                .unwrap_or("The local vision service rejected the request.");
+            // Foundry Local error bodies are normally JSON even when the request
+            // asked for streaming. Preserve the actual message when available.
+            let detail = serde_json::from_str::<serde_json::Value>(&response_text)
+                .ok()
+                .and_then(|body| {
+                    body.pointer("/error/message")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| {
+                    let trimmed = response_text.trim();
+                    if trimmed.is_empty() {
+                        "The local vision service rejected the request.".to_string()
+                    } else {
+                        trimmed.chars().take(500).collect()
+                    }
+                });
             return Err(format!("Private Screenshot Confirmation failed: {detail}"));
         }
 
-        fn find_output_text(value: &serde_json::Value) -> Option<&str> {
-            if value.get("type").and_then(|v| v.as_str()) == Some("output_text") {
-                if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
-                    return Some(text);
-                }
+        // Microsoft's current Qwen vision sample uses stream=True and consumes
+        // response.output_text.delta events. Parse that exact SSE shape rather
+        // than guessing at a non-stream response object.
+        let mut description = String::new();
+        let mut completed = false;
+
+        for line in response_text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with(':') {
+                continue;
             }
-            match value {
-                serde_json::Value::Array(items) => items.iter().find_map(find_output_text),
-                serde_json::Value::Object(map) => map.values().find_map(find_output_text),
-                _ => None,
+
+            let Some(data) = line.strip_prefix("data:") else {
+                continue;
+            };
+            let data = data.trim();
+
+            if data == "[DONE]" {
+                completed = true;
+                break;
+            }
+
+            let Ok(event) = serde_json::from_str::<serde_json::Value>(data) else {
+                continue;
+            };
+
+            match event.get("type").and_then(|value| value.as_str()) {
+                Some("response.output_text.delta") => {
+                    if let Some(delta) = event.get("delta").and_then(|value| value.as_str()) {
+                        description.push_str(delta);
+                    }
+                }
+                Some("response.completed") => {
+                    completed = true;
+
+                    // Some Foundry Local builds may place completed output in the
+                    // final response object even after emitting deltas. Use it
+                    // only if no delta text has been accumulated.
+                    if description.trim().is_empty() {
+                        if let Some(text) = event
+                            .pointer("/response/output/0/content/0/text")
+                            .and_then(|value| value.as_str())
+                        {
+                            description.push_str(text);
+                        }
+                    }
+                }
+                Some("response.failed") => {
+                    let message = event
+                        .pointer("/response/error/message")
+                        .and_then(|value| value.as_str())
+                        .or_else(|| event.pointer("/error/message").and_then(|value| value.as_str()))
+                        .unwrap_or("The local vision model reported a failed response.");
+                    return Err(format!("Private Screenshot Confirmation failed: {message}"));
+                }
+                _ => {}
             }
         }
 
-        let description = body
-            .get("output_text")
-            .and_then(|value| value.as_str())
-            .or_else(|| find_output_text(&body))
-            .map(str::trim)
-            .filter(|text| !text.is_empty())
-            .ok_or_else(|| "Private Screenshot Confirmation returned no description.".to_string())?;
+        let description = description.trim();
+        if description.is_empty() {
+            let completion_note = if completed {
+                "The local vision model completed but produced no text."
+            } else {
+                "The local vision service returned no output-text events."
+            };
+            return Err(format!(
+                "Private Screenshot Confirmation returned no description. {completion_note}"
+            ));
+        }
 
         Ok(description.to_string())
     }

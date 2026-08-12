@@ -829,13 +829,19 @@ function showReview(capture) {
   // position at the top of the page. Defer until the newly unhidden section
   // has been laid out, then reinforce focus once after the WebView settles.
   requestAnimationFrame(() => {
-    reviewHeading.scrollIntoView({ block: "start" });
-    reviewHeading.focus({ preventScroll: false });
+    const reviewFocusTarget =
+      capture.kind === "screenshot" ? confirmScreenshotButton : reviewHeading;
+
+    reviewFocusTarget.scrollIntoView({ block: "center" });
+    reviewFocusTarget.focus({ preventScroll: false });
+
+    // WebView2/JAWS can announce a newly revealed region without moving the
+    // virtual cursor. Reinforce focus on a real interactive control for
+    // screenshots after the WebView settles so arrow navigation starts in
+    // Review Capture instead of at the top of the page.
     setTimeout(() => {
-      if (document.activeElement !== reviewHeading) {
-        reviewHeading.focus({ preventScroll: false });
-      }
-    }, 75);
+      reviewFocusTarget.focus({ preventScroll: false });
+    }, 125);
   });
 }
 
