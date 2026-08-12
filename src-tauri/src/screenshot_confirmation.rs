@@ -9,9 +9,8 @@
 //! screenshot appears to contain what they intended to capture.
 
 use tauri::{Manager, path::BaseDirectory};
-use foundry_local_sdk::{
-    ChatCompletionRequestMessage, FoundryLocalConfig, FoundryLocalManager,
-};
+use foundry_local_sdk::{FoundryLocalConfig, FoundryLocalManager};
+use std::time::Duration;
 use serde_json::json;
 
 const MODEL_ALIAS: &str = "qwen3-vl-2b-instruct";
@@ -92,49 +91,108 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         .await
         .map_err(|error| format!("The private Screenshot Confirmation model could not be loaded: {error}"))?;
 
-    let data_url = format!("data:image/jpeg;base64,{data_base64}");
+    // Microsoft's current Foundry Local vision sample uses the embedded local
+    // web service and the Responses API with input_image/image_data. The native
+    // ChatClient image_url path previously produced pathological visual-token
+    // counts and ONNX attention allocations for this model, so do not use it.
+    manager
+        .start_web_service()
+        .await
+        .map_err(|error| format!("Private Screenshot Confirmation could not start its local inference service: {error}"))?;
 
-    // Foundry Local's chat client follows the OpenAI chat-completion message
-    // shape. Constructing the multimodal message through serde keeps this code
-    // tied to that documented wire shape rather than builder-version details.
-    let user_message: ChatCompletionRequestMessage = serde_json::from_value(json!({
-        "role": "user",
-        "content": [
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": data_url
+    let inference_result: Result<String, String> = async {
+        let urls = manager
+            .urls()
+            .map_err(|error| format!("Screenshot Confirmation could not locate its local inference service: {error}"))?;
+        let endpoint = urls
+            .first()
+            .ok_or_else(|| "Screenshot Confirmation local inference service returned no endpoint.".to_string())?
+            .trim_end_matches('/');
+
+        let request_body = json!({
+            "model": model.id(),
+            "input": [
+                {
+                    "type": "message",
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "input_text",
+                            "text": CONFIRMATION_PROMPT
+                        },
+                        {
+                            "type": "input_image",
+                            "image_data": data_base64,
+                            "media_type": "image/jpeg"
+                        }
+                    ]
                 }
-            },
-            {
-                "type": "text",
-                "text": CONFIRMATION_PROMPT
+            ],
+            "max_output_tokens": 64,
+            "temperature": 0.1
+        });
+
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(90))
+            .build()
+            .map_err(|error| format!("Screenshot Confirmation could not create its local request: {error}"))?;
+
+        let response = http
+            .post(format!("{endpoint}/v1/responses"))
+            .header("Authorization", "Bearer notneeded")
+            .json(&request_body)
+            .send()
+            .await
+            .map_err(|error| {
+                if error.is_timeout() {
+                    "Private Screenshot Confirmation timed out after 90 seconds. The screenshot remains available to save or discard.".to_string()
+                } else {
+                    format!("Private Screenshot Confirmation local request failed: {error}")
+                }
+            })?;
+
+        let status = response.status();
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|error| format!("Screenshot Confirmation received an unreadable local response: {error}"))?;
+
+        if !status.is_success() {
+            let detail = body
+                .pointer("/error/message")
+                .and_then(|value| value.as_str())
+                .unwrap_or("The local vision service rejected the request.");
+            return Err(format!("Private Screenshot Confirmation failed: {detail}"));
+        }
+
+        fn find_output_text(value: &serde_json::Value) -> Option<&str> {
+            if value.get("type").and_then(|v| v.as_str()) == Some("output_text") {
+                if let Some(text) = value.get("text").and_then(|v| v.as_str()) {
+                    return Some(text);
+                }
             }
-        ]
-    }))
-    .map_err(|error| format!("Screenshot Confirmation could not prepare the image request: {error}"))?;
+            match value {
+                serde_json::Value::Array(items) => items.iter().find_map(find_output_text),
+                serde_json::Value::Object(map) => map.values().find_map(find_output_text),
+                _ => None,
+            }
+        }
 
-    let client = model
-        .create_chat_client()
-        .temperature(0.1)
-        .max_tokens(64);
+        let description = body
+            .get("output_text")
+            .and_then(|value| value.as_str())
+            .or_else(|| find_output_text(&body))
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .ok_or_else(|| "Private Screenshot Confirmation returned no description.".to_string())?;
 
-    let response_result = client.complete_chat(&[user_message], None).await;
+        Ok(description.to_string())
+    }
+    .await;
 
-    // Do not keep a multi-gigabyte vision model resident after a one-shot
-    // confirmation. Failure to unload should not erase a successful result.
+    // Always release the service/model, including timeout and error paths.
+    let _ = manager.stop_web_service().await;
     let _ = model.unload().await;
 
-    let response = response_result
-        .map_err(|error| format!("Private Screenshot Confirmation failed: {error}"))?;
-
-    let description = response
-        .choices
-        .first()
-        .and_then(|choice| choice.message.content.as_deref())
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .ok_or_else(|| "Private Screenshot Confirmation returned no description.".to_string())?;
-
-    Ok(description.to_string())
+    inference_result
 }

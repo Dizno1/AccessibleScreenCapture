@@ -822,7 +822,21 @@ function showReview(capture) {
   }
 
   reviewSection.hidden = false;
-  reviewHeading.focus();
+
+  // Move real DOM focus and the screen-reader reading position into Review
+  // Capture after the app is brought forward by a global capture shortcut.
+  // A single immediate focus() was announced by JAWS but left its reading
+  // position at the top of the page. Defer until the newly unhidden section
+  // has been laid out, then reinforce focus once after the WebView settles.
+  requestAnimationFrame(() => {
+    reviewHeading.scrollIntoView({ block: "start" });
+    reviewHeading.focus({ preventScroll: false });
+    setTimeout(() => {
+      if (document.activeElement !== reviewHeading) {
+        reviewHeading.focus({ preventScroll: false });
+      }
+    }, 75);
+  });
 }
 
 function hideReview() {
