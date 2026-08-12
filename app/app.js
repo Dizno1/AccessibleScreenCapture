@@ -6,6 +6,7 @@ import {
   isTauri,
   isAppFocused,
   nativeScreenshot,
+  confirmScreenshotLocal,
   nativeSave,
   onGlobalShortcut,
   showMainWindow,
@@ -53,6 +54,12 @@ const pauseResumeButton = document.getElementById("pause-resume-button");
 const reviewSection = document.getElementById("review-section");
 const reviewHeading = document.getElementById("review-heading");
 const reviewPreview = document.getElementById("review-preview");
+const screenshotConfirmationControls = document.getElementById("screenshot-confirmation-controls");
+const confirmScreenshotButton = document.getElementById("confirm-screenshot-button");
+const screenshotConfirmationStatus = document.getElementById("screenshot-confirmation-status");
+const screenshotConfirmationResult = document.getElementById("screenshot-confirmation-result");
+const screenshotConfirmationHeading = document.getElementById("screenshot-confirmation-heading");
+const screenshotConfirmationText = document.getElementById("screenshot-confirmation-text");
 const saveButton = document.getElementById("save-button");
 const discardButton = document.getElementById("discard-button");
 const recentList = document.getElementById("recent-captures-list");
@@ -750,6 +757,12 @@ function showReview(capture) {
   reviewPreview.innerHTML = "";
   reviewObjectUrl = URL.createObjectURL(capture.blob);
 
+  screenshotConfirmationStatus.textContent = "";
+  screenshotConfirmationText.textContent = "";
+  screenshotConfirmationResult.hidden = true;
+  screenshotConfirmationControls.hidden = capture.kind !== "screenshot";
+  confirmScreenshotButton.disabled = false;
+
   if (capture.kind === "screenshot") {
     const img = document.createElement("img");
     img.src = reviewObjectUrl;
@@ -775,6 +788,10 @@ function showReview(capture) {
 function hideReview() {
   reviewSection.hidden = true;
   reviewPreview.innerHTML = "";
+  screenshotConfirmationControls.hidden = true;
+  screenshotConfirmationStatus.textContent = "";
+  screenshotConfirmationText.textContent = "";
+  screenshotConfirmationResult.hidden = true;
   revokeReviewObjectUrl();
   pendingCapture = null;
   diagnostics.pendingCaptureState = "Empty";
@@ -850,6 +867,33 @@ async function saveRecordingChunked(capture) {
   }
 }
 
+
+async function confirmPendingScreenshot() {
+  if (!pendingCapture || pendingCapture.kind !== "screenshot") return;
+
+  confirmScreenshotButton.disabled = true;
+  screenshotConfirmationResult.hidden = true;
+  screenshotConfirmationText.textContent = "";
+  screenshotConfirmationStatus.textContent =
+    "Preparing private Screenshot Confirmation. The first use may download a local vision model and can take several minutes. The screenshot stays on this computer.";
+
+  try {
+    const dataBase64 = await blobToBase64(pendingCapture.blob);
+    const description = await confirmScreenshotLocal(dataBase64);
+    screenshotConfirmationStatus.textContent = "Screenshot Confirmation complete.";
+    screenshotConfirmationText.textContent = description;
+    screenshotConfirmationResult.hidden = false;
+    screenshotConfirmationHeading.focus();
+  } catch (error) {
+    console.error("Screenshot Confirmation failed:", error);
+    const message = String(error?.message || error || "Screenshot Confirmation failed.");
+    screenshotConfirmationStatus.textContent = message;
+    announceRaw(message);
+  } finally {
+    confirmScreenshotButton.disabled = false;
+  }
+}
+
 async function saveCapture(capture) {
   logDebug(
     `saveCapture: kind=${capture.kind}, blobSize=${capture.blob.size}, blobType=${capture.blob.type}, filename=${capture.suggestedName}`
@@ -917,6 +961,11 @@ async function performSave(capture) {
     return { ok: false, canceled: false };
   }
 }
+
+
+confirmScreenshotButton.addEventListener("click", () => {
+  confirmPendingScreenshot();
+});
 
 saveButton.addEventListener("click", async () => {
   if (!pendingCapture) return;

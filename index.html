@@ -33,6 +33,7 @@
         <li>Alt+Ctrl+X checks capture readiness.</li>
         <li>These shortcuts work anywhere in Windows, not only while AccessibleScreenCapture has focus. Ordinary application controls are also available for the same actions.</li>
         <li>After a screenshot or recording, the result is available in Review Capture - Save Capture keeps it, Discard Capture removes it without saving.</li>
+        <li>For screenshots, Confirm Screenshot can privately identify the main window and content to help verify that the intended image was captured.</li>
         <li>Recording Options determine whether system audio and microphone audio are included in a recording.</li>
         <li>Recording status feedback in Recording Options controls whether recording started, paused, resumed, and stopped are spoken, played as a sound, or silent.</li>
         <li>Keyboard shortcuts can be customized further down the page, in Keyboard Shortcuts.</li>
@@ -116,6 +117,15 @@
     <h2 id="review-heading" tabindex="-1">Review Capture</h2>
 
     <div id="review-preview"></div>
+
+    <div id="screenshot-confirmation-controls" hidden>
+      <button type="button" id="confirm-screenshot-button" class="secondary-button">Confirm Screenshot</button>
+      <p id="screenshot-confirmation-status" class="section-hint" role="status" aria-live="polite"></p>
+      <div id="screenshot-confirmation-result" hidden>
+        <h3 id="screenshot-confirmation-heading" tabindex="-1">Screenshot Confirmation</h3>
+        <p id="screenshot-confirmation-text"></p>
+      </div>
+    </div>
 
     <div class="review-actions">
       <button type="button" id="save-button" class="primary-button">Save Capture</button>

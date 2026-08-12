@@ -19,6 +19,10 @@ export async function nativeScreenshot() {
   return invoke("take_native_screenshot");
 }
 
+export async function confirmScreenshotLocal(dataBase64) {
+  return invoke("confirm_screenshot_local", { dataBase64 });
+}
+
 export async function nativeSave(dataBase64, suggestedName, extension, filterName) {
   return invoke("save_capture_native", {
     dataBase64,

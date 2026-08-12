@@ -18,6 +18,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 use tauri_plugin_notification::NotificationExt;
 
+mod screenshot_confirmation;
 mod capture_context;
 mod debug_log;
 mod descriptor;
@@ -38,6 +39,7 @@ use native_recording::{pause_native_recording, resume_native_recording, start_na
 use native_speech::{get_speech_voices, speak_status, test_speech_voice};
 use native_audio::list_native_microphones;
 use output_settings::{get_output_settings, set_instructions_expanded, set_microphone_device, set_recording_status_feedback, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice, set_speech_volume};
+use screenshot_confirmation::confirm_screenshot_local;
 use recording_save::{
     abort_recording_save, append_recording_chunk, begin_recording_save, finish_recording_save,
     RecordingSaveState,
@@ -712,6 +714,7 @@ pub fn run() {
             set_shortcut,
             reset_shortcuts,
             take_native_screenshot,
+            confirm_screenshot_local,
             save_capture_native,
             notify,
             hide_to_tray,

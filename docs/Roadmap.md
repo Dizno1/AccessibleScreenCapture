@@ -172,3 +172,10 @@ Folded Check Capture Readiness's kind of information (target, system audio state
 - **Neither fix has been through a real Windows build.** The `windows_subsystem` attribute is a standard, extremely well-documented one-line fix with very low risk of a compiler surprise; the focus-ordering change is pure JavaScript. Both are lower-risk than most Rust changes made in this project, but "lower risk" isn't "verified."
 - **The duplicate-window diagnosis is a strong, well-evidenced explanation** (matches every symptom, confirmed no console output exists to explain a non-blank alternative), not something reproduced on a real machine.
 - **System audio still requires the WebView's own "Also share system audio" toggle** - the guidance around that was strengthened (folded into the combined pre-recording announcement) but the underlying two-step confirmation wasn't eliminated, since doing so requires the native capture work explicitly deferred above.
+
+
+## Screenshot Confirmation prototype
+
+A prototype branch can add an on-demand **Confirm Screenshot** control to Review Capture. It uses Microsoft Foundry Local with the `qwen3.5-vision` model so the screenshot remains on the user's computer. The requested output is intentionally short: identify the main application/window and principal visible content, with obvious cropping or an unintended foreground window called out when apparent.
+
+This is experimental work and is not part of the AccessibleScreenCapture 2.0.0 release.
