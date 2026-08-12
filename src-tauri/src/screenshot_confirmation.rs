@@ -64,7 +64,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
 
     let manager = FoundryLocalManager::create(
         FoundryLocalConfig::new("accessible_screen_capture_screenshot_confirmation")
-            .library_path(&foundry_library_dir)
+            .library_path(foundry_library_dir.to_string_lossy().into_owned())
     )
     .map_err(|error| format!("Private Screenshot Confirmation could not start: {error}"))?;
 
