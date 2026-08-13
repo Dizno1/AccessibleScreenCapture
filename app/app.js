@@ -595,7 +595,7 @@ async function screenshotBlobToConfirmationBase64(blob) {
     // application/window and major visible content. Sending the full 2560x1600
     // capture can consume hundreds of thousands of visual tokens in a local VLM.
     // Bound the longest edge while preserving aspect ratio.
-    const maxEdge = 512;
+    const maxEdge = 256;
     const scale = Math.min(1, maxEdge / Math.max(imageBitmap.width, imageBitmap.height));
     const width = Math.max(1, Math.round(imageBitmap.width * scale));
     const height = Math.max(1, Math.round(imageBitmap.height * scale));
@@ -832,22 +832,29 @@ function showReview(capture) {
     const reviewFocusTarget =
       capture.kind === "screenshot" ? confirmScreenshotButton : reviewHeading;
 
+    // JAWS/WebView2 proved that DOM focus alone can announce Review Capture
+    // while leaving the virtual cursor at the top of the document. Fragment
+    // navigation moves the document reading position to the Review heading.
+    if (capture.kind === "screenshot") {
+      window.location.hash = "review-heading";
+    }
+
     reviewFocusTarget.scrollIntoView({ block: "center" });
     reviewFocusTarget.focus({ preventScroll: false });
 
-    // WebView2/JAWS can announce a newly revealed region without moving the
-    // virtual cursor. Reinforce focus on a real interactive control for
-    // screenshots after the WebView settles so arrow navigation starts in
-    // Review Capture instead of at the top of the page.
     setTimeout(() => {
       reviewFocusTarget.focus({ preventScroll: false });
-    }, 125);
+    }, 150);
   });
 }
 
 function hideReview() {
   reviewSection.hidden = true;
   reviewPreview.innerHTML = "";
+
+  if (window.location.hash === "#review-heading") {
+    history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  }
   screenshotConfirmationControls.hidden = true;
   screenshotConfirmationStatus.textContent = "";
   screenshotConfirmationText.textContent = "";

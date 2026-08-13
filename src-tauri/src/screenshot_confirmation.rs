@@ -14,13 +14,8 @@ use std::time::Duration;
 use serde_json::json;
 
 const MODEL_ALIAS: &str = "qwen3-vl-2b-instruct";
-const CONFIRMATION_PROMPT: &str = concat!(
-    "Help a blind user confirm whether this screenshot captured what they intended. ",
-    "In one or two short sentences, identify the main application or window and the ",
-    "principal visible content. Mention obvious cropping, an unintended foreground ",
-    "window, or a dialog covering the likely target if apparent. ",
-    "Do not give a detailed image description. Do not speculate about content that is not visible."
-);
+const CONFIRMATION_PROMPT: &str =
+    "Name the main window and visible content. Mention obvious cropping.";
 
 #[tauri::command]
 pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String) -> Result<String, String> {
@@ -128,7 +123,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
                     ]
                 }
             ],
-            "max_output_tokens": 64,
+            "max_output_tokens": 32,
             "temperature": 0.1,
             "stream": true
         });
