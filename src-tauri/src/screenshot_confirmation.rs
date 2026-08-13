@@ -33,8 +33,8 @@
 //! "Prepare llama-server sidecar for Tauri" GitHub Actions steps) -
 //! not a new, unproven packaging mechanism.
 //!
-//! MODEL - SmolVLM 500M Instruct (ggml-org/SmolVLM-500M-it-GGUF, Q4_K_M
-//! quantization, ~2.5GB), Apache 2.0 licensed and legally
+//! MODEL - SmolVLM 500M Instruct using the matching Q8_0 GGUF model
+//! and multimodal projector, Apache 2.0 licensed and legally
 //! redistributable. This is llama.cpp's own official example model
 //! for multimodal usage (shown directly in its docs as the default
 //! `-hf` example for both llama-mtmd-cli and llama-server), not a
@@ -77,7 +77,7 @@ const MODEL_FILE_NAME: &str = "SmolVLM-500M-Instruct-Q8_0.gguf";
 const MMPROJ_FILE_NAME: &str = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
 const MODEL_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
 const MMPROJ_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
-const CONFIRMATION_PROMPT: &str = "In one or two short sentences, name the main application window and the visible content. Mention if a dialog or another window is covering most of the screen.";
+const CONFIRMATION_PROMPT: &str = "Confirm what this desktop screenshot contains for a blind user. Identify the application or interface only when visible evidence supports it. Distinguish browser content, browser Developer Tools, spreadsheets, File Explorer, dialogs, and other application windows. Read a prominent visible product, page, tab, or window name when legible. Then give one short sentence about the main visible content. Do not guess: if the application or page cannot be identified reliably, say that it is unclear instead of inventing one.";
 const SERVER_PORT: u16 = 8734;
 const SERVER_READY_TIMEOUT_SECS: u64 = 180;
 const INFERENCE_TIMEOUT_SECS: u64 = 30;
@@ -582,7 +582,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
             }
         ],
         "max_tokens": MAX_OUTPUT_TOKENS,
-        "temperature": 0.2,
+        "temperature": 0.0,
         "stream": false
     });
 
