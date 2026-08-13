@@ -33,7 +33,7 @@
 //! "Prepare llama-server sidecar for Tauri" GitHub Actions steps) -
 //! not a new, unproven packaging mechanism.
 //!
-//! MODEL - Gemma 3 4B Instruct (ggml-org/gemma-3-4b-it-GGUF, Q4_K_M
+//! MODEL - SmolVLM 500M Instruct (ggml-org/SmolVLM-500M-it-GGUF, Q4_K_M
 //! quantization, ~2.5GB), Apache 2.0 licensed and legally
 //! redistributable. This is llama.cpp's own official example model
 //! for multimodal usage (shown directly in its docs as the default
@@ -71,10 +71,10 @@ use tauri_plugin_shell::process::CommandEvent;
 use tokio::io::AsyncWriteExt;
 use tauri_plugin_shell::ShellExt;
 
-const MODEL_FILE_NAME: &str = "gemma-3-4b-it-Q4_K_M.gguf";
-const MMPROJ_FILE_NAME: &str = "mmproj-model-f16.gguf";
-const MODEL_URL: &str = "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf?download=true";
-const MMPROJ_URL: &str = "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/mmproj-model-f16.gguf?download=true";
+const MODEL_FILE_NAME: &str = "SmolVLM-500M-Instruct-Q8_0.gguf";
+const MMPROJ_FILE_NAME: &str = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
+const MODEL_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
+const MMPROJ_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
 const CONFIRMATION_PROMPT: &str = "In one or two short sentences, name the main application window and the visible content. Mention if a dialog or another window is covering most of the screen.";
 const SERVER_PORT: u16 = 8734;
 const SERVER_READY_TIMEOUT_SECS: u64 = 180;
@@ -297,7 +297,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         emit_progress(
             &app,
             "downloading",
-            "Private Screenshot Confirmation requires a one-time local download of about 3.4 GB. The screenshot itself is never uploaded.",
+            "Private Screenshot Confirmation requires a one-time local download of about 550 MB. The screenshot itself is never uploaded.",
         );
 
         if !model_present {
@@ -408,7 +408,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     emit_progress(&app, "confirming", "Screenshot Confirmation is analyzing the screenshot.");
 
     let request_body = json!({
-        "model": "gemma-3-4b-it",
+        "model": "SmolVLM-500M-it",
         "messages": [
             {
                 "role": "user",
