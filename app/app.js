@@ -983,7 +983,12 @@ async function confirmPendingScreenshot() {
 
   try {
     const dataBase64 = await screenshotBlobToConfirmationBase64(pendingCapture.blob);
-    const description = await confirmScreenshotLocal(dataBase64);
+    const captureContext = pendingCapture.captureContext || null;
+    const description = await confirmScreenshotLocal(
+      dataBase64,
+      captureContext?.appName || null,
+      captureContext?.windowTitle || null,
+    );
     screenshotConfirmationStatus.textContent = "Screenshot Confirmation complete.";
     screenshotConfirmationText.textContent = description;
     screenshotConfirmationResult.hidden = false;
@@ -1202,12 +1207,19 @@ function announceScreenshotCaptured() {
 }
 
 async function captureScreenshotNative() {
-  if (isTauri && descriptorEnabled) {
+  let captureContext = null;
+
+  if (isTauri) {
     try {
-      const context = await getContextAndMarkReported();
-      announceRaw(composeContextDescription(context), true);
+      captureContext = descriptorEnabled
+        ? await getContextAndMarkReported()
+        : await getCaptureContext();
+
+      if (descriptorEnabled) {
+        announceRaw(composeContextDescription(captureContext), true);
+      }
     } catch (error) {
-      console.error("Could not report descriptor context at capture time:", error);
+      console.error("Could not get foreground-window context at capture time:", error);
     }
   }
 
@@ -1222,6 +1234,7 @@ async function captureScreenshotNative() {
   showReview({
     kind: "screenshot",
     blob,
+    captureContext,
     suggestedName: `Screenshot - ${timestampForFilename()}.png`,
   });
 }

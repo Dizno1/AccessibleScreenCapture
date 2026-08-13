@@ -280,7 +280,12 @@ async fn download_with_progress(
 
 
 #[tauri::command]
-pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String) -> Result<String, String> {
+pub async fn confirm_screenshot_local(
+    app: tauri::AppHandle,
+    data_base64: String,
+    capture_app_name: Option<String>,
+    capture_window_title: Option<String>,
+) -> Result<String, String> {
     if data_base64.trim().is_empty() {
         return Err("Screenshot Confirmation did not receive image data.".to_string());
     }
@@ -570,13 +575,40 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     emit_progress(&app, "ready", "Private Screenshot Confirmation model is ready.");
     emit_progress(&app, "confirming", "Screenshot Confirmation is analyzing the screenshot.");
 
+    let capture_app = capture_app_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let capture_title = capture_window_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+
+    let context_prompt = match (capture_app, capture_title) {
+        (Some(app_name), Some(window_title)) => format!(
+            "{CONFIRMATION_PROMPT}\n\nReliable Windows capture metadata: the foreground application was \"{app_name}\" and its window title was \"{window_title}\". The screenshot captures the entire primary monitor, so other windows may also be visible. Use this metadata as a strong identification anchor, while describing only what the screenshot actually shows."
+        ),
+        (Some(app_name), None) => format!(
+            "{CONFIRMATION_PROMPT}\n\nReliable Windows capture metadata: the foreground application was \"{app_name}\". The screenshot captures the entire primary monitor. Use this metadata as a strong identification anchor."
+        ),
+        _ => CONFIRMATION_PROMPT.to_string(),
+    };
+
+    debug_log::log(
+        &app,
+        &format!(
+            "Screenshot Confirmation: capture metadata app={:?}, title={:?}",
+            capture_app, capture_title
+        ),
+    );
+
     let request_body = json!({
         "model": "SmolVLM-500M-it",
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    { "type": "text", "text": CONFIRMATION_PROMPT },
+                    { "type": "text", "text": context_prompt },
                     { "type": "image_url", "image_url": { "url": format!("data:image/jpeg;base64,{data_base64}") } }
                 ]
             }
