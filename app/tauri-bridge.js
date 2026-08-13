@@ -23,6 +23,10 @@ export async function confirmScreenshotLocal(dataBase64) {
   return invoke("confirm_screenshot_local", { dataBase64 });
 }
 
+export async function onScreenshotConfirmationProgress(handler) {
+  return window.__TAURI__.event.listen("screenshot-confirmation-progress", (event) => handler(event.payload));
+}
+
 export async function nativeSave(dataBase64, suggestedName, extension, filterName) {
   return invoke("save_capture_native", {
     dataBase64,

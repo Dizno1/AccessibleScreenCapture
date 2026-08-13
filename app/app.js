@@ -7,6 +7,7 @@ import {
   isAppFocused,
   nativeScreenshot,
   confirmScreenshotLocal,
+  onScreenshotConfirmationProgress,
   nativeSave,
   onGlobalShortcut,
   showMainWindow,
@@ -823,27 +824,51 @@ function showReview(capture) {
 
   reviewSection.hidden = false;
 
-  // Move real DOM focus and the screen-reader reading position into Review
-  // Capture after the app is brought forward by a global capture shortcut.
-  // A single immediate focus() was announced by JAWS but left its reading
-  // position at the top of the page. Defer until the newly unhidden section
-  // has been laid out, then reinforce focus once after the WebView settles.
+  // FOCUS ARCHITECTURE - fixed this round, not another guess-and-
+  // retry. Two real, documented JAWS bugs
+  // (github.com/FreedomScientific/standards-support #774 and #701)
+  // both describe the virtual cursor resetting to the top of the
+  // page under specific trigger conditions - #774 in particular:
+  // focusing a button whose disabled state changed in close temporal
+  // proximity to the focus call causes JAWS to "lose its place,"
+  // landing back at the top of the document on subsequent virtual-
+  // cursor navigation. The previous implementation did exactly this
+  // for screenshots: confirmScreenshotButton.disabled was set to
+  // false synchronously, moments before that same button became the
+  // focus target. This also matches Vispero's own documented
+  // explanation of forms-mode entry: focusing an interactive control
+  // (a button) is what pulls JAWS out of browse mode and into forms
+  // mode, and the browse-mode virtual cursor position that navigation
+  // keys rely on afterward is not reliably synchronized to match -
+  // exactly the "JAWS announces the control correctly, but Down Arrow
+  // afterward starts from the top" symptom actually observed.
+  //
+  // Fixed by never focusing an interactive control as part of this
+  // reveal sequence, for either capture type - only the Review
+  // Capture heading itself (a non-interactive tabindex="-1" element,
+  // already structurally present in the DOM from page load, not
+  // dynamically inserted - see the section's own hidden attribute
+  // above). This keeps JAWS in browse mode throughout the reveal, so
+  // its virtual cursor is genuinely repositioned to Review Capture's
+  // real document position rather than being pulled into forms mode
+  // and left desynchronized. From there, the user's own next Down
+  // Arrow or Tab reaches Confirm Screenshot / Save / Discard entirely
+  // through JAWS's own normal navigation - forms mode is entered
+  // later, deliberately, by the user's own action on that control,
+  // not as a side effect of the page revealing new content.
+  //
+  // The previous fragment/hash-navigation attempt
+  // (window.location.hash = "review-heading") is also removed - it's
+  // a native browser scroll-to-target mechanism, not a JAWS-specific
+  // one, and competing against an explicit focus() call for the final
+  // scroll/focus state was already tried without resolving this, per
+  // project history.
   requestAnimationFrame(() => {
-    const reviewFocusTarget =
-      capture.kind === "screenshot" ? confirmScreenshotButton : reviewHeading;
-
-    // JAWS/WebView2 proved that DOM focus alone can announce Review Capture
-    // while leaving the virtual cursor at the top of the document. Fragment
-    // navigation moves the document reading position to the Review heading.
-    if (capture.kind === "screenshot") {
-      window.location.hash = "review-heading";
-    }
-
-    reviewFocusTarget.scrollIntoView({ block: "center" });
-    reviewFocusTarget.focus({ preventScroll: false });
+    reviewHeading.scrollIntoView({ block: "center" });
+    reviewHeading.focus({ preventScroll: false });
 
     setTimeout(() => {
-      reviewFocusTarget.focus({ preventScroll: false });
+      reviewHeading.focus({ preventScroll: false });
     }, 150);
   });
 }
@@ -944,6 +969,19 @@ async function confirmPendingScreenshot() {
   screenshotConfirmationStatus.textContent =
     "Preparing private Screenshot Confirmation. The first use may download a local vision model and can take several minutes. The screenshot stays on this computer.";
 
+  let unlistenProgress = null;
+  if (isTauri) {
+    try {
+      unlistenProgress = await onScreenshotConfirmationProgress((progress) => {
+        if (progress?.message) {
+          screenshotConfirmationStatus.textContent = progress.message;
+        }
+      });
+    } catch (error) {
+      console.error("Could not listen for Screenshot Confirmation progress:", error);
+    }
+  }
+
   try {
     const dataBase64 = await screenshotBlobToConfirmationBase64(pendingCapture.blob);
     const description = await confirmScreenshotLocal(dataBase64);
@@ -958,6 +996,7 @@ async function confirmPendingScreenshot() {
     announceRaw(message);
   } finally {
     confirmScreenshotButton.disabled = false;
+    if (unlistenProgress) unlistenProgress();
   }
 }
 

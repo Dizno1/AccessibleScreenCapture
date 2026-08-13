@@ -41,7 +41,8 @@
     "category": "Utility",
     "shortDescription": "Accessible screen capture for Windows.",
     "externalBin": [
-      "binaries/ffmpeg"
+      "binaries/ffmpeg",
+      "binaries/llama-server"
     ],
     "longDescription": "Screenshot and screen recording tool designed from the ground up for keyboard and screen reader users, with native system audio capture.",
     "icon": [
@@ -54,9 +55,6 @@
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
-    },
-    "resources": [
-      "resources/foundry-local/*"
-    ]
+    }
   }
 }

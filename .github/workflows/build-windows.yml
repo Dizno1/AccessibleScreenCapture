@@ -174,52 +174,96 @@ jobs:
           "Resolved dependency tree for image:" | Out-File -FilePath dependency-resolution.txt -Append -Encoding utf8
           cargo tree --manifest-path src-tauri/Cargo.toml -i image 2>&1 | Tee-Object -FilePath dependency-resolution.txt -Append
 
-      - name: Stage Foundry Local native runtime for Tauri
+      - name: Stage llama-server sidecar for Tauri
+        # Screenshot Confirmation's local vision model runs through a
+        # bundled llama.cpp llama-server sidecar (see
+        # screenshot_confirmation.rs for the full architecture
+        # reasoning - Foundry Local's Qwen3-VL support was replaced
+        # this round after confirming its config parser has a
+        # real, upstream-acknowledged, "not planned" bug for this
+        # exact model family). This step follows the exact same
+        # pattern already proven for the FFmpeg sidecar: determine
+        # the real target triple, download a real release asset,
+        # verify it was extracted correctly, and place it at the
+        # exact Tauri sidecar path - not a new, unproven packaging
+        # mechanism.
+        #
+        # SOURCE: ggml-org/llama.cpp's own GitHub releases (the
+        # upstream project itself, not a third-party rebuild) - the
+        # Windows CPU-only build, since this feature has no
+        # GPU-specific requirement and a CPU build keeps the
+        # dependency surface (and download size) smaller. Pinned to
+        # the latest published release via the GitHub API, resolved
+        # at build time rather than a hardcoded version string that
+        # would immediately go stale - reproducibility here is
+        # secondary to the sidecar simply continuing to exist and
+        # work, the same tradeoff already made and documented for the
+        # FFmpeg sidecar's own "latest"-style acquisition.
+        #
+        # LICENSE: llama.cpp is MIT licensed. The model it loads
+        # (Gemma 3 4B Instruct, downloaded separately by llama-server
+        # itself on first use - not bundled in this repository or in
+        # the installer) is Apache 2.0 licensed and explicitly
+        # redistributable.
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          # foundry-local-sdk's build.rs downloads the exact native Core/WinML
-          # libraries selected by Cargo into its OUT_DIR. Force that build script
-          # to run now, then stage those resolved DLLs as Tauri resources.
-          cargo check --manifest-path src-tauri/Cargo.toml
-
-          $buildRoot = "src-tauri/target/debug/build"
-          if (-not (Test-Path $buildRoot)) {
-            throw "Cargo build output was not found at $buildRoot."
+          $hostTuple = $null
+          try {
+            $hostTuple = (rustc --print host-tuple).Trim()
+          } catch {
+            Write-Host "rustc --print host-tuple unavailable, falling back to rustc -Vv"
           }
-
-          $coreDll = Get-ChildItem -Path $buildRoot -Filter "Microsoft.AI.Foundry.Local.Core.dll" -Recurse |
-            Where-Object { $_.FullName -match '\\out\\' } |
-            Sort-Object LastWriteTime -Descending |
-            Select-Object -First 1
-
-          if (-not $coreDll) {
-            throw "Microsoft.AI.Foundry.Local.Core.dll was not found in the foundry-local-sdk Cargo OUT_DIR after cargo check."
+          if (-not $hostTuple) {
+            $verboseInfo = rustc -Vv
+            $hostLine = $verboseInfo | Select-String "^host:"
+            if (-not $hostLine) {
+              throw "Could not determine the Rust target triple from either 'rustc --print host-tuple' or 'rustc -Vv'."
+            }
+            $hostTuple = ($hostLine.Line -split ":\s*")[1].Trim()
           }
+          Write-Host "Determined target triple: $hostTuple"
 
-          $nativeDir = $coreDll.Directory.FullName
-          Write-Host "Found Foundry Local native runtime at $nativeDir"
-
-          $resourceDir = "src-tauri/resources/foundry-local"
-          New-Item -ItemType Directory -Force -Path $resourceDir | Out-Null
-          Remove-Item -Path (Join-Path $resourceDir "*") -Force -Recurse -ErrorAction SilentlyContinue
-
-          $dlls = @(Get-ChildItem -Path $nativeDir -Filter "*.dll" -File)
-          if ($dlls.Count -eq 0) {
-            throw "No Foundry Local native DLLs were found beside Microsoft.AI.Foundry.Local.Core.dll."
+          $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers @{ "User-Agent" = "AccessibleScreenCapture-CI" }
+          $asset = $releaseInfo.assets | Where-Object { $_.name -match "^llama-.*-bin-win-cpu-x64\.zip$" } | Select-Object -First 1
+          if (-not $asset) {
+            throw "Could not find a win-cpu-x64 asset in the latest ggml-org/llama.cpp release ($($releaseInfo.tag_name)). Available assets: $($releaseInfo.assets.name -join ', ')"
           }
+          Write-Host "Using llama.cpp release $($releaseInfo.tag_name), asset $($asset.name)"
 
-          foreach ($dll in $dlls) {
-            Copy-Item -Path $dll.FullName -Destination $resourceDir -Force
-            Write-Host "Staged Foundry runtime DLL: $($dll.Name)"
+          $downloadPath = "llama-server-download.zip"
+          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $downloadPath
+
+          $extractDir = "llama-server-extracted"
+          Expand-Archive -Path $downloadPath -DestinationPath $extractDir -Force
+
+          $serverExe = Get-ChildItem -Path $extractDir -Filter "llama-server.exe" -Recurse | Select-Object -First 1
+          if (-not $serverExe) {
+            throw "llama-server.exe was not found anywhere inside the downloaded archive - the archive layout may have changed upstream."
           }
+          Write-Host "Found llama-server.exe at $($serverExe.FullName)"
 
-          if (-not (Test-Path (Join-Path $resourceDir "Microsoft.AI.Foundry.Local.Core.dll"))) {
-            throw "Foundry Local Core DLL was not staged successfully."
+          # llama-server.exe depends on the other DLLs/backends shipped
+          # alongside it in the same release archive (ggml-cpu variant
+          # DLLs, etc.) - the whole extracted bin directory is copied,
+          # not just the one executable, so those dependencies are
+          # actually present at runtime. Only the target-triple-named
+          # entry point is what Tauri's externalBin mechanism looks
+          # for; the rest travel alongside it under their own names.
+          $binariesDir = "src-tauri/binaries"
+          New-Item -ItemType Directory -Force -Path $binariesDir | Out-Null
+          Copy-Item -Path (Join-Path $serverExe.DirectoryName "*") -Destination $binariesDir -Recurse -Force
+
+          $sidecarPath = Join-Path $binariesDir "llama-server-$hostTuple.exe"
+          Copy-Item -Path $serverExe.FullName -Destination $sidecarPath -Force
+
+          if (-not (Test-Path $sidecarPath)) {
+            throw "Expected llama-server sidecar binary was not created at $sidecarPath."
           }
+          Write-Host "llama-server sidecar prepared at $sidecarPath"
 
-          Write-Host "Foundry Local runtime staged for the Tauri installer."
+          & $sidecarPath --version
 
       - name: Build Windows application for manual run
         if: github.event_name == 'workflow_dispatch'

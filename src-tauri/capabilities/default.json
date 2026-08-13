@@ -38,6 +38,11 @@
           "name": "binaries/ffmpeg",
           "sidecar": true,
           "args": true
+        },
+        {
+          "name": "binaries/llama-server",
+          "sidecar": true,
+          "args": true
         }
       ]
     }
