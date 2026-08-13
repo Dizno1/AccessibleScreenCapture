@@ -257,13 +257,29 @@ jobs:
 
           # Tauri externalBin only guarantees packaging of the target-triple
           # executable. The DLLs copied above are separately declared as bundle
-          # resources in tauri.conf.json and installed under llama-runtime/.
-          # screenshot_confirmation.rs adds that directory to the sidecar's PATH.
+          # resources in tauri.conf.json and installed into the resource root
+          # beside the sidecar. screenshot_confirmation.rs also puts that same
+          # directory on PATH for normal Windows DLL dependency resolution.
           $runtimeDlls = Get-ChildItem -Path $binariesDir -Filter "*.dll" -File
           if (-not $runtimeDlls -or $runtimeDlls.Count -eq 0) {
             throw "The llama.cpp Windows CPU archive contained no companion DLLs. Refusing to build a sidecar that would fail with STATUS_DLL_NOT_FOUND."
           }
-          Write-Host "Staged $($runtimeDlls.Count) llama.cpp runtime DLL(s) for Tauri resource bundling:"
+
+          # Modern llama.cpp CPU releases use dynamically loaded GGML backends.
+          # A server can start successfully yet fail every model with
+          # "no backends are loaded" if the CPU backend DLLs are not installed
+          # beside llama-server.exe. Require both the core runtime and at least
+          # one CPU backend before allowing an installer to be produced.
+          $cpuBackendDlls = @($runtimeDlls | Where-Object { $_.Name -match '^ggml-cpu.*\.dll$' })
+          if ($cpuBackendDlls.Count -eq 0) {
+            throw "The selected llama.cpp archive contains no ggml-cpu*.dll backend. Refusing to build Screenshot Confirmation without a CPU inference backend."
+          }
+          $llamaDll = @($runtimeDlls | Where-Object { $_.Name -eq 'llama.dll' })
+          if ($llamaDll.Count -eq 0) {
+            throw "The selected llama.cpp archive contains no llama.dll. Refusing to build an incomplete runtime."
+          }
+
+          Write-Host "Staged $($runtimeDlls.Count) llama.cpp runtime DLL(s), including $($cpuBackendDlls.Count) CPU backend DLL(s):"
           $runtimeDlls | ForEach-Object { Write-Host "  $($_.Name)" }
 
           $sidecarPath = Join-Path $binariesDir "llama-server-$hostTuple.exe"

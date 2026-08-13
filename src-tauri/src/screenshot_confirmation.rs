@@ -297,19 +297,18 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         .sidecar("llama-server")
         .map_err(|error| format!("Screenshot Confirmation could not locate its private local runtime: {error}"))?;
 
-    // The official llama.cpp Windows CPU release is a dynamic build. Its
-    // llama-server.exe depends on companion DLLs (ggml/llama/OpenMP backends)
-    // that are shipped in the same upstream ZIP. Tauri externalBin bundles the
-    // executable, but it does not automatically bundle those neighboring DLLs.
-    // They are therefore bundled explicitly as resources under llama-runtime
-    // and added to the child process PATH before CreateProcess starts the
-    // sidecar. Without this, Windows exits llama-server immediately with
-    // 0xC0000135 (STATUS_DLL_NOT_FOUND), before stdout/stderr can be produced.
+    // The official llama.cpp Windows CPU release uses dynamically loaded GGML
+    // backends. Those backend DLLs must remain beside llama-server.exe, not in
+    // a separate resource subdirectory. The loader discovers CPU variants from
+    // the executable directory; PATH alone is not sufficient for backend
+    // discovery. Tauri therefore installs every DLL from the matching upstream
+    // archive into the resource root beside the sidecar. This fixes both the
+    // earlier STATUS_DLL_NOT_FOUND startup failure and the later
+    // "no backends are loaded" model-loading failure.
     let llama_runtime_dir = app
         .path()
         .resource_dir()
-        .map_err(|error| format!("Screenshot Confirmation could not resolve its local runtime directory: {error}"))?
-        .join("llama-runtime");
+        .map_err(|error| format!("Screenshot Confirmation could not resolve its local runtime directory: {error}"))?;
 
     let mut llama_child_path = std::ffi::OsString::from(&llama_runtime_dir);
     if let Some(existing_path) = std::env::var_os("PATH") {
