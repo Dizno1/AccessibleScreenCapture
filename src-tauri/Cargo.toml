@@ -10,7 +10,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-tokio = { version = "1", features = ["time"] }
+tokio = { version = "1", features = ["time", "fs", "io-util"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "2"
 # For the ffmpeg sidecar used to mux native video + WASAPI audio

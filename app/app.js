@@ -967,7 +967,7 @@ async function confirmPendingScreenshot() {
   screenshotConfirmationResult.hidden = true;
   screenshotConfirmationText.textContent = "";
   screenshotConfirmationStatus.textContent =
-    "Preparing private Screenshot Confirmation. The first use may download a local vision model and can take several minutes. The screenshot stays on this computer.";
+    "Preparing private Screenshot Confirmation. If the local model is not installed yet, real download progress will be announced. The screenshot stays on this computer.";
 
   let unlistenProgress = null;
   if (isTauri) {

@@ -64,17 +64,22 @@
 
 use serde::Serialize;
 use serde_json::json;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_shell::process::CommandEvent;
+use tokio::io::AsyncWriteExt;
 use tauri_plugin_shell::ShellExt;
 
-const MODEL_REPO: &str = "ggml-org/gemma-3-4b-it-GGUF";
+const MODEL_FILE_NAME: &str = "gemma-3-4b-it-Q4_K_M.gguf";
+const MMPROJ_FILE_NAME: &str = "mmproj-model-f16.gguf";
+const MODEL_URL: &str = "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/gemma-3-4b-it-Q4_K_M.gguf?download=true";
+const MMPROJ_URL: &str = "https://huggingface.co/ggml-org/gemma-3-4b-it-GGUF/resolve/main/mmproj-model-f16.gguf?download=true";
 const CONFIRMATION_PROMPT: &str = "In one or two short sentences, name the main application window and the visible content. Mention if a dialog or another window is covering most of the screen.";
-const SERVER_PORT: u16 = 8734; // an arbitrary high port, unlikely to collide with anything else running locally
-const SERVER_READY_TIMEOUT_SECS: u64 = 600; // generous - covers first-use model download, which can take several minutes depending on connection speed
-const INFERENCE_TIMEOUT_SECS: u64 = 30; // well above the ~2-15s target once the model is already loaded, well below "leave the user waiting indefinitely"
-const MAX_OUTPUT_TOKENS: u32 = 120; // enough for one or two real sentences, not a long description
+const SERVER_PORT: u16 = 8734;
+const SERVER_READY_TIMEOUT_SECS: u64 = 180;
+const INFERENCE_TIMEOUT_SECS: u64 = 30;
+const MAX_OUTPUT_TOKENS: u32 = 120;
 
 #[derive(Serialize, Clone)]
 struct ConfirmationProgress {
@@ -92,21 +97,164 @@ fn emit_progress(app: &AppHandle, stage: &str, message: &str) {
     );
 }
 
-fn percentage_from_output(text: &str) -> Option<u8> {
-    for token in text.split_whitespace() {
-        let cleaned = token.trim_matches(|c: char| {
-            !(c.is_ascii_digit() || c == '.' || c == '%')
-        });
-        if let Some(number) = cleaned.strip_suffix('%') {
-            if let Ok(value) = number.parse::<f32>() {
-                if (0.0..=100.0).contains(&value) {
-                    return Some(value.floor() as u8);
-                }
+
+fn partial_path(path: &Path) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("download")
+        .to_string();
+    name.push_str(".part");
+    path.with_file_name(name)
+}
+
+async fn remote_content_length(client: &reqwest::Client, url: &str) -> Result<Option<u64>, String> {
+    let response = client
+        .head(url)
+        .send()
+        .await
+        .map_err(|error| format!("Could not check Screenshot Confirmation download size: {error}"))?;
+
+    if response.status().is_success() {
+        Ok(response.content_length())
+    } else {
+        Ok(None)
+    }
+}
+
+async fn download_with_progress(
+    app: &AppHandle,
+    client: &reqwest::Client,
+    url: &str,
+    destination: &Path,
+    label: &str,
+) -> Result<(), String> {
+    let expected = remote_content_length(client, url).await?;
+
+    if destination.is_file() {
+        if let (Some(expected_bytes), Ok(metadata)) = (expected, std::fs::metadata(destination)) {
+            if metadata.len() == expected_bytes {
+                return Ok(());
             }
+        } else if expected.is_none() {
+            return Ok(());
         }
     }
-    None
+
+    let partial = partial_path(destination);
+    let mut existing = tokio::fs::metadata(&partial)
+        .await
+        .map(|metadata| metadata.len())
+        .unwrap_or(0);
+
+    let mut request = client.get(url);
+    if existing > 0 {
+        request = request.header(reqwest::header::RANGE, format!("bytes={existing}-"));
+    }
+
+    let mut response = request
+        .send()
+        .await
+        .map_err(|error| format!("{label} download could not start: {error}"))?;
+
+    let append = response.status() == reqwest::StatusCode::PARTIAL_CONTENT && existing > 0;
+
+    if !append {
+        existing = 0;
+        if partial.exists() {
+            let _ = tokio::fs::remove_file(&partial).await;
+        }
+    }
+
+    if !response.status().is_success()
+        && response.status() != reqwest::StatusCode::PARTIAL_CONTENT
+    {
+        return Err(format!(
+            "{label} download failed with HTTP status {}.",
+            response.status()
+        ));
+    }
+
+    let remaining = response.content_length();
+    let total = if append {
+        remaining.map(|value| value + existing).or(expected)
+    } else {
+        remaining.or(expected)
+    };
+
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(append)
+        .truncate(!append)
+        .open(&partial)
+        .await
+        .map_err(|error| format!("{label} download file could not be opened: {error}"))?;
+
+    let mut downloaded = existing;
+    let mut last_bucket: i16 = -1;
+    let mut last_time_status = tokio::time::Instant::now();
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("{label} download was interrupted: {error}"))?
+    {
+        file.write_all(&chunk)
+            .await
+            .map_err(|error| format!("{label} download could not be written to disk: {error}"))?;
+
+        downloaded += chunk.len() as u64;
+
+        if let Some(total_bytes) = total {
+            if total_bytes > 0 {
+                let percent = ((downloaded.saturating_mul(100)) / total_bytes).min(100) as u8;
+                let bucket = ((percent / 10) * 10).min(100);
+                if bucket >= 10 && i16::from(bucket) > last_bucket {
+                    last_bucket = i16::from(bucket);
+                    emit_progress(
+                        app,
+                        "downloading",
+                        &format!("{label}: {bucket} percent downloaded."),
+                    );
+                }
+            }
+        } else if last_time_status.elapsed() >= Duration::from_secs(60) {
+            last_time_status = tokio::time::Instant::now();
+            let mb = downloaded / (1024 * 1024);
+            emit_progress(
+                app,
+                "downloading",
+                &format!("{label}: {mb} MB downloaded."),
+            );
+        }
+    }
+
+    file.flush()
+        .await
+        .map_err(|error| format!("{label} download could not be finalized: {error}"))?;
+    drop(file);
+
+    if let Some(total_bytes) = total {
+        if downloaded != total_bytes {
+            return Err(format!(
+                "{label} download ended early: received {downloaded} of {total_bytes} bytes."
+            ));
+        }
+    }
+
+    if destination.exists() {
+        let _ = tokio::fs::remove_file(destination).await;
+    }
+
+    tokio::fs::rename(&partial, destination)
+        .await
+        .map_err(|error| format!("{label} download could not be finalized: {error}"))?;
+
+    emit_progress(app, "downloading", &format!("{label}: download complete."));
+    Ok(())
 }
+
 
 #[tauri::command]
 pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String) -> Result<String, String> {
@@ -126,40 +274,76 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         .sidecar("llama-server")
         .map_err(|error| format!("Screenshot Confirmation could not locate its private local runtime: {error}"))?;
 
-    // A dedicated cache directory within the app's own config
-    // directory (the same directory this app already uses
-    // extensively elsewhere - output_settings.rs, native_recording.rs
-    // - a confirmed-working path resolver, not a new one), rather
-    // than relying on llama-server's own default cache location -
-    // keeps the downloaded model file in a predictable, app-managed
-    // place that survives a reinstall/update without needing to
-    // redownload. HF_HOME is the standard environment variable the
-    // wider Hugging Face tooling ecosystem uses for this, which
-    // llama.cpp's own -hf downloader is built to be compatible with.
     let cache_dir = app
         .path()
         .app_config_dir()
         .map_err(|error| format!("Screenshot Confirmation could not resolve its model cache directory: {error}"))?
         .join("screenshot-confirmation-model-cache");
-    std::fs::create_dir_all(&cache_dir).map_err(|error| format!("Screenshot Confirmation could not create its model cache directory: {error}"))?;
+    std::fs::create_dir_all(&cache_dir)
+        .map_err(|error| format!("Screenshot Confirmation could not create its model cache directory: {error}"))?;
 
-    let model_already_cached = cache_dir.read_dir().map(|mut entries| entries.next().is_some()).unwrap_or(false);
-    if !model_already_cached {
+    let model_path = cache_dir.join(MODEL_FILE_NAME);
+    let mmproj_path = cache_dir.join(MMPROJ_FILE_NAME);
+
+    let download_client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|error| format!("Screenshot Confirmation could not create its download client: {error}"))?;
+
+    let model_present = model_path.is_file();
+    let mmproj_present = mmproj_path.is_file();
+
+    if !model_present || !mmproj_present {
         emit_progress(
             &app,
             "downloading",
-            "Downloading the private Screenshot Confirmation model. This is a one-time download of approximately 2.5 GB. Progress will be announced at major milestones. The screenshot itself is never uploaded.",
+            "Private Screenshot Confirmation requires a one-time local download of about 3.4 GB. The screenshot itself is never uploaded.",
         );
-    } else {
-        emit_progress(&app, "starting", "Starting Screenshot Confirmation.");
+
+        if !model_present {
+            emit_progress(&app, "downloading", "Downloading private Screenshot Confirmation model, file 1 of 2.");
+            download_with_progress(
+                &app,
+                &download_client,
+                MODEL_URL,
+                &model_path,
+                "Model file",
+            )
+            .await?;
+        }
+
+        if !mmproj_present {
+            emit_progress(&app, "downloading", "Downloading private vision component, file 2 of 2.");
+            download_with_progress(
+                &app,
+                &download_client,
+                MMPROJ_URL,
+                &mmproj_path,
+                "Vision component",
+            )
+            .await?;
+        }
     }
 
+    emit_progress(&app, "loading", "Loading private Screenshot Confirmation model.");
+
     let port_str = SERVER_PORT.to_string();
+    let model_arg = model_path.to_string_lossy().to_string();
+    let mmproj_arg = mmproj_path.to_string_lossy().to_string();
 
     let (mut rx, child) = sidecar
-        .env("LLAMA_CACHE", cache_dir.to_string_lossy().to_string())
-        .env("HF_HOME", cache_dir.to_string_lossy().to_string())
-        .args(["-hf", MODEL_REPO, "--host", "127.0.0.1", "--port", &port_str, "--ctx-size", "4096"])
+        .args([
+            "-m",
+            model_arg.as_str(),
+            "--mmproj",
+            mmproj_arg.as_str(),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            port_str.as_str(),
+            "--ctx-size",
+            "4096",
+        ])
         .spawn()
         .map_err(|error| format!("Private Screenshot Confirmation could not start: {error}"))?;
 
@@ -186,58 +370,9 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     }
     let _guard = KillOnDrop(Some(child));
 
-    // Drain stdout/stderr continuously so the child can never block on a
-    // full pipe. During first use, llama-server's Hugging Face downloader
-    // prints transfer progress to its console. Convert that into deliberately
-    // sparse screen-reader status: at most one announcement per 10-percent
-    // milestone. Exact raw output remains an implementation detail.
-    let progress_app = app.clone();
-    let download_expected = !model_already_cached;
+    // Drain stdout/stderr continuously so llama-server cannot block on a full pipe.
     tauri::async_runtime::spawn(async move {
-        let mut last_announced_bucket: i16 = -1;
-        let mut loading_announced = false;
-
-        while let Some(event) = rx.recv().await {
-            let bytes = match event {
-                CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => bytes,
-                _ => continue,
-            };
-
-            let text = String::from_utf8_lossy(&bytes);
-            let lower = text.to_ascii_lowercase();
-
-            if download_expected {
-                if let Some(percent) = percentage_from_output(&text) {
-                    let bucket = ((percent / 10) * 10).min(100);
-                    if bucket >= 10 && i16::from(bucket) > last_announced_bucket {
-                        last_announced_bucket = i16::from(bucket);
-                        emit_progress(
-                            &progress_app,
-                            "downloading",
-                            &format!("Private Screenshot Confirmation model download: {bucket} percent."),
-                        );
-                    }
-                }
-            }
-
-            if !loading_announced
-                && (lower.contains("loading model")
-                    || lower.contains("load_tensors")
-                    || lower.contains("llama_model_loader")
-                    || lower.contains("loading weights"))
-            {
-                loading_announced = true;
-                emit_progress(
-                    &progress_app,
-                    "loading",
-                    if download_expected {
-                        "Model download complete. Loading private Screenshot Confirmation model."
-                    } else {
-                        "Loading private Screenshot Confirmation model."
-                    },
-                );
-            }
-        }
+        while let Some(_event) = rx.recv().await {}
     });
 
     let base_url = format!("http://127.0.0.1:{SERVER_PORT}");
@@ -264,16 +399,12 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
 
     if !server_ready {
         return Err(
-            "Private Screenshot Confirmation could not start its local model within a reasonable time. This can happen on a slow connection during the first-time model download, or if the private runtime failed to start. The screenshot remains available to save or discard."
+            "Private Screenshot Confirmation downloaded successfully, but its local model did not finish loading within a reasonable time. The screenshot remains available to save or discard."
                 .to_string(),
         );
     }
 
-    if model_already_cached {
-        emit_progress(&app, "ready", "Private Screenshot Confirmation model is ready.");
-    } else {
-        emit_progress(&app, "ready", "Private Screenshot Confirmation model download and loading are complete.");
-    }
+    emit_progress(&app, "ready", "Private Screenshot Confirmation model is ready.");
     emit_progress(&app, "confirming", "Screenshot Confirmation is analyzing the screenshot.");
 
     let request_body = json!({
