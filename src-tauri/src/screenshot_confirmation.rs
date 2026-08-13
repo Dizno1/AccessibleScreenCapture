@@ -71,6 +71,8 @@ use tauri_plugin_shell::process::CommandEvent;
 use tokio::io::AsyncWriteExt;
 use tauri_plugin_shell::ShellExt;
 
+use crate::debug_log;
+
 const MODEL_FILE_NAME: &str = "SmolVLM-500M-Instruct-Q8_0.gguf";
 const MMPROJ_FILE_NAME: &str = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
 const MODEL_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
@@ -80,6 +82,27 @@ const SERVER_PORT: u16 = 8734;
 const SERVER_READY_TIMEOUT_SECS: u64 = 180;
 const INFERENCE_TIMEOUT_SECS: u64 = 30;
 const MAX_OUTPUT_TOKENS: u32 = 120;
+
+// Ensures the server process is killed whenever this guard is dropped
+// (success, timeout, failure, or an early return) - a multi-gigabyte
+// model must not stay resident in memory after this function returns,
+// per the explicit product requirement.
+//
+// Wrapped in Option, not a bare CommandChild: tauri-plugin-shell's
+// CommandChild::kill() consumes self by value
+// (pub fn kill(self) -> Result<(), Error>), so it cannot be called
+// through the &mut self reference Drop provides without first moving
+// the value out - Option::take() is the standard way to do that,
+// leaving None behind in the struct rather than attempting an illegal
+// partial move out of a shared/mutable reference.
+struct KillOnDrop(Option<tauri_plugin_shell::process::CommandChild>);
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.take() {
+            let _ = child.kill();
+        }
+    }
+}
 
 #[derive(Serialize, Clone)]
 struct ConfirmationProgress {
@@ -330,80 +353,106 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     let port_str = SERVER_PORT.to_string();
     let model_arg = model_path.to_string_lossy().to_string();
     let mmproj_arg = mmproj_path.to_string_lossy().to_string();
+    let base_url = format!("http://127.0.0.1:{SERVER_PORT}");
 
-    let (mut rx, child) = sidecar
-        .args([
-            "-m",
-            model_arg.as_str(),
-            "--mmproj",
-            mmproj_arg.as_str(),
-            "--host",
-            "127.0.0.1",
-            "--port",
-            port_str.as_str(),
-            "--ctx-size",
-            "4096",
-            "--n-gpu-layers",
-            "0",
-            "--no-mmproj-offload",
-        ])
-        .spawn()
-        .map_err(|error| format!("Private Screenshot Confirmation could not start: {error}"))?;
-
-    // Ensures the server process is killed on every exit path below
-    // (success, timeout, or any error) - a multi-gigabyte model must
-    // not stay resident in memory after this function returns, per
-    // the explicit product requirement.
+    // PORT COLLISION CHECK - the primary suspect for "llama-server
+    // exits before becoming ready," investigated and implemented this
+    // round rather than assumed. If an EARLIER confirmation attempt
+    // left an orphaned llama-server still running and bound to this
+    // port (a real possibility if the app itself was ever force-
+    // closed, crashed, or the OS killed it while a confirmation was
+    // in flight - Rust's Drop guarantees for KillOnDrop below only
+    // apply to a controlled shutdown of THIS process, not a hard kill
+    // of the whole application), every subsequent attempt to spawn a
+    // NEW llama-server on the same port would fail at bind() and exit
+    // almost immediately - matching the observed symptom exactly,
+    // including why an uninstall/reinstall did not fix it: reinstalling
+    // the app's own files does nothing to an already-running, orphaned
+    // process left over from before.
     //
-    // Wrapped in Option, not a bare CommandChild: tauri-plugin-shell's
-    // CommandChild::kill() consumes self by value
-    // (pub fn kill(self) -> Result<(), Error>), so it cannot be
-    // called through the &mut self reference Drop provides without
-    // first moving the value out - Option::take() is the standard
-    // way to do that, leaving None behind in the struct rather than
-    // attempting an illegal partial move out of a shared/mutable
-    // reference.
-    struct KillOnDrop(Option<tauri_plugin_shell::process::CommandChild>);
-    impl Drop for KillOnDrop {
-        fn drop(&mut self) {
-            if let Some(child) = self.0.take() {
-                let _ = child.kill();
-            }
-        }
-    }
-    let _guard = KillOnDrop(Some(child));
+    // Port 8734 is a deliberately unusual, application-specific choice
+    // - an unrelated process coincidentally listening on it and ALSO
+    // answering /health successfully is implausible enough that a
+    // successful /health response here is treated as "this is very
+    // likely our own leftover llama-server" and reused directly,
+    // skipping a new spawn (and the bind failure it would cause)
+    // entirely, rather than blindly starting a second instance.
+    let preflight = reqwest::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|error| format!("Screenshot Confirmation could not create its local request: {error}"))?;
+    let existing_server_ready = preflight
+        .get(format!("{base_url}/health"))
+        .send()
+        .await
+        .map(|response| response.status().is_success())
+        .unwrap_or(false);
 
-    // Drain stdout/stderr continuously so llama-server cannot block on a full pipe.
-    // Keep a short rolling tail and detect early process termination so a load
-    // failure produces evidence instead of another unexplained timeout.
+    let mut _guard_holder: Option<KillOnDrop> = None;
     let server_log_tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     let server_exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let log_tail_for_task = server_log_tail.clone();
-    let exited_for_task = server_exited.clone();
+    let server_exit_code = std::sync::Arc::new(std::sync::Mutex::new(None::<i32>));
 
-    tauri::async_runtime::spawn(async move {
-        while let Some(event) = rx.recv().await {
-            match event {
-                CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes);
-                    if let Ok(mut tail) = log_tail_for_task.lock() {
-                        tail.push_str(&text);
-                        if tail.len() > 6000 {
-                            let keep_from = tail.len().saturating_sub(6000);
-                            *tail = tail[keep_from..].to_string();
+    if !existing_server_ready {
+        debug_log::log(
+            &app,
+            &format!("Screenshot Confirmation: starting llama-server -m {model_arg} --mmproj {mmproj_arg} --host 127.0.0.1 --port {port_str} --ctx-size 4096 --n-gpu-layers 0 --no-mmproj-offload"),
+        );
+
+        let (mut rx, child) = sidecar
+            .args([
+                "-m",
+                model_arg.as_str(),
+                "--mmproj",
+                mmproj_arg.as_str(),
+                "--host",
+                "127.0.0.1",
+                "--port",
+                port_str.as_str(),
+                "--ctx-size",
+                "4096",
+                "--n-gpu-layers",
+                "0",
+                "--no-mmproj-offload",
+            ])
+            .spawn()
+            .map_err(|error| format!("Private Screenshot Confirmation could not start: {error}"))?;
+
+        _guard_holder = Some(KillOnDrop(Some(child)));
+
+        let log_tail_for_task = server_log_tail.clone();
+        let exited_for_task = server_exited.clone();
+        let exit_code_for_task = server_exit_code.clone();
+
+        tauri::async_runtime::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+                        let text = String::from_utf8_lossy(&bytes);
+                        if let Ok(mut tail) = log_tail_for_task.lock() {
+                            tail.push_str(&text);
+                            tail.push('\n');
+                            if tail.len() > 6000 {
+                                let keep_from = tail.len().saturating_sub(6000);
+                                *tail = tail[keep_from..].to_string();
+                            }
                         }
                     }
+                    CommandEvent::Terminated(payload) => {
+                        if let Ok(mut code) = exit_code_for_task.lock() {
+                            *code = payload.code;
+                        }
+                        exited_for_task.store(true, std::sync::atomic::Ordering::SeqCst);
+                        break;
+                    }
+                    _ => {}
                 }
-                CommandEvent::Terminated(_) => {
-                    exited_for_task.store(true, std::sync::atomic::Ordering::SeqCst);
-                    break;
-                }
-                _ => {}
             }
-        }
-    });
+        });
+    } else {
+        debug_log::log(&app, "Screenshot Confirmation: reusing an already-running local runtime found on its port instead of starting a second instance.");
+    }
 
-    let base_url = format!("http://127.0.0.1:{SERVER_PORT}");
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(INFERENCE_TIMEOUT_SECS))
         .build()
@@ -419,24 +468,35 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
 
     while tokio::time::Instant::now() < ready_deadline {
         if server_exited.load(std::sync::atomic::Ordering::SeqCst) {
-            let detail = server_log_tail
-                .lock()
-                .ok()
-                .map(|tail| {
-                    tail.lines()
-                        .rev()
-                        .find(|line| !line.trim().is_empty())
-                        .unwrap_or("")
-                        .trim()
-                        .chars()
-                        .take(350)
-                        .collect::<String>()
-                })
-                .filter(|text| !text.is_empty())
-                .unwrap_or_else(|| "The local vision runtime exited before becoming ready.".to_string());
+            let full_tail = server_log_tail.lock().ok().map(|tail| tail.clone()).unwrap_or_default();
+            let exit_code = server_exit_code.lock().ok().and_then(|code| *code);
+            let last_line = full_tail
+                .lines()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .unwrap_or("")
+                .trim()
+                .chars()
+                .take(350)
+                .collect::<String>();
+
+            debug_log::log(
+                &app,
+                &format!(
+                    "Screenshot Confirmation: llama-server exited (code {:?}) before becoming ready. Full output tail:\n{full_tail}",
+                    exit_code
+                ),
+            );
+
+            let code_text = exit_code.map(|c| format!(" (exit code {c})")).unwrap_or_default();
+            let detail = if last_line.is_empty() {
+                "no output was captured before it exited".to_string()
+            } else {
+                last_line
+            };
 
             return Err(format!(
-                "Private Screenshot Confirmation could not load its local model. Last local runtime message: {detail}"
+                "Private Screenshot Confirmation could not start its local vision model{code_text}. Last message: {detail}. Technical details are available in Diagnostics. If this persists, restarting the computer may help clear a stuck local process."
             ));
         }
 
@@ -468,24 +528,14 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     }
 
     if !server_ready {
-        let detail = server_log_tail
-            .lock()
-            .ok()
-            .map(|tail| {
-                tail.lines()
-                    .rev()
-                    .find(|line| !line.trim().is_empty())
-                    .unwrap_or("")
-                    .trim()
-                    .chars()
-                    .take(350)
-                    .collect::<String>()
-            })
-            .filter(|text| !text.is_empty())
-            .unwrap_or_else(|| "The local runtime did not report ready status.".to_string());
+        let full_tail = server_log_tail.lock().ok().map(|tail| tail.clone()).unwrap_or_default();
+        debug_log::log(
+            &app,
+            &format!("Screenshot Confirmation: local model did not become ready within {SERVER_READY_TIMEOUT_SECS}s. Full output tail:\n{full_tail}"),
+        );
 
         return Err(format!(
-            "Private Screenshot Confirmation downloaded successfully, but its local model did not finish loading within a reasonable time. Last local runtime message: {detail}"
+            "Private Screenshot Confirmation downloaded successfully, but its local model did not finish loading within {SERVER_READY_TIMEOUT_SECS} seconds. Technical details are available in Diagnostics. The screenshot remains available to save or discard."
         ));
     }
 
