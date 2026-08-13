@@ -343,6 +343,9 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
             port_str.as_str(),
             "--ctx-size",
             "4096",
+            "--n-gpu-layers",
+            "0",
+            "--no-mmproj-offload",
         ])
         .spawn()
         .map_err(|error| format!("Private Screenshot Confirmation could not start: {error}"))?;
@@ -371,8 +374,33 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     let _guard = KillOnDrop(Some(child));
 
     // Drain stdout/stderr continuously so llama-server cannot block on a full pipe.
+    // Keep a short rolling tail and detect early process termination so a load
+    // failure produces evidence instead of another unexplained timeout.
+    let server_log_tail = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let server_exited = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let log_tail_for_task = server_log_tail.clone();
+    let exited_for_task = server_exited.clone();
+
     tauri::async_runtime::spawn(async move {
-        while let Some(_event) = rx.recv().await {}
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => {
+                    let text = String::from_utf8_lossy(&bytes);
+                    if let Ok(mut tail) = log_tail_for_task.lock() {
+                        tail.push_str(&text);
+                        if tail.len() > 6000 {
+                            let keep_from = tail.len().saturating_sub(6000);
+                            *tail = tail[keep_from..].to_string();
+                        }
+                    }
+                }
+                CommandEvent::Terminated(_) => {
+                    exited_for_task.store(true, std::sync::atomic::Ordering::SeqCst);
+                    break;
+                }
+                _ => {}
+            }
+        }
     });
 
     let base_url = format!("http://127.0.0.1:{SERVER_PORT}");
@@ -381,27 +409,84 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         .build()
         .map_err(|error| format!("Screenshot Confirmation could not create its local request: {error}"))?;
 
-    // Wait for the server to actually be ready to accept requests -
-    // covers both normal startup and, on first use, however long the
-    // model download takes. /health is llama-server's own documented
-    // readiness endpoint.
-    let ready_deadline = tokio::time::Instant::now() + Duration::from_secs(SERVER_READY_TIMEOUT_SECS);
+    // Wait for the server to become ready, but do not make the user sit through
+    // another three-minute black box if llama-server has already failed.
+    let ready_deadline =
+        tokio::time::Instant::now() + Duration::from_secs(SERVER_READY_TIMEOUT_SECS);
+    let started_at = tokio::time::Instant::now();
+    let mut last_loading_notice = 0_u64;
     let mut server_ready = false;
+
     while tokio::time::Instant::now() < ready_deadline {
-        if let Ok(response) = http.get(format!("{base_url}/health")).timeout(Duration::from_secs(3)).send().await {
+        if server_exited.load(std::sync::atomic::Ordering::SeqCst) {
+            let detail = server_log_tail
+                .lock()
+                .ok()
+                .map(|tail| {
+                    tail.lines()
+                        .rev()
+                        .find(|line| !line.trim().is_empty())
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(350)
+                        .collect::<String>()
+                })
+                .filter(|text| !text.is_empty())
+                .unwrap_or_else(|| "The local vision runtime exited before becoming ready.".to_string());
+
+            return Err(format!(
+                "Private Screenshot Confirmation could not load its local model. Last local runtime message: {detail}"
+            ));
+        }
+
+        if let Ok(response) = http
+            .get(format!("{base_url}/health"))
+            .timeout(Duration::from_secs(3))
+            .send()
+            .await
+        {
             if response.status().is_success() {
                 server_ready = true;
                 break;
             }
         }
+
+        let elapsed = started_at.elapsed().as_secs();
+        if elapsed >= 30 && elapsed / 30 > last_loading_notice {
+            last_loading_notice = elapsed / 30;
+            emit_progress(
+                &app,
+                "loading",
+                &format!(
+                    "Private Screenshot Confirmation is still loading its local model. {elapsed} seconds elapsed."
+                ),
+            );
+        }
+
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     if !server_ready {
-        return Err(
-            "Private Screenshot Confirmation downloaded successfully, but its local model did not finish loading within a reasonable time. The screenshot remains available to save or discard."
-                .to_string(),
-        );
+        let detail = server_log_tail
+            .lock()
+            .ok()
+            .map(|tail| {
+                tail.lines()
+                    .rev()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("")
+                    .trim()
+                    .chars()
+                    .take(350)
+                    .collect::<String>()
+            })
+            .filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "The local runtime did not report ready status.".to_string());
+
+        return Err(format!(
+            "Private Screenshot Confirmation downloaded successfully, but its local model did not finish loading within a reasonable time. Last local runtime message: {detail}"
+        ));
     }
 
     emit_progress(&app, "ready", "Private Screenshot Confirmation model is ready.");
