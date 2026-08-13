@@ -150,13 +150,24 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     // (success, timeout, or any error) - a multi-gigabyte model must
     // not stay resident in memory after this function returns, per
     // the explicit product requirement.
-    struct KillOnDrop(tauri_plugin_shell::process::CommandChild);
+    //
+    // Wrapped in Option, not a bare CommandChild: tauri-plugin-shell's
+    // CommandChild::kill() consumes self by value
+    // (pub fn kill(self) -> Result<(), Error>), so it cannot be
+    // called through the &mut self reference Drop provides without
+    // first moving the value out - Option::take() is the standard
+    // way to do that, leaving None behind in the struct rather than
+    // attempting an illegal partial move out of a shared/mutable
+    // reference.
+    struct KillOnDrop(Option<tauri_plugin_shell::process::CommandChild>);
     impl Drop for KillOnDrop {
         fn drop(&mut self) {
-            let _ = self.0.kill();
+            if let Some(child) = self.0.take() {
+                let _ = child.kill();
+            }
         }
     }
-    let _guard = KillOnDrop(child);
+    let _guard = KillOnDrop(Some(child));
 
     // Drain stderr/stdout in the background so the child process
     // never blocks on a full output pipe - the content itself isn't
