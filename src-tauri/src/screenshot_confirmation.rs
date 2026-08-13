@@ -297,6 +297,26 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         .sidecar("llama-server")
         .map_err(|error| format!("Screenshot Confirmation could not locate its private local runtime: {error}"))?;
 
+    // The official llama.cpp Windows CPU release is a dynamic build. Its
+    // llama-server.exe depends on companion DLLs (ggml/llama/OpenMP backends)
+    // that are shipped in the same upstream ZIP. Tauri externalBin bundles the
+    // executable, but it does not automatically bundle those neighboring DLLs.
+    // They are therefore bundled explicitly as resources under llama-runtime
+    // and added to the child process PATH before CreateProcess starts the
+    // sidecar. Without this, Windows exits llama-server immediately with
+    // 0xC0000135 (STATUS_DLL_NOT_FOUND), before stdout/stderr can be produced.
+    let llama_runtime_dir = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("Screenshot Confirmation could not resolve its local runtime directory: {error}"))?
+        .join("llama-runtime");
+
+    let mut llama_child_path = std::ffi::OsString::from(&llama_runtime_dir);
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        llama_child_path.push(";");
+        llama_child_path.push(existing_path);
+    }
+
     let cache_dir = app
         .path()
         .app_config_dir()
@@ -399,7 +419,16 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
             &format!("Screenshot Confirmation: starting llama-server -m {model_arg} --mmproj {mmproj_arg} --host 127.0.0.1 --port {port_str} --ctx-size 4096 --n-gpu-layers 0 --no-mmproj-offload"),
         );
 
+        debug_log::log(
+            &app,
+            &format!(
+                "Screenshot Confirmation: llama.cpp dependency directory: {}",
+                llama_runtime_dir.display()
+            ),
+        );
+
         let (mut rx, child) = sidecar
+            .env("PATH", &llama_child_path)
             .args([
                 "-m",
                 model_arg.as_str(),

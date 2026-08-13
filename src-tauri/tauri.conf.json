@@ -37,7 +37,7 @@
       "nsis"
     ],
     "publisher": "Open Door Design",
-    "copyright": "Copyright © 2026 Open Door Design",
+    "copyright": "Copyright \u00a9 2026 Open Door Design",
     "category": "Utility",
     "shortDescription": "Accessible screen capture for Windows.",
     "externalBin": [
@@ -55,6 +55,9 @@
       "webviewInstallMode": {
         "type": "downloadBootstrapper"
       }
+    },
+    "resources": {
+      "binaries/*.dll": "llama-runtime/"
     }
   }
 }

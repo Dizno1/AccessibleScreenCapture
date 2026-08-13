@@ -255,6 +255,17 @@ jobs:
           New-Item -ItemType Directory -Force -Path $binariesDir | Out-Null
           Copy-Item -Path (Join-Path $serverExe.DirectoryName "*") -Destination $binariesDir -Recurse -Force
 
+          # Tauri externalBin only guarantees packaging of the target-triple
+          # executable. The DLLs copied above are separately declared as bundle
+          # resources in tauri.conf.json and installed under llama-runtime/.
+          # screenshot_confirmation.rs adds that directory to the sidecar's PATH.
+          $runtimeDlls = Get-ChildItem -Path $binariesDir -Filter "*.dll" -File
+          if (-not $runtimeDlls -or $runtimeDlls.Count -eq 0) {
+            throw "The llama.cpp Windows CPU archive contained no companion DLLs. Refusing to build a sidecar that would fail with STATUS_DLL_NOT_FOUND."
+          }
+          Write-Host "Staged $($runtimeDlls.Count) llama.cpp runtime DLL(s) for Tauri resource bundling:"
+          $runtimeDlls | ForEach-Object { Write-Host "  $($_.Name)" }
+
           $sidecarPath = Join-Path $binariesDir "llama-server-$hostTuple.exe"
           Copy-Item -Path $serverExe.FullName -Destination $sidecarPath -Force
 
