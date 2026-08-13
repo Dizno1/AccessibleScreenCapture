@@ -92,6 +92,22 @@ fn emit_progress(app: &AppHandle, stage: &str, message: &str) {
     );
 }
 
+fn percentage_from_output(text: &str) -> Option<u8> {
+    for token in text.split_whitespace() {
+        let cleaned = token.trim_matches(|c: char| {
+            !(c.is_ascii_digit() || c == '.' || c == '%')
+        });
+        if let Some(number) = cleaned.strip_suffix('%') {
+            if let Ok(value) = number.parse::<f32>() {
+                if (0.0..=100.0).contains(&value) {
+                    return Some(value.floor() as u8);
+                }
+            }
+        }
+    }
+    None
+}
+
 #[tauri::command]
 pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String) -> Result<String, String> {
     if data_base64.trim().is_empty() {
@@ -132,7 +148,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         emit_progress(
             &app,
             "downloading",
-            "Screenshot Confirmation is downloading its private on-device model. This only happens the first time and may take a few minutes - the screenshot itself is never uploaded.",
+            "Downloading the private Screenshot Confirmation model. This is a one-time download of approximately 2.5 GB. Progress will be announced at major milestones. The screenshot itself is never uploaded.",
         );
     } else {
         emit_progress(&app, "starting", "Starting Screenshot Confirmation.");
@@ -141,6 +157,7 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     let port_str = SERVER_PORT.to_string();
 
     let (mut rx, child) = sidecar
+        .env("LLAMA_CACHE", cache_dir.to_string_lossy().to_string())
         .env("HF_HOME", cache_dir.to_string_lossy().to_string())
         .args(["-hf", MODEL_REPO, "--host", "127.0.0.1", "--port", &port_str, "--ctx-size", "4096"])
         .spawn()
@@ -169,12 +186,59 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
     }
     let _guard = KillOnDrop(Some(child));
 
-    // Drain stderr/stdout in the background so the child process
-    // never blocks on a full output pipe - the content itself isn't
-    // parsed for progress (llama-server's own download/load log
-    // format is not a stable, documented API to depend on), but the
-    // pipe must still be drained.
-    tauri::async_runtime::spawn(async move { while rx.recv().await.is_some() {} });
+    // Drain stdout/stderr continuously so the child can never block on a
+    // full pipe. During first use, llama-server's Hugging Face downloader
+    // prints transfer progress to its console. Convert that into deliberately
+    // sparse screen-reader status: at most one announcement per 10-percent
+    // milestone. Exact raw output remains an implementation detail.
+    let progress_app = app.clone();
+    let download_expected = !model_already_cached;
+    tauri::async_runtime::spawn(async move {
+        let mut last_announced_bucket: i16 = -1;
+        let mut loading_announced = false;
+
+        while let Some(event) = rx.recv().await {
+            let bytes = match event {
+                CommandEvent::Stdout(bytes) | CommandEvent::Stderr(bytes) => bytes,
+                _ => continue,
+            };
+
+            let text = String::from_utf8_lossy(&bytes);
+            let lower = text.to_ascii_lowercase();
+
+            if download_expected {
+                if let Some(percent) = percentage_from_output(&text) {
+                    let bucket = ((percent / 10) * 10).min(100);
+                    if bucket >= 10 && i16::from(bucket) > last_announced_bucket {
+                        last_announced_bucket = i16::from(bucket);
+                        emit_progress(
+                            &progress_app,
+                            "downloading",
+                            &format!("Private Screenshot Confirmation model download: {bucket} percent."),
+                        );
+                    }
+                }
+            }
+
+            if !loading_announced
+                && (lower.contains("loading model")
+                    || lower.contains("load_tensors")
+                    || lower.contains("llama_model_loader")
+                    || lower.contains("loading weights"))
+            {
+                loading_announced = true;
+                emit_progress(
+                    &progress_app,
+                    "loading",
+                    if download_expected {
+                        "Model download complete. Loading private Screenshot Confirmation model."
+                    } else {
+                        "Loading private Screenshot Confirmation model."
+                    },
+                );
+            }
+        }
+    });
 
     let base_url = format!("http://127.0.0.1:{SERVER_PORT}");
     let http = reqwest::Client::builder()
@@ -205,6 +269,11 @@ pub async fn confirm_screenshot_local(app: tauri::AppHandle, data_base64: String
         );
     }
 
+    if model_already_cached {
+        emit_progress(&app, "ready", "Private Screenshot Confirmation model is ready.");
+    } else {
+        emit_progress(&app, "ready", "Private Screenshot Confirmation model download and loading are complete.");
+    }
     emit_progress(&app, "confirming", "Screenshot Confirmation is analyzing the screenshot.");
 
     let request_body = json!({
