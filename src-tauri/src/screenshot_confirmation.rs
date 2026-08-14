@@ -77,7 +77,7 @@ const MODEL_FILE_NAME: &str = "SmolVLM-500M-Instruct-Q8_0.gguf";
 const MMPROJ_FILE_NAME: &str = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
 const MODEL_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
 const MMPROJ_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
-const CONFIRMATION_PROMPT: &str = "Confirm what this desktop screenshot contains for a blind user. Identify the application or interface only when visible evidence supports it. Distinguish browser content, browser Developer Tools, spreadsheets, File Explorer, dialogs, and other application windows. Read a prominent visible product, page, tab, or window name when legible. Then give one short sentence about the main visible content. Do not guess: if the application or page cannot be identified reliably, say that it is unclear instead of inventing one.";
+const CONFIRMATION_PROMPT: &str = "Inspect only the visible contents of this screenshot. Do not identify the application or window; Windows metadata will do that separately. Your first line MUST be exactly one of: CODE: YES, CODE: NO, or CODE: UNCLEAR. Use CODE: YES when visible source code, HTML or DOM markup, CSS, JavaScript, JSON, XML, terminal commands or output, browser console output, developer-tool code or markup, or similar technical code is clearly present. Use CODE: NO when none is visible. Use CODE: UNCLEAR only when you genuinely cannot tell. Your second line MUST begin CONTENT: and contain one short factual sentence describing the main visible content. Do not read or reproduce code. Do not infer the user's intent, task status, or actions. Do not guess.";
 const SERVER_PORT: u16 = 8734;
 const SERVER_READY_TIMEOUT_SECS: u64 = 180;
 const INFERENCE_TIMEOUT_SECS: u64 = 30;
@@ -278,6 +278,140 @@ async fn download_with_progress(
     Ok(())
 }
 
+
+
+fn clean_window_title(title: &str) -> String {
+    title.trim()
+        .trim_end_matches(" - Google Chrome")
+        .trim_end_matches(" - Microsoft Edge")
+        .trim_end_matches(" - Mozilla Firefox")
+        .trim()
+        .to_string()
+}
+
+fn confirmation_identity(app_name: Option<&str>, window_title: Option<&str>) -> String {
+    let app = app_name.unwrap_or("").trim();
+    let title = window_title.unwrap_or("").trim();
+    let title_lower = title.to_lowercase();
+
+    if title_lower.starts_with("devtools - ") {
+        let target = title["DevTools - ".len()..].trim();
+        let site = target.split('/').next().unwrap_or(target).trim();
+        return if site.is_empty() {
+            "Chrome Developer Tools.".to_string()
+        } else {
+            format!("Chrome Developer Tools for {site}.")
+        };
+    }
+
+    if app.eq_ignore_ascii_case("Chrome") {
+        let cleaned = clean_window_title(title);
+        if cleaned.is_empty() {
+            return "Google Chrome.".to_string();
+        }
+        if cleaned.ends_with(" - Claude") {
+            let conversation = cleaned.trim_end_matches(" - Claude").trim();
+            return if conversation.is_empty() {
+                "Claude in Google Chrome.".to_string()
+            } else {
+                format!("Claude in Google Chrome - {conversation}.")
+            };
+        }
+        return format!("Google Chrome - {cleaned}.");
+    }
+
+    if app.eq_ignore_ascii_case("Edge") {
+        let cleaned = clean_window_title(title);
+        return if cleaned.is_empty() {
+            "Microsoft Edge.".to_string()
+        } else {
+            format!("Microsoft Edge - {cleaned}.")
+        };
+    }
+
+    if app.eq_ignore_ascii_case("Firefox") {
+        let cleaned = clean_window_title(title);
+        return if cleaned.is_empty() {
+            "Mozilla Firefox.".to_string()
+        } else {
+            format!("Mozilla Firefox - {cleaned}.")
+        };
+    }
+
+    if !app.is_empty() && app != "Unknown application" {
+        if title.is_empty() || title.eq_ignore_ascii_case(app) {
+            return format!("{app}.");
+        }
+        return format!("{app} - {title}.");
+    }
+
+    if !title.is_empty() {
+        return format!("{title}.");
+    }
+
+    "Captured screen.".to_string()
+}
+
+fn parse_visual_confirmation(raw: &str) -> (Option<bool>, String) {
+    let mut code_present = None;
+    let mut content = String::new();
+
+    for line in raw.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let upper = line.to_ascii_uppercase();
+        if upper.starts_with("CODE:") {
+            let value = upper.trim_start_matches("CODE:").trim();
+            code_present = match value {
+                "YES" => Some(true),
+                "NO" => Some(false),
+                _ => None,
+            };
+        } else if upper.starts_with("CONTENT:") {
+            content = line["CONTENT:".len()..].trim().to_string();
+        } else if content.is_empty() {
+            content = line.to_string();
+        }
+    }
+
+    let lower = content.to_lowercase();
+    for prefix in [
+        "a screenshot of a computer screen shows ",
+        "a screenshot of a computer screen displays ",
+        "a screenshot shows ",
+        "the screenshot shows ",
+        "the screen shows ",
+    ] {
+        if lower.starts_with(prefix) {
+            content = content[prefix.len()..].trim().to_string();
+            break;
+        }
+    }
+
+    (code_present, content)
+}
+
+fn assemble_confirmation(
+    app_name: Option<&str>,
+    window_title: Option<&str>,
+    code_present: Option<bool>,
+    content: &str,
+) -> String {
+    let identity = confirmation_identity(app_name, window_title);
+    let code_sentence = match code_present {
+        Some(true) => " Code or technical markup is clearly visible in the screenshot.",
+        Some(false) => "",
+        None => " It is unclear whether code or technical markup is visible.",
+    };
+
+    if content.trim().is_empty() {
+        format!("{identity}{code_sentence}")
+    } else {
+        let mut summary = content.trim().to_string();
+        if !summary.ends_with(['.', '!', '?']) {
+            summary.push('.');
+        }
+        format!("{identity}{code_sentence} {summary}").trim().to_string()
+    }
+}
 
 #[tauri::command]
 pub async fn confirm_screenshot_local(
@@ -584,15 +718,7 @@ pub async fn confirm_screenshot_local(
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    let context_prompt = match (capture_app, capture_title) {
-        (Some(app_name), Some(window_title)) => format!(
-            "{CONFIRMATION_PROMPT}\n\nReliable Windows capture metadata: the foreground application was \"{app_name}\" and its window title was \"{window_title}\". The screenshot captures the entire primary monitor, so other windows may also be visible. Use this metadata as a strong identification anchor, while describing only what the screenshot actually shows."
-        ),
-        (Some(app_name), None) => format!(
-            "{CONFIRMATION_PROMPT}\n\nReliable Windows capture metadata: the foreground application was \"{app_name}\". The screenshot captures the entire primary monitor. Use this metadata as a strong identification anchor."
-        ),
-        _ => CONFIRMATION_PROMPT.to_string(),
-    };
+    let context_prompt = CONFIRMATION_PROMPT.to_string();
 
     debug_log::log(
         &app,
@@ -665,5 +791,21 @@ pub async fn confirm_screenshot_local(
         return Err("Private Screenshot Confirmation returned no description.".to_string());
     }
 
-    Ok(description.to_string())
+    let (code_present, content_summary) = parse_visual_confirmation(description);
+    let confirmation = assemble_confirmation(
+        capture_app,
+        capture_title,
+        code_present,
+        &content_summary,
+    );
+
+    debug_log::log(
+        &app,
+        &format!(
+            "Screenshot Confirmation: raw model response={:?}; code_present={:?}; final={:?}",
+            description, code_present, confirmation
+        ),
+    );
+
+    Ok(confirmation)
 }

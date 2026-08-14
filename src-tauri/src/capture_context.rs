@@ -74,6 +74,7 @@ fn friendly_app_name(exe_stem: &str) -> String {
         "explorer" => Some("File Explorer"),
         "notepad" => Some("Notepad"),
         "code" => Some("Visual Studio Code"),
+        "githubdesktop" | "github desktop" => Some("GitHub Desktop"),
         "accessible-screen-capture" | "accessiblescreencapture" => Some("AccessibleScreenCapture"),
         _ => None,
     };
