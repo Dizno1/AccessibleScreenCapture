@@ -596,7 +596,7 @@ async function screenshotBlobToConfirmationBase64(blob) {
     // chrome, browser pages, Developer Tools, spreadsheets, dialogs, and other
     // major content. This changes only the private analysis copy; the saved PNG
     // remains the original full-quality screenshot.
-    const maxEdge = 1024;
+    const maxEdge = 1536;
     const scale = Math.min(1, maxEdge / Math.max(imageBitmap.width, imageBitmap.height));
     const width = Math.max(1, Math.round(imageBitmap.width * scale));
     const height = Math.max(1, Math.round(imageBitmap.height * scale));
@@ -618,7 +618,7 @@ async function screenshotBlobToConfirmationBase64(blob) {
           else reject(new Error("Screenshot Confirmation could not resize the screenshot."));
         },
         "image/jpeg",
-        0.88,
+        0.92,
       );
     });
 

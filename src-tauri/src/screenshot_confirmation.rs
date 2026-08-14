@@ -77,7 +77,7 @@ const MODEL_FILE_NAME: &str = "SmolVLM-500M-Instruct-Q8_0.gguf";
 const MMPROJ_FILE_NAME: &str = "mmproj-SmolVLM-500M-Instruct-Q8_0.gguf";
 const MODEL_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
 const MMPROJ_URL: &str = "https://huggingface.co/ggml-org/SmolVLM-500M-Instruct-GGUF/resolve/main/mmproj-SmolVLM-500M-Instruct-Q8_0.gguf?download=true";
-const CONFIRMATION_PROMPT: &str = "Inspect only the visible contents of this screenshot. Do not identify the application or window; Windows metadata will do that separately. Your first line MUST be exactly one of: CODE: YES, CODE: NO, or CODE: UNCLEAR. Use CODE: YES when visible source code, HTML or DOM markup, CSS, JavaScript, JSON, XML, terminal commands or output, browser console output, developer-tool code or markup, or similar technical code is clearly present. Use CODE: NO when none is visible. Use CODE: UNCLEAR only when you genuinely cannot tell. Your second line MUST begin CONTENT: and contain one short factual sentence describing the main visible content. Do not read or reproduce code. Do not infer the user's intent, task status, or actions. Do not guess.";
+const CONFIRMATION_PROMPT: &str = "Inspect only the visible contents of this screenshot. Do not identify the application or window; Windows metadata will do that separately. Your first line MUST be exactly one of: CODE: YES, CODE: NO, or CODE: UNCLEAR. Use CODE: YES whenever any visible region clearly contains source code, HTML or DOM markup, CSS, JavaScript, JSON, XML, PowerShell or shell script, terminal commands or output, browser console output, developer-tool markup, syntax-highlighted code, line-numbered code, indented code blocks, angle-bracket tags such as <div> or <span>, braces, properties, selectors, or a DOM tree. Do not require the whole screen to be code. If even one meaningful visible region contains code or technical markup, answer CODE: YES. Use CODE: NO only when you are confident none of those are visible. Use CODE: UNCLEAR only when the image quality truly prevents a decision. Your second line MUST begin CONTENT: and contain one short factual sentence describing the main visible content. If Developer Tools content is visible, name the visible panel or technical content when you can, such as Elements, Network, Console, Sources, DOM tree, requests, or markup. Do not read or reproduce code. Do not infer the user's intent, task status, or actions. Do not guess.";
 const SERVER_PORT: u16 = 8734;
 const SERVER_READY_TIMEOUT_SECS: u64 = 180;
 const INFERENCE_TIMEOUT_SECS: u64 = 30;
@@ -379,6 +379,9 @@ fn parse_visual_confirmation(raw: &str) -> (Option<bool>, String) {
         "a screenshot shows ",
         "the screenshot shows ",
         "the screen shows ",
+        "a web page that shows ",
+        "a web page showing ",
+        "a computer screen showing ",
     ] {
         if lower.starts_with(prefix) {
             content = content[prefix.len()..].trim().to_string();
@@ -398,8 +401,7 @@ fn assemble_confirmation(
     let identity = confirmation_identity(app_name, window_title);
     let code_sentence = match code_present {
         Some(true) => " Code or technical markup is clearly visible in the screenshot.",
-        Some(false) => "",
-        None => " It is unclear whether code or technical markup is visible.",
+        Some(false) | None => "",
     };
 
     if content.trim().is_empty() {
