@@ -202,3 +202,11 @@ After 2.0.0 completes final Windows acceptance testing, the next development pha
 ## Copyright
 
 Copyright 2026 Open Door Design.
+
+## Review Queue and large-recording safety
+
+The Review area now supports multiple pending captures. Screenshots can be taken while a recording continues, and completed recordings can wait in Review while additional captures are created. Each pending item is labeled by capture type, queue number, capture time, and recording duration when applicable. Review, Save, Discard, and Confirm Capture controls identify the specific capture they affect.
+
+Native recordings are now file-backed in Review. The completed MP4 is staged in the app data pending-captures folder instead of being read back into a JavaScript Blob. This removes the large in-memory handoff that caused the August 19, 2026 long-recording crash. Pending native recordings are recorded in recovery metadata and restored to the Review Queue after an app restart. Starting another recording does not overwrite a staged pending recording.
+
+The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.

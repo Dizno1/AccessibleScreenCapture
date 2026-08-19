@@ -1,6 +1,6 @@
 [package]
 name = "accessible-screen-capture"
-version = "2.1.0-1"
+version = "2.1.0-2"
 description = "Professional screen capture designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
@@ -27,6 +27,7 @@ tauri-plugin-fs = "2"
 tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+chrono = { version = "0.4", features = ["clock"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 base64 = "0.22"
 xcap = "0.0.13"

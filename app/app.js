@@ -41,8 +41,10 @@ import {
   stopNativeRecording,
   pauseNativeRecording,
   resumeNativeRecording,
-  readNativeFile,
   setInstructionsExpanded,
+  saveRecordingFile,
+  stagePendingRecording,
+  deletePendingFile,
 } from "./tauri-bridge.js";
 
 const systemAudioOption = document.getElementById("option-system-audio");
@@ -55,6 +57,8 @@ const pauseResumeButton = document.getElementById("pause-resume-button");
 const reviewSection = document.getElementById("review-section");
 const reviewHeading = document.getElementById("review-heading");
 const reviewPreview = document.getElementById("review-preview");
+const reviewQueueStatus = document.getElementById("review-queue-status");
+const reviewQueueList = document.getElementById("review-queue-list");
 const screenshotConfirmationControls = document.getElementById("screenshot-confirmation-controls");
 const confirmScreenshotButton = document.getElementById("confirm-screenshot-button");
 const screenshotConfirmationStatus = document.getElementById("screenshot-confirmation-status");
@@ -67,6 +71,8 @@ const recentList = document.getElementById("recent-captures-list");
 const recentEmptyMessage = document.getElementById("recent-empty-message");
 
 let pendingCapture = null;
+let pendingCaptures = [];
+let nextPendingCaptureId = 1;
 let reviewObjectUrl = null;
 let isRecording = false;
 let isStartingCapture = false;
@@ -172,12 +178,13 @@ function renderDiagnostics() {
 
 initAnnouncer(document.getElementById("status-announcer"));
 initShortcuts();
+setTimeout(restorePendingRecordings, 0);
 
 function setWorkflowLocked(locked) {
   systemAudioOption.disabled = locked;
   microphoneOption.disabled = locked;
   microphoneSelect.disabled = locked;
-  screenshotButton.disabled = locked;
+  screenshotButton.disabled = false;
 
   if (!isRecording) {
     recordToggleButton.disabled = locked;
@@ -790,104 +797,148 @@ function buildRecordingPlaybackControls(video) {
   return container;
 }
 
-function showReview(capture) {
+function captureLabel(capture) {
+  const type = capture.kind === "screenshot" ? "Screenshot" : "Recording";
+  const when = capture.capturedAt ? new Date(capture.capturedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : nowText();
+  const duration = capture.kind === "recording" && capture.durationSeconds ? `, ${formatDuration(capture.durationSeconds)}` : "";
+  return `${type} ${capture.queueNumber}, captured ${when}${duration}`;
+}
+
+function updateCaptureActionLabels(capture) {
+  const label = captureLabel(capture);
+  confirmScreenshotButton.textContent = `Confirm Capture - ${label}`;
+  saveButton.textContent = `Save Capture - ${label}`;
+  discardButton.textContent = `Discard Capture - ${label}`;
+}
+
+function renderReviewQueue() {
+  reviewQueueList.innerHTML = "";
+  reviewQueueStatus.textContent = pendingCaptures.length === 1
+    ? "1 capture waiting for review."
+    : `${pendingCaptures.length} captures waiting for review.`;
+  for (const capture of pendingCaptures) {
+    const wrapper = document.createElement("div");
+    const heading = document.createElement("h3");
+    heading.textContent = `${captureLabel(capture)} - Pending Review`;
+    wrapper.appendChild(heading);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary-button";
+    button.textContent = `Review ${captureLabel(capture)}`;
+    button.addEventListener("click", () => selectPendingCapture(capture.id, true));
+    wrapper.appendChild(button);
+    reviewQueueList.appendChild(wrapper);
+  }
+}
+
+function selectPendingCapture(id, focusHeading = false) {
+  const capture = pendingCaptures.find((item) => item.id === id);
+  if (!capture) return;
   pendingCapture = capture;
-  diagnostics.pendingCaptureState = `${capture.kind} awaiting save or discard, captured at ${nowText()}`;
+  diagnostics.pendingCaptureState = `${capture.kind} ${capture.queueNumber} awaiting review`;
   renderDiagnostics();
   revokeReviewObjectUrl();
   reviewPreview.innerHTML = "";
-  reviewObjectUrl = URL.createObjectURL(capture.blob);
-
   screenshotConfirmationStatus.textContent = "";
   screenshotConfirmationText.textContent = "";
   screenshotConfirmationResult.hidden = true;
   screenshotConfirmationControls.hidden = capture.kind !== "screenshot";
   confirmScreenshotButton.disabled = false;
+  updateCaptureActionLabels(capture);
 
-  if (capture.kind === "screenshot") {
+  if (capture.kind === "screenshot" && capture.blob) {
+    reviewObjectUrl = URL.createObjectURL(capture.blob);
     const img = document.createElement("img");
     img.src = reviewObjectUrl;
-    img.alt = "Preview of the captured screenshot";
+    img.alt = `Preview of ${captureLabel(capture)}`;
     reviewPreview.appendChild(img);
-  } else {
-    const video = document.createElement("video");
-    video.src = reviewObjectUrl;
-    video.controls = false;
-    video.tabIndex = -1;
-    video.setAttribute("aria-hidden", "true");
+  } else if (capture.kind === "recording") {
     const label = document.createElement("p");
     label.textContent = `Recording length: ${formatDuration(capture.durationSeconds)}`;
-    reviewPreview.appendChild(video);
     reviewPreview.appendChild(label);
-    reviewPreview.appendChild(buildRecordingPlaybackControls(video));
+    if (capture.filePath) {
+      const note = document.createElement("p");
+      note.textContent = "Recording is safely stored on disk and ready to save.";
+      reviewPreview.appendChild(note);
+    }
   }
+  if (focusHeading) reviewHeading.focus({ preventScroll: false });
+}
 
+const PENDING_RECORDINGS_KEY = "accessibleScreenCapture.pendingRecordings.v1";
+
+function persistPendingRecordings() {
+  try {
+    const recordings = pendingCaptures.filter((c) => c.kind === "recording" && c.filePath).map((c) => ({
+      id: c.id, queueNumber: c.queueNumber, capturedAt: c.capturedAt, kind: c.kind,
+      filePath: c.filePath, suggestedName: c.suggestedName, durationSeconds: c.durationSeconds,
+    }));
+    localStorage.setItem(PENDING_RECORDINGS_KEY, JSON.stringify(recordings));
+  } catch (error) {
+    logDebug(`review queue: could not persist pending recordings: ${error}`);
+  }
+}
+
+function restorePendingRecordings() {
+  if (!isTauri) return;
+  try {
+    const restored = JSON.parse(localStorage.getItem(PENDING_RECORDINGS_KEY) || "[]");
+    if (!Array.isArray(restored) || restored.length === 0) return;
+    for (const capture of restored) {
+      capture.queueNumber = nextPendingCaptureId++;
+      pendingCaptures.push(capture);
+    }
+    pendingCapture = pendingCaptures[0];
+    reviewSection.hidden = false;
+    renderReviewQueue();
+    selectPendingCapture(pendingCapture.id);
+    diagnostics.pendingCaptureState = `${pendingCaptures.length} recovered recording(s) awaiting review`;
+    renderDiagnostics();
+    announceRaw(`${pendingCaptures.length} unsaved recording${pendingCaptures.length === 1 ? " was" : "s were"} recovered from the previous session.`);
+    logDebug(`review queue: restored ${pendingCaptures.length} pending recording(s)`);
+  } catch (error) {
+    logDebug(`review queue: recovery metadata could not be read: ${error}`);
+  }
+}
+
+function showReview(capture) {
+  capture.id = capture.id || `capture-${Date.now()}-${nextPendingCaptureId}`;
+  capture.queueNumber = nextPendingCaptureId++;
+  capture.capturedAt = capture.capturedAt || new Date().toISOString();
+  pendingCaptures.push(capture);
+  persistPendingRecordings();
   reviewSection.hidden = false;
-
-  // FOCUS ARCHITECTURE - fixed this round, not another guess-and-
-  // retry. Two real, documented JAWS bugs
-  // (github.com/FreedomScientific/standards-support #774 and #701)
-  // both describe the virtual cursor resetting to the top of the
-  // page under specific trigger conditions - #774 in particular:
-  // focusing a button whose disabled state changed in close temporal
-  // proximity to the focus call causes JAWS to "lose its place,"
-  // landing back at the top of the document on subsequent virtual-
-  // cursor navigation. The previous implementation did exactly this
-  // for screenshots: confirmScreenshotButton.disabled was set to
-  // false synchronously, moments before that same button became the
-  // focus target. This also matches Vispero's own documented
-  // explanation of forms-mode entry: focusing an interactive control
-  // (a button) is what pulls JAWS out of browse mode and into forms
-  // mode, and the browse-mode virtual cursor position that navigation
-  // keys rely on afterward is not reliably synchronized to match -
-  // exactly the "JAWS announces the control correctly, but Down Arrow
-  // afterward starts from the top" symptom actually observed.
-  //
-  // Fixed by never focusing an interactive control as part of this
-  // reveal sequence, for either capture type - only the Review
-  // Capture heading itself (a non-interactive tabindex="-1" element,
-  // already structurally present in the DOM from page load, not
-  // dynamically inserted - see the section's own hidden attribute
-  // above). This keeps JAWS in browse mode throughout the reveal, so
-  // its virtual cursor is genuinely repositioned to Review Capture's
-  // real document position rather than being pulled into forms mode
-  // and left desynchronized. From there, the user's own next Down
-  // Arrow or Tab reaches Confirm Screenshot / Save / Discard entirely
-  // through JAWS's own normal navigation - forms mode is entered
-  // later, deliberately, by the user's own action on that control,
-  // not as a side effect of the page revealing new content.
-  //
-  // The previous fragment/hash-navigation attempt
-  // (window.location.hash = "review-heading") is also removed - it's
-  // a native browser scroll-to-target mechanism, not a JAWS-specific
-  // one, and competing against an explicit focus() call for the final
-  // scroll/focus state was already tried without resolving this, per
-  // project history.
+  renderReviewQueue();
+  selectPendingCapture(capture.id);
+  logDebug(`review queue: added ${captureLabel(capture)}; ${pendingCaptures.length} pending`);
+  if (capture.suppressReviewFocus) {
+    announceRaw(`${captureLabel(capture)} added to Review Queue. Recording continues.`);
+    return;
+  }
   requestAnimationFrame(() => {
     reviewHeading.scrollIntoView({ block: "center" });
     reviewHeading.focus({ preventScroll: false });
-
-    setTimeout(() => {
-      reviewHeading.focus({ preventScroll: false });
-    }, 150);
   });
 }
 
-function hideReview() {
-  reviewSection.hidden = true;
-  reviewPreview.innerHTML = "";
-
-  if (window.location.hash === "#review-heading") {
-    history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
-  }
-  screenshotConfirmationControls.hidden = true;
-  screenshotConfirmationStatus.textContent = "";
-  screenshotConfirmationText.textContent = "";
-  screenshotConfirmationResult.hidden = true;
+function removePendingCapture(capture) {
+  pendingCaptures = pendingCaptures.filter((item) => item.id !== capture.id);
+  persistPendingRecordings();
+  pendingCapture = pendingCaptures[0] || null;
   revokeReviewObjectUrl();
-  pendingCapture = null;
-  diagnostics.pendingCaptureState = "Empty";
+  reviewPreview.innerHTML = "";
+  if (pendingCaptures.length === 0) {
+    reviewSection.hidden = true;
+    diagnostics.pendingCaptureState = "Empty";
+  } else {
+    renderReviewQueue();
+    selectPendingCapture(pendingCapture.id);
+  }
   renderDiagnostics();
+}
+
+function hideReview() {
+  if (pendingCapture) removePendingCapture(pendingCapture);
 }
 
 function arrayBufferToBase64(buffer) {
@@ -1006,8 +1057,13 @@ async function confirmPendingScreenshot() {
 
 async function saveCapture(capture) {
   logDebug(
-    `saveCapture: kind=${capture.kind}, blobSize=${capture.blob.size}, blobType=${capture.blob.type}, filename=${capture.suggestedName}`
+    `saveCapture: kind=${capture.kind}, blobSize=${capture.blob?.size ?? "file-backed"}, blobType=${capture.blob?.type ?? "video/mp4"}, filename=${capture.suggestedName}`
   );
+
+  if (isTauri && capture.kind === "recording" && capture.filePath) {
+    logDebug(`saveCapture: file-backed recording, path=${capture.filePath}`);
+    return saveRecordingFile(capture.filePath, capture.suggestedName);
+  }
 
   if (isTauri && capture.kind === "recording") {
     return saveRecordingChunked(capture);
@@ -1087,7 +1143,8 @@ saveButton.addEventListener("click", async () => {
       capture.suggestedName = result.savedFileName;
     }
     announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
-    hideReview();
+    removePendingCapture(capture);
+    if (capture.filePath) await deletePendingFile(capture.filePath).catch(() => {});
     addRecentCapture(capture);
     diagnostics.recentCapturesUpdated = `Yes at ${nowText()}`;
     renderDiagnostics();
@@ -1103,9 +1160,11 @@ discardButton.addEventListener("click", () => {
   const confirmed = window.confirm("Discard this capture? This cannot be undone.");
   if (!confirmed) return;
 
-  const discardedKind = pendingCapture.kind;
+  const capture = pendingCapture;
+  const discardedKind = capture.kind;
   announce("captureDiscarded");
-  hideReview();
+  removePendingCapture(capture);
+  if (capture.filePath) deletePendingFile(capture.filePath).catch(() => {});
   focusCaptureControl(discardedKind);
 });
 
@@ -1230,9 +1289,10 @@ async function captureScreenshotNative() {
   // confirmation and the longer unfocused one, and showMainWindow()
   // below would make that check always see "focused" if called first.
   announceScreenshotCaptured();
-  if (isTauri) await showMainWindow();
+  if (isTauri && !isRecording) await showMainWindow();
   showReview({
     kind: "screenshot",
+    suppressReviewFocus: isRecording,
     blob,
     captureContext,
     suggestedName: `Screenshot - ${timestampForFilename()}.png`,
@@ -1270,6 +1330,7 @@ async function captureScreenshotBrowser() {
     announceScreenshotCaptured();
     showReview({
       kind: "screenshot",
+      suppressReviewFocus: isRecording,
       blob,
       suggestedName: `Screenshot - ${timestampForFilename()}.png`,
     });
@@ -1293,13 +1354,7 @@ function announcePendingCaptureBlocked() {
 }
 
 async function captureScreenshot() {
-  if (pendingCapture) {
-    announcePendingCaptureBlocked();
-    diagnostics.lastScreenshotResult = `Blocked - a capture is already waiting for review at ${nowText()}`;
-    renderDiagnostics();
-    return;
-  }
-  if (isStartingCapture || isRecording) return;
+  if (isStartingCapture) return;
   isStartingCapture = true;
   setWorkflowLocked(true);
 
@@ -1392,10 +1447,6 @@ async function refreshMicrophoneOptions() {
 }
 
 async function startRecording() {
-  if (pendingCapture) {
-    announcePendingCaptureBlocked();
-    return;
-  }
   if (isStartingCapture || isRecording) return;
   isStartingCapture = true;
   setWorkflowLocked(true);
@@ -1657,8 +1708,8 @@ async function stopNativeRecordingAndReview() {
       return;
     }
 
-    const bytes = await readNativeFile(result.finalMuxedPath);
-    const blob = new Blob([bytes], { type: "video/mp4" });
+    const stagedPath = await stagePendingRecording(result.finalMuxedPath);
+    logDebug(`app.js: native recording staged for review at ${stagedPath}`);
     // recordingDurationSeconds already excludes paused time - the
     // Rust backend tracks pause intervals itself now and is
     // authoritative for native recordings, unlike the old browser/
@@ -1668,7 +1719,7 @@ async function stopNativeRecordingAndReview() {
     // that had already had it removed once.
     const durationSeconds = result.recordingDurationSeconds;
 
-    diagnostics.recordingBlobSize = `${blob.size} bytes`;
+    diagnostics.recordingBlobSize = `${result.finalFileSizeBytes || "unknown"} bytes (file-backed)`;
     diagnostics.recordingMimeType = "video/mp4";
     // The device WASAPI actually resolved and used, not merely what
     // was requested - distinct from currentMicSelection (the user's
@@ -1690,15 +1741,9 @@ async function stopNativeRecordingAndReview() {
       : "Not attempted (video only, no audio sources)";
     renderDiagnostics();
 
-    if (blob.size === 0) {
-      announce("recordingFailed");
-      focusCaptureControl("recording");
-      return;
-    }
-
     showReview({
       kind: "recording",
-      blob,
+      filePath: stagedPath,
       suggestedName: `Recording - ${timestampForFilename()}.mp4`,
       durationSeconds,
     });

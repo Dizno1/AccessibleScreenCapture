@@ -259,3 +259,56 @@ pub fn abort_recording_save(app: AppHandle, state: State<RecordingSaveState>, se
     crate::native_speech::mark_save_dialog_open(&app, false);
     Ok(())
 }
+
+#[derive(Serialize)]
+pub struct FileBackedSaveResult {
+    ok: bool,
+    canceled: bool,
+    #[serde(rename = "savedFileName")]
+    saved_file_name: Option<String>,
+}
+
+#[tauri::command]
+pub async fn save_recording_file(app: AppHandle, source_path: String, suggested_name: String) -> Result<FileBackedSaveResult, String> {
+    crate::debug_log::log(&app, &format!("file-backed recording save: begin, source={source_path}, name={suggested_name}"));
+    crate::native_speech::mark_save_dialog_open(&app, true);
+    let dialog_app = app.clone();
+    let name = suggested_name.clone();
+    let chosen = tauri::async_runtime::spawn_blocking(move || {
+        let mut builder = dialog_app.dialog().file().set_file_name(&name).add_filter("MP4 video", &["mp4"]);
+        if let Some(window) = dialog_app.get_webview_window("main") { builder = builder.set_parent(&window); }
+        builder.blocking_save_file()
+    }).await.map_err(|e| format!("Save dialog task failed: {e}"))?;
+    crate::native_speech::mark_save_dialog_open(&app, false);
+    let Some(chosen) = chosen else { return Ok(FileBackedSaveResult { ok:false, canceled:true, saved_file_name:None }); };
+    let destination = chosen.into_path().map_err(|e| format!("Invalid save path: {e}"))?;
+    let source = std::path::PathBuf::from(source_path);
+    let dest2 = destination.clone();
+    tauri::async_runtime::spawn_blocking(move || fs::copy(&source, &dest2)).await
+        .map_err(|e| format!("Recording copy task failed: {e}"))?
+        .map_err(|e| format!("Could not save recording: {e}"))?;
+    crate::debug_log::log(&app, &format!("file-backed recording save: copied to {}", destination.display()));
+    Ok(FileBackedSaveResult { ok:true, canceled:false, saved_file_name: destination.file_name().map(|n| n.to_string_lossy().to_string()) })
+}
+
+#[tauri::command]
+pub async fn stage_pending_recording(app: AppHandle, source_path: String) -> Result<String, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
+    let destination = dir.join(format!("recording-{stamp}.mp4"));
+    let src = std::path::PathBuf::from(source_path);
+    let dst = destination.clone();
+    tauri::async_runtime::spawn_blocking(move || fs::rename(&src, &dst).or_else(|_| { fs::copy(&src, &dst)?; fs::remove_file(&src)?; Ok(()) })).await
+        .map_err(|e| e.to_string())?.map_err(|e: std::io::Error| e.to_string())?;
+    crate::debug_log::log(&app, &format!("pending recording staged: {}", destination.display()));
+    Ok(destination.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn delete_pending_file(app: AppHandle, path: String) -> Result<(), String> {
+    let p = std::path::PathBuf::from(path);
+    if p.exists() { fs::remove_file(&p).map_err(|e| e.to_string())?; }
+    crate::debug_log::log(&app, &format!("pending capture removed: {}", p.display()));
+    Ok(())
+}

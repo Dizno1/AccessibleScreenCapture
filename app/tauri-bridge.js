@@ -266,3 +266,13 @@ export async function finishRecordingSave(sessionId, expectedBytes) {
 export async function abortRecordingSave(sessionId) {
   return invoke("abort_recording_save", { sessionId });
 }
+
+export async function saveRecordingFile(sourcePath, suggestedName) {
+  return invoke("save_recording_file", { sourcePath, suggestedName });
+}
+export async function stagePendingRecording(sourcePath) {
+  return invoke("stage_pending_recording", { sourcePath });
+}
+export async function deletePendingFile(path) {
+  return invoke("delete_pending_file", { path });
+}

@@ -114,12 +114,14 @@
 
   <!-- ============ Review (appears after a capture, before saving) ============ -->
   <section aria-labelledby="review-heading" id="review-section" hidden>
-    <h2 id="review-heading" tabindex="-1">Review Capture</h2>
+    <h2 id="review-heading" tabindex="-1">Review Queue</h2>
+    <p id="review-queue-status">No captures waiting for review.</p>
+    <div id="review-queue-list"></div>
 
     <div id="review-preview"></div>
 
     <div id="screenshot-confirmation-controls" hidden>
-      <button type="button" id="confirm-screenshot-button" class="secondary-button">Confirm Screenshot</button>
+      <button type="button" id="confirm-screenshot-button" class="secondary-button">Confirm Capture</button>
       <p id="screenshot-confirmation-status" class="section-hint" role="status" aria-live="polite"></p>
       <div id="screenshot-confirmation-result" hidden>
         <h3 id="screenshot-confirmation-heading" tabindex="-1">Screenshot Confirmation</h3>

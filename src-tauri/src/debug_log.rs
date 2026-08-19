@@ -20,11 +20,14 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use tauri::{AppHandle, Manager};
+use chrono::Local;
+use std::sync::LazyLock;
 
 const LOG_FILE: &str = "debug.log";
 const MAX_LOG_BYTES: u64 = 200_000;
 
 static LOG_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static LOG_SESSION: LazyLock<String> = LazyLock::new(|| format!("{}-{}", std::process::id(), Local::now().format("%Y%m%d%H%M%S")));
 
 fn log_path(app: &AppHandle) -> Option<std::path::PathBuf> {
     let dir = app.path().app_config_dir().ok()?;
@@ -48,7 +51,8 @@ pub fn log(app: &AppHandle, message: &str) {
 
     let seq = LOG_SEQUENCE.fetch_add(1, Ordering::SeqCst);
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
-        let _ = writeln!(file, "[{seq}] {message}");
+        let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+        let _ = writeln!(file, "{timestamp} [session {}] [{seq}] {message}", *LOG_SESSION);
     }
 }
 
