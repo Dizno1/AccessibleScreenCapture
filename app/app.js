@@ -97,6 +97,7 @@ let descriptorEnabled = false;
 let playCaptureSound = true;
 let activeReviewVideo = null;
 let activeReviewCapture = null;
+let activeReviewPlayButton = null;
 let pendingEditMark = null;
 let editInProgress = false;
 const shortcutDisplay = {
@@ -754,7 +755,7 @@ function buildRecordingPlaybackControls(video, capture) {
   editingHelp.hidden = true;
   editingHelpButton.setAttribute("aria-controls", editingHelpId);
   const editingHelpText = document.createElement("p");
-  editingHelpText.textContent = "Right bracket marks a beginning trim. Left bracket marks an ending trim or the start of a middle cut. Left bracket followed by right bracket marks a middle cut. Delete applies the marked edit. Escape cancels the current marks. Control+Z undoes the last committed edit. Editing changes only the working copy; the original pending recording remains unchanged.";
+  editingHelpText.textContent = "Right bracket marks a beginning trim. Left bracket marks an ending trim or the start of a middle cut. Left bracket followed by right bracket marks a middle cut. Control+Delete applies the marked edit. Escape cancels the current marks. Control+Z undoes the last committed edit. Editing changes only the working copy; the original pending recording remains unchanged.";
   editingHelp.appendChild(editingHelpText);
   editingHelpButton.addEventListener("click", () => {
     const expanded = editingHelpButton.getAttribute("aria-expanded") !== "true";
@@ -762,7 +763,7 @@ function buildRecordingPlaybackControls(video, capture) {
     editingHelp.hidden = !expanded;
   });
 
-  container.append(playPauseButton, editingHelpButton, editingHelp, rewindButton, forwardButton, announceButton, timeDisplay);
+  container.append(editingHelpButton, editingHelp, playPauseButton, rewindButton, forwardButton, announceButton, timeDisplay);
 
   function currentPositionText() {
     const current = formatDuration(video.currentTime || 0);
@@ -878,6 +879,7 @@ function selectPendingCapture(id, focusPrimaryControl = false) {
   let primaryControl = null;
   activeReviewVideo = null;
   activeReviewCapture = null;
+  activeReviewPlayButton = null;
   pendingEditMark = null;
 
   if (capture.kind === "screenshot" && capture.blob) {
@@ -910,10 +912,12 @@ function selectPendingCapture(id, focusPrimaryControl = false) {
     primaryControl = playback.playPauseButton;
     activeReviewVideo = video;
     activeReviewCapture = capture;
+    activeReviewPlayButton = playback.playPauseButton;
     pendingEditMark = null;
   } else {
     activeReviewVideo = null;
     activeReviewCapture = null;
+    activeReviewPlayButton = null;
     pendingEditMark = null;
   }
 
@@ -968,7 +972,7 @@ async function commitPendingRecordingEdit() {
       return;
     }
     newDuration = currentDuration - startSeconds;
-    successMessage = `Beginning trimmed by ${formatEditPoint(startSeconds)} on the edited copy.`;
+    successMessage = `Beginning trimmed by ${formatEditPoint(startSeconds)}.`;
   } else if (pendingEditMark.type === "trim_end_or_cut_start") {
     operation = "trim_end";
     startSeconds = pendingEditMark.at;
@@ -977,7 +981,7 @@ async function commitPendingRecordingEdit() {
       return;
     }
     newDuration = startSeconds;
-    successMessage = `Ending trimmed at ${formatEditPoint(startSeconds)} on the edited copy.`;
+    successMessage = `Ending trimmed at ${formatEditPoint(startSeconds)}.`;
   } else if (pendingEditMark.type === "cut_middle") {
     operation = "cut_middle";
     startSeconds = pendingEditMark.start;
@@ -988,13 +992,12 @@ async function commitPendingRecordingEdit() {
     }
     const removed = endSeconds - startSeconds;
     newDuration = currentDuration - removed;
-    successMessage = `${formatEditPoint(removed)} removed from the middle of the edited copy.`;
+    successMessage = `${formatEditPoint(removed)} removed.`;
   } else {
     return;
   }
 
   editInProgress = true;
-  announceRaw("Applying edit.");
   try {
     const result = await editRecordingFile(sourcePath, operation, startSeconds, endSeconds);
     if (!result?.ok || !result?.editedPath) {
@@ -1016,8 +1019,19 @@ async function commitPendingRecordingEdit() {
     capture.editSuggestedName = editedSuggestedName(capture);
     pendingEditMark = null;
     logDebug(`recording edit applied: ${operation}, editedPath=${result.editedPath}`);
-    selectPendingCapture(capture.id, true);
-    announceRaw(`${successMessage} Original recording remains unchanged.`);
+
+    // Keep the current review controls alive after an edit. Rebuilding the
+    // entire review subtree here caused screen-reader focus to fall back to a
+    // stale control or even the previously focused application. Swap only the
+    // media source, then explicitly restore application and Play-button focus.
+    if (activeReviewVideo && activeReviewCapture?.id === capture.id) {
+      activeReviewVideo.pause();
+      activeReviewVideo.src = nativeFileUrl(capture.editFilePath);
+      activeReviewVideo.load();
+    }
+    if (isTauri) await showMainWindow();
+    requestAnimationFrame(() => activeReviewPlayButton?.focus({ preventScroll: false }));
+    announceRaw(successMessage);
   } catch (error) {
     logDebug(`recording edit threw: ${error}`);
     announceRaw("The edit could not be applied. The original recording was not changed.");
@@ -1042,7 +1056,13 @@ async function undoLastRecordingEdit() {
   capture.editSuggestedName = capture.hasEdits ? editedSuggestedName(capture) : null;
   pendingEditMark = null;
   await deletePendingFile(currentEditedPath).catch(() => {});
-  selectPendingCapture(capture.id, true);
+  if (activeReviewVideo && activeReviewCapture?.id === capture.id) {
+    activeReviewVideo.pause();
+    activeReviewVideo.src = nativeFileUrl(capture.editFilePath || capture.filePath);
+    activeReviewVideo.load();
+  }
+  if (isTauri) await showMainWindow();
+  requestAnimationFrame(() => activeReviewPlayButton?.focus({ preventScroll: false }));
   announceRaw(capture.hasEdits ? "Last edit undone." : "Last edit undone. Reviewing the unchanged original recording.");
 }
 
@@ -1063,7 +1083,7 @@ function handleRecordingEditKeydown(event) {
     return;
   }
 
-  if (event.key === "Delete" && pendingEditMark) {
+  if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key === "Delete" && pendingEditMark) {
     event.preventDefault();
     commitPendingRecordingEdit();
     return;
@@ -1078,10 +1098,10 @@ function handleRecordingEditKeydown(event) {
         return;
       }
       pendingEditMark = { type: "cut_middle", start: pendingEditMark.at, end: position };
-      announceRaw(`Middle cut selected from ${formatEditPoint(pendingEditMark.start)} to ${formatEditPoint(position)}. Press Delete to remove it.`);
+      announceRaw(`Middle cut selected from ${formatEditPoint(pendingEditMark.start)} to ${formatEditPoint(position)}. Press Control+Delete to remove it.`);
     } else {
       pendingEditMark = { type: "trim_start", at: position };
-      announceRaw(`Beginning trim point set at ${formatEditPoint(position)}. Press Delete to trim the beginning.`);
+      announceRaw(`Beginning trim point set at ${formatEditPoint(position)}. Press Control+Delete to trim the beginning.`);
     }
     return;
   }
@@ -1089,7 +1109,7 @@ function handleRecordingEditKeydown(event) {
   if (event.key === "[") {
     event.preventDefault();
     pendingEditMark = { type: "trim_end_or_cut_start", at: position };
-    announceRaw(`Ending trim or middle cut start set at ${formatEditPoint(position)}. Press Delete to trim the end, or press right bracket to set the end of a middle cut.`);
+    announceRaw(`Ending trim or middle cut start set at ${formatEditPoint(position)}. Press Control+Delete to trim the end, or press right bracket to set the end of a middle cut.`);
   }
 }
 
@@ -1136,6 +1156,10 @@ function restorePendingRecordings() {
     reviewSection.hidden = false;
     renderReviewQueue();
     selectPendingCapture(pendingCapture.id);
+    // On launch with recovered captures, start at the queue heading rather
+    // than whichever control WebView happened to remember from the previous
+    // session. The user can then move to the first capture predictably.
+    requestAnimationFrame(() => reviewHeading.focus({ preventScroll: false }));
     diagnostics.pendingCaptureState = `${pendingCaptures.length} recovered recording(s) awaiting review`;
     renderDiagnostics();
     announceRaw(`${pendingCaptures.length} unsaved recording${pendingCaptures.length === 1 ? " was" : "s were"} recovered from the previous session.`);

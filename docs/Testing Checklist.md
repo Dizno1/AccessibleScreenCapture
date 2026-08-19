@@ -176,12 +176,12 @@
 - Review a pending recording and confirm focus moves to its Play control.
 - While focus remains inside Review Queue, move playback to a point after the beginning and press right bracket. Confirm the app announces a beginning trim point and says Delete is required.
 - Press Escape. Confirm the pending edit is canceled and the recording is unchanged.
-- Set the beginning trim point again and press Delete. Confirm the app announces that the beginning was trimmed on the edited copy and that the original remains unchanged.
+- Set the beginning trim point again and press Control+Delete. Confirm the app announces that the beginning was trimmed on the edited copy and that the original remains unchanged.
 - Press Control+Z. Confirm the edit is undone and the original remains available.
-- Move playback to a point before the end and press left bracket. Confirm the app announces an ending trim or middle cut start point. Press Delete and confirm the ending is trimmed only on the edited copy.
+- Move playback to a point before the end and press left bracket. Confirm the app announces an ending trim or middle cut start point. Press Control+Delete and confirm the ending is trimmed only on the edited copy.
 - Undo that edit.
 - Press left bracket at the beginning of an unwanted middle section, move later in the recording, then press right bracket. Confirm the app announces the selected middle range and requires Delete.
-- Press Delete and confirm only the selected middle section is removed from the edited copy.
+- Press Control+Delete and confirm only the selected middle section is removed from the edited copy.
 - Save the edited recording. Confirm the Save As dialog proposes an Edited MP4 filename.
 - After save completes, confirm focus remains in Review Queue rather than moving to Recent Captures.
 - Confirm the original unedited recording remains pending in Review Queue.
