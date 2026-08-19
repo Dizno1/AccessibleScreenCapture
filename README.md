@@ -2,6 +2,14 @@
 
 A screen-reader-first Windows tool for taking screenshots and recording the screen using accessible controls, keyboard shortcuts, system audio, and microphone audio.
 
+## Basic recording editing
+
+The Review Queue editor is deliberately narrow. It is not a general-purpose video editor. It exists to let a keyboard and screen reader user remove unwanted material before saving a copy.
+
+Bracket keys only set edit points. They never remove video by themselves. Delete is always required to commit a trim or middle cut. Every committed edit creates a separate working file in the app-owned pending-captures area. The original pending recording is never modified.
+
+When an edited copy is saved, focus remains in Review Queue and the original recording remains available there unchanged. Recent Captures is updated without taking focus away from Review Queue.
+
 ## Review Queue focus and recording playback
 
 - Activating Review for a screenshot moves focus directly to that capture's Confirm Capture button.
@@ -18,7 +26,7 @@ AccessibleScreenCapture now records natively on Windows - no Chromium/WebView sc
 
 Recording status feedback (start/stop/pause/resume) is now a three-way choice - Spoken status, Status sounds (real, bundled Open Door Design-created sounds), or Silence - kept separate from the existing "Speak status outside AccessibleScreenCapture" safety setting below, which still governs the JAWS-related speech-safety behavior described in the historical entries below and still needs to be turned on explicitly.
 
-The free recorder is now considered feature-complete: native capture, native audio (system + microphone), Review Capture, and accessible output settings. A later version will introduce editing capability and a Pro tier - not part of this release.
+The recorder now includes basic non-destructive keyboard editing for the recording currently being reviewed. Native capture, native audio, the Review Queue, accessible output settings, and the basic editor are all part of this build.
 
 ## Historical status (superseded by the above, kept for context)
 
@@ -172,7 +180,7 @@ The `docs/` folder contains design history, roadmap material, screen-reader-firs
 
 ## Completed functionality
 
-AccessibleScreenCapture 2.1.0 Beta is the completed free, non-editing recorder.
+AccessibleScreenCapture 2.2.0 Beta adds basic non-destructive recording editing to the Review Queue.
 
 Current 2.0.0 functionality includes:
 
@@ -197,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture 2.1.0 Beta**.
+The current release candidate is **AccessibleScreenCapture 2.2.0 Beta**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -205,7 +213,18 @@ Editing is not part of this free recorder release.
 
 ## Next development phase
 
-After 2.0.0 completes final Windows acceptance testing, the next development phase will add recording-editing capability. That editing work is planned as a separate version and will form the basis of the Pro edition rather than being mixed into this free recorder release.
+AccessibleScreenCapture 2.2.0 introduces the first intentionally small editing workflow. Editing applies only to the recording currently being reviewed and never modifies the original pending recording.
+
+Editing keys while focus is inside Review Queue:
+
+- Right bracket (`]`) marks a beginning trim point.
+- Left bracket (`[`) marks an ending trim point. Press Delete to trim the end.
+- Left bracket (`[`) followed by right bracket (`]`) marks a middle section. Press Delete to remove that section.
+- Delete commits the marked edit to an edited working copy.
+- Escape cancels the pending marks without changing the video.
+- Control+Z undoes the most recently committed edit.
+
+Saving an edited working copy does not remove or modify the original recording. The original remains pending in Review Queue until the user explicitly saves or discards it.
 
 ## Copyright
 

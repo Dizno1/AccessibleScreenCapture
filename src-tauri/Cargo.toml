@@ -1,6 +1,6 @@
 [package]
 name = "accessible-screen-capture"
-version = "2.1.0-2"
+version = "2.2.0-1"
 description = "Professional screen capture designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"

@@ -47,6 +47,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_shell::ShellExt;
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -266,6 +267,8 @@ pub struct FileBackedSaveResult {
     canceled: bool,
     #[serde(rename = "savedFileName")]
     saved_file_name: Option<String>,
+    #[serde(rename = "savedFilePath")]
+    saved_file_path: Option<String>,
 }
 
 #[tauri::command]
@@ -280,7 +283,7 @@ pub async fn save_recording_file(app: AppHandle, source_path: String, suggested_
         builder.blocking_save_file()
     }).await.map_err(|e| format!("Save dialog task failed: {e}"))?;
     crate::native_speech::mark_save_dialog_open(&app, false);
-    let Some(chosen) = chosen else { return Ok(FileBackedSaveResult { ok:false, canceled:true, saved_file_name:None }); };
+    let Some(chosen) = chosen else { return Ok(FileBackedSaveResult { ok:false, canceled:true, saved_file_name:None, saved_file_path:None }); };
     let destination = chosen.into_path().map_err(|e| format!("Invalid save path: {e}"))?;
     let source = std::path::PathBuf::from(source_path);
     let dest2 = destination.clone();
@@ -288,7 +291,103 @@ pub async fn save_recording_file(app: AppHandle, source_path: String, suggested_
         .map_err(|e| format!("Recording copy task failed: {e}"))?
         .map_err(|e| format!("Could not save recording: {e}"))?;
     crate::debug_log::log(&app, &format!("file-backed recording save: copied to {}", destination.display()));
-    Ok(FileBackedSaveResult { ok:true, canceled:false, saved_file_name: destination.file_name().map(|n| n.to_string_lossy().to_string()) })
+    Ok(FileBackedSaveResult {
+        ok:true,
+        canceled:false,
+        saved_file_name: destination.file_name().map(|n| n.to_string_lossy().to_string()),
+        saved_file_path: Some(destination.to_string_lossy().to_string()),
+    })
+}
+
+#[derive(Serialize)]
+pub struct EditRecordingResult {
+    ok: bool,
+    #[serde(rename = "editedPath")]
+    edited_path: Option<String>,
+    error: Option<String>,
+}
+
+/// Creates a new edited working copy of a pending recording. The source
+/// recording is never modified or deleted. Arbitrary edit points are
+/// frame-accurate enough for the app's simple review editor because FFmpeg
+/// re-encodes the result rather than relying on keyframe-only stream copies.
+#[tauri::command]
+pub async fn edit_recording_file(
+    app: AppHandle,
+    source_path: String,
+    operation: String,
+    start_seconds: f64,
+    end_seconds: Option<f64>,
+) -> Result<EditRecordingResult, String> {
+    let source = std::path::PathBuf::from(&source_path);
+    if !source.exists() {
+        return Err("The recording selected for editing no longer exists.".to_string());
+    }
+
+    let pending_dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");
+    fs::create_dir_all(&pending_dir).map_err(|e| e.to_string())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
+    let destination = pending_dir.join(format!("edited-{stamp}.mp4"));
+
+    let start = start_seconds.max(0.0);
+    let end = end_seconds.map(|v| v.max(0.0));
+    let mut args: Vec<String> = vec!["-y".into(), "-i".into(), source.to_string_lossy().to_string()];
+
+    match operation.as_str() {
+        "trim_start" => {
+            args.extend([
+                "-vf".into(), format!("trim=start={start:.6},setpts=PTS-STARTPTS"),
+                "-af".into(), format!("atrim=start={start:.6},asetpts=PTS-STARTPTS"),
+            ]);
+        }
+        "trim_end" => {
+            args.extend([
+                "-vf".into(), format!("trim=end={start:.6},setpts=PTS-STARTPTS"),
+                "-af".into(), format!("atrim=end={start:.6},asetpts=PTS-STARTPTS"),
+            ]);
+        }
+        "cut_middle" => {
+            let Some(end) = end else { return Err("A middle cut requires both a start and end point.".to_string()); };
+            if end <= start {
+                return Err("The cut end must be later than the cut start.".to_string());
+            }
+            args.extend([
+                "-vf".into(), format!("select='not(between(t,{start:.6},{end:.6}))',setpts=N/FRAME_RATE/TB"),
+                "-af".into(), format!("aselect='not(between(t,{start:.6},{end:.6}))',asetpts=N/SR/TB"),
+            ]);
+        }
+        _ => return Err(format!("Unknown recording edit operation: {operation}")),
+    }
+
+    args.extend([
+        "-map".into(), "0:v:0".into(),
+        "-map".into(), "0:a?".into(),
+        "-c:v".into(), "mpeg4".into(),
+        "-q:v".into(), "5".into(),
+        "-c:a".into(), "aac".into(),
+        "-movflags".into(), "+faststart".into(),
+        destination.to_string_lossy().to_string(),
+    ]);
+
+    crate::debug_log::log(&app, &format!("recording edit: operation={operation}, source={}, start={start:.3}, end={:?}", source.display(), end));
+    let sidecar = app.shell().sidecar("ffmpeg").map_err(|e| format!("Could not locate FFmpeg: {e}"))?;
+    let output = sidecar.args(args).output().await.map_err(|e| format!("Could not run FFmpeg editor: {e}"))?;
+
+    if output.status.success() && destination.exists() {
+        crate::debug_log::log(&app, &format!("recording edit: created {}", destination.display()));
+        Ok(EditRecordingResult { ok: true, edited_path: Some(destination.to_string_lossy().to_string()), error: None })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error = if stderr.chars().count() > 2000 {
+            format!("{}... [truncated]", stderr.chars().take(2000).collect::<String>())
+        } else { stderr.to_string() };
+        let _ = fs::remove_file(&destination);
+        crate::debug_log::log(&app, &format!("recording edit FAILED: {error}"));
+        Ok(EditRecordingResult { ok: false, edited_path: None, error: Some(error) })
+    }
 }
 
 #[tauri::command]

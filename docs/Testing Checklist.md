@@ -169,3 +169,22 @@
 - [ ] Shortcut rebinding, duplicate prevention, and Restore Defaults are unchanged.
 - [ ] System tray, minimize-to-tray, and Quit are unchanged.
 - [ ] Screenshot save (which goes through the same rewritten `save_capture_native` command as recording save) still works correctly - confirms the rewrite didn't regress the case that was already working.
+
+
+## Review Queue basic recording editing
+
+- Review a pending recording and confirm focus moves to its Play control.
+- While focus remains inside Review Queue, move playback to a point after the beginning and press right bracket. Confirm the app announces a beginning trim point and says Delete is required.
+- Press Escape. Confirm the pending edit is canceled and the recording is unchanged.
+- Set the beginning trim point again and press Delete. Confirm the app announces that the beginning was trimmed on the edited copy and that the original remains unchanged.
+- Press Control+Z. Confirm the edit is undone and the original remains available.
+- Move playback to a point before the end and press left bracket. Confirm the app announces an ending trim or middle cut start point. Press Delete and confirm the ending is trimmed only on the edited copy.
+- Undo that edit.
+- Press left bracket at the beginning of an unwanted middle section, move later in the recording, then press right bracket. Confirm the app announces the selected middle range and requires Delete.
+- Press Delete and confirm only the selected middle section is removed from the edited copy.
+- Save the edited recording. Confirm the Save As dialog proposes an Edited MP4 filename.
+- After save completes, confirm focus remains in Review Queue rather than moving to Recent Captures.
+- Confirm the original unedited recording remains pending in Review Queue.
+- Review the original again and confirm its duration/content are unchanged.
+- Save or discard a non-edited capture when another capture remains. Confirm focus moves to the next pending capture's Review button.
+- Remove the final pending capture. Confirm focus moves to the Review Queue heading and the queue reports that no captures are waiting for review.

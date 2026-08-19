@@ -276,6 +276,9 @@ export async function stagePendingRecording(sourcePath) {
 export async function deletePendingFile(path) {
   return invoke("delete_pending_file", { path });
 }
+export async function editRecordingFile(sourcePath, operation, startSeconds, endSeconds = null) {
+  return invoke("edit_recording_file", { sourcePath, operation, startSeconds, endSeconds });
+}
 
 /** Convert a native file path to a WebView-safe URL without reading the file into JS memory. */
 export function nativeFileUrl(path) {

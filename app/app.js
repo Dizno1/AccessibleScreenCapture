@@ -45,6 +45,7 @@ import {
   saveRecordingFile,
   stagePendingRecording,
   deletePendingFile,
+  editRecordingFile,
   nativeFileUrl,
 } from "./tauri-bridge.js";
 
@@ -94,6 +95,10 @@ let activeAudioContext = null;
 let captureCounter = 0;
 let descriptorEnabled = false;
 let playCaptureSound = true;
+let activeReviewVideo = null;
+let activeReviewCapture = null;
+let pendingEditMark = null;
+let editInProgress = false;
 const shortcutDisplay = {
   screenshot: "Alt+Ctrl+Space",
   recordToggle: "Alt+Ctrl+R",
@@ -753,7 +758,10 @@ function buildRecordingPlaybackControls(video, capture) {
   timeDisplay.setAttribute("aria-hidden", "true");
   timeDisplay.textContent = "0 seconds of 0 seconds";
 
-  container.append(playPauseButton, rewindButton, forwardButton, announceButton, timeDisplay);
+  const editingHelp = document.createElement("p");
+  editingHelp.textContent = "Editing: right bracket marks a beginning trim. Left bracket marks an ending trim or the start of a middle cut. Left bracket followed by right bracket marks a middle cut. Press Delete to apply the marked edit. Press Escape to cancel marks. Press Control+Z to undo the last edit.";
+
+  container.append(playPauseButton, rewindButton, forwardButton, announceButton, timeDisplay, editingHelp);
 
   function currentPositionText() {
     const current = formatDuration(video.currentTime || 0);
@@ -867,6 +875,9 @@ function selectPendingCapture(id, focusPrimaryControl = false) {
   updateCaptureActionLabels(capture);
 
   let primaryControl = null;
+  activeReviewVideo = null;
+  activeReviewCapture = null;
+  pendingEditMark = null;
 
   if (capture.kind === "screenshot" && capture.blob) {
     reviewObjectUrl = URL.createObjectURL(capture.blob);
@@ -884,8 +895,9 @@ function selectPendingCapture(id, focusPrimaryControl = false) {
     video.preload = "metadata";
     video.controls = false;
     video.setAttribute("aria-hidden", "true");
-    if (capture.filePath) {
-      video.src = nativeFileUrl(capture.filePath);
+    const reviewPath = capture.editFilePath || capture.filePath;
+    if (reviewPath) {
+      video.src = nativeFileUrl(reviewPath);
     } else if (capture.blob) {
       reviewObjectUrl = URL.createObjectURL(capture.blob);
       video.src = reviewObjectUrl;
@@ -895,11 +907,205 @@ function selectPendingCapture(id, focusPrimaryControl = false) {
     const playback = buildRecordingPlaybackControls(video, capture);
     reviewPreview.appendChild(playback.container);
     primaryControl = playback.playPauseButton;
+    activeReviewVideo = video;
+    activeReviewCapture = capture;
+    pendingEditMark = null;
+  } else {
+    activeReviewVideo = null;
+    activeReviewCapture = null;
+    pendingEditMark = null;
   }
 
   if (focusPrimaryControl && primaryControl) {
     requestAnimationFrame(() => primaryControl.focus({ preventScroll: false }));
   }
+}
+
+
+function editableRecordingDuration(capture) {
+  return Number(capture?.editDurationSeconds || capture?.durationSeconds || activeReviewVideo?.duration || 0);
+}
+
+function formatEditPoint(seconds) {
+  return formatDuration(Math.max(0, Number(seconds) || 0));
+}
+
+function editedSuggestedName(capture) {
+  const original = capture?.suggestedName || "Recording.mp4";
+  return original.replace(/\.mp4$/i, " - Edited.mp4");
+}
+
+function clearPendingEditMark(announceCancel = false) {
+  if (!pendingEditMark) return;
+  pendingEditMark = null;
+  if (announceCancel) announceRaw("Pending edit canceled. No video was changed.");
+}
+
+async function commitPendingRecordingEdit() {
+  if (!activeReviewCapture || !activeReviewVideo || !pendingEditMark || editInProgress) return;
+  const capture = activeReviewCapture;
+  if (capture.kind !== "recording" || pendingCapture?.id !== capture.id) return;
+
+  const sourcePath = capture.editFilePath || capture.filePath;
+  if (!sourcePath) {
+    announceRaw("This recording cannot be edited because its file is not available.");
+    return;
+  }
+
+  const currentDuration = editableRecordingDuration(capture);
+  let operation;
+  let startSeconds;
+  let endSeconds = null;
+  let newDuration;
+  let successMessage;
+
+  if (pendingEditMark.type === "trim_start") {
+    operation = "trim_start";
+    startSeconds = pendingEditMark.at;
+    if (startSeconds <= 0 || startSeconds >= currentDuration) {
+      announceRaw("That beginning trim point is not valid.");
+      return;
+    }
+    newDuration = currentDuration - startSeconds;
+    successMessage = `Beginning trimmed by ${formatEditPoint(startSeconds)} on the edited copy.`;
+  } else if (pendingEditMark.type === "trim_end_or_cut_start") {
+    operation = "trim_end";
+    startSeconds = pendingEditMark.at;
+    if (startSeconds <= 0 || startSeconds >= currentDuration) {
+      announceRaw("That ending trim point is not valid.");
+      return;
+    }
+    newDuration = startSeconds;
+    successMessage = `Ending trimmed at ${formatEditPoint(startSeconds)} on the edited copy.`;
+  } else if (pendingEditMark.type === "cut_middle") {
+    operation = "cut_middle";
+    startSeconds = pendingEditMark.start;
+    endSeconds = pendingEditMark.end;
+    if (startSeconds < 0 || endSeconds <= startSeconds || endSeconds >= currentDuration) {
+      announceRaw("Those middle cut points are not valid.");
+      return;
+    }
+    const removed = endSeconds - startSeconds;
+    newDuration = currentDuration - removed;
+    successMessage = `${formatEditPoint(removed)} removed from the middle of the edited copy.`;
+  } else {
+    return;
+  }
+
+  editInProgress = true;
+  announceRaw("Applying edit.");
+  try {
+    const result = await editRecordingFile(sourcePath, operation, startSeconds, endSeconds);
+    if (!result?.ok || !result?.editedPath) {
+      const detail = result?.error ? ` ${result.error}` : "";
+      logDebug(`recording edit failed: operation=${operation}.${detail}`);
+      announceRaw("The edit could not be applied. The original recording was not changed.");
+      return;
+    }
+
+    capture.editUndoStack = capture.editUndoStack || [];
+    capture.editUndoStack.push({
+      path: sourcePath,
+      durationSeconds: currentDuration,
+      isOriginal: sourcePath === capture.filePath,
+    });
+    capture.editFilePath = result.editedPath;
+    capture.editDurationSeconds = newDuration;
+    capture.hasEdits = true;
+    capture.editSuggestedName = editedSuggestedName(capture);
+    pendingEditMark = null;
+    logDebug(`recording edit applied: ${operation}, editedPath=${result.editedPath}`);
+    selectPendingCapture(capture.id, true);
+    announceRaw(`${successMessage} Original recording remains unchanged.`);
+  } catch (error) {
+    logDebug(`recording edit threw: ${error}`);
+    announceRaw("The edit could not be applied. The original recording was not changed.");
+  } finally {
+    editInProgress = false;
+  }
+}
+
+async function undoLastRecordingEdit() {
+  const capture = activeReviewCapture;
+  if (!capture || capture.kind !== "recording" || pendingCapture?.id !== capture.id || editInProgress) return;
+  const stack = capture.editUndoStack || [];
+  if (!capture.editFilePath || stack.length === 0) {
+    announceRaw("There is no recording edit to undo.");
+    return;
+  }
+  const currentEditedPath = capture.editFilePath;
+  const previous = stack.pop();
+  capture.editFilePath = previous.isOriginal ? null : previous.path;
+  capture.editDurationSeconds = previous.durationSeconds;
+  capture.hasEdits = Boolean(capture.editFilePath);
+  capture.editSuggestedName = capture.hasEdits ? editedSuggestedName(capture) : null;
+  pendingEditMark = null;
+  await deletePendingFile(currentEditedPath).catch(() => {});
+  selectPendingCapture(capture.id, true);
+  announceRaw(capture.hasEdits ? "Last edit undone." : "Last edit undone. Reviewing the unchanged original recording.");
+}
+
+function handleRecordingEditKeydown(event) {
+  if (!activeReviewCapture || !activeReviewVideo || pendingCapture?.id !== activeReviewCapture.id) return;
+  if (!reviewSection.contains(document.activeElement)) return;
+  if (activeReviewCapture.kind !== "recording" || editInProgress) return;
+
+  if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    undoLastRecordingEdit();
+    return;
+  }
+
+  if (event.key === "Escape" && pendingEditMark) {
+    event.preventDefault();
+    clearPendingEditMark(true);
+    return;
+  }
+
+  if (event.key === "Delete" && pendingEditMark) {
+    event.preventDefault();
+    commitPendingRecordingEdit();
+    return;
+  }
+
+  const position = Number(activeReviewVideo.currentTime || 0);
+  if (event.key === "]") {
+    event.preventDefault();
+    if (pendingEditMark?.type === "trim_end_or_cut_start") {
+      if (position <= pendingEditMark.at) {
+        announceRaw("The middle cut end must be later than its start.");
+        return;
+      }
+      pendingEditMark = { type: "cut_middle", start: pendingEditMark.at, end: position };
+      announceRaw(`Middle cut selected from ${formatEditPoint(pendingEditMark.start)} to ${formatEditPoint(position)}. Press Delete to remove it.`);
+    } else {
+      pendingEditMark = { type: "trim_start", at: position };
+      announceRaw(`Beginning trim point set at ${formatEditPoint(position)}. Press Delete to trim the beginning.`);
+    }
+    return;
+  }
+
+  if (event.key === "[") {
+    event.preventDefault();
+    pendingEditMark = { type: "trim_end_or_cut_start", at: position };
+    announceRaw(`Ending trim or middle cut start set at ${formatEditPoint(position)}. Press Delete to trim the end, or press right bracket to set the end of a middle cut.`);
+  }
+}
+
+document.addEventListener("keydown", handleRecordingEditKeydown);
+
+async function cleanupCaptureEditFiles(capture, includeCurrent = true) {
+  const paths = new Set();
+  if (includeCurrent && capture?.editFilePath) paths.add(capture.editFilePath);
+  for (const entry of capture?.editUndoStack || []) {
+    if (entry.path && entry.path !== capture.filePath) paths.add(entry.path);
+  }
+  for (const path of paths) await deletePendingFile(path).catch(() => {});
+  capture.editFilePath = null;
+  capture.editUndoStack = [];
+  capture.editDurationSeconds = null;
+  capture.hasEdits = false;
+  capture.editSuggestedName = null;
 }
 
 const PENDING_RECORDINGS_KEY = "accessibleScreenCapture.pendingRecordings.v1";
@@ -1100,8 +1306,10 @@ async function saveCapture(capture) {
   );
 
   if (isTauri && capture.kind === "recording" && capture.filePath) {
-    logDebug(`saveCapture: file-backed recording, path=${capture.filePath}`);
-    return saveRecordingFile(capture.filePath, capture.suggestedName);
+    const sourcePath = capture.editFilePath || capture.filePath;
+    const suggestedName = capture.editFilePath ? (capture.editSuggestedName || editedSuggestedName(capture)) : capture.suggestedName;
+    logDebug(`saveCapture: file-backed recording, path=${sourcePath}, edited=${Boolean(capture.editFilePath)}`);
+    return saveRecordingFile(sourcePath, suggestedName);
   }
 
   if (isTauri && capture.kind === "recording") {
@@ -1178,13 +1386,31 @@ saveButton.addEventListener("click", async () => {
   const result = await performSave(capture);
 
   if (result.ok) {
-    if (result.savedFileName) {
-      capture.suggestedName = result.savedFileName;
-    }
     announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
-    removePendingCapture(capture);
-    if (capture.filePath) await deletePendingFile(capture.filePath).catch(() => {});
-    addRecentCapture(capture);
+
+    if (capture.kind === "recording" && capture.editFilePath) {
+      const savedRecent = {
+        ...capture,
+        filePath: result.savedFilePath || capture.editFilePath,
+        suggestedName: result.savedFileName || capture.editSuggestedName || editedSuggestedName(capture),
+        durationSeconds: capture.editDurationSeconds || capture.durationSeconds,
+        editFilePath: null,
+        editUndoStack: [],
+        hasEdits: false,
+      };
+      const editedTempPath = capture.editFilePath;
+      await cleanupCaptureEditFiles(capture, false);
+      if (result.savedFilePath && editedTempPath) await deletePendingFile(editedTempPath).catch(() => {});
+      addRecentCapture(savedRecent, false);
+      selectPendingCapture(capture.id);
+      focusReviewButton(capture.id);
+      announceRaw("Edited recording saved. The original recording remains in the Review Queue unchanged.");
+    } else {
+      if (result.savedFileName) capture.suggestedName = result.savedFileName;
+      removePendingCapture(capture);
+      if (capture.filePath) await deletePendingFile(capture.filePath).catch(() => {});
+      addRecentCapture(capture, false);
+    }
     diagnostics.recentCapturesUpdated = `Yes at ${nowText()}`;
     renderDiagnostics();
   } else if (result.canceled) {
@@ -1201,11 +1427,13 @@ discardButton.addEventListener("click", () => {
 
   const capture = pendingCapture;
   announce("captureDiscarded");
-  removePendingCapture(capture);
-  if (capture.filePath) deletePendingFile(capture.filePath).catch(() => {});
+  cleanupCaptureEditFiles(capture).finally(() => {
+    removePendingCapture(capture);
+    if (capture.filePath) deletePendingFile(capture.filePath).catch(() => {});
+  });
 });
 
-function addRecentCapture(capture) {
+function addRecentCapture(capture, focusHeading = true) {
   recentEmptyMessage.hidden = true;
   captureCounter += 1;
   const itemId = `recent-capture-${captureCounter}`;
@@ -1265,7 +1493,7 @@ function addRecentCapture(capture) {
   item.appendChild(removeButton);
 
   recentList.appendChild(item);
-  heading.focus();
+  if (focusHeading) heading.focus();
 }
 
 function captureWasCanceled(error) {
