@@ -276,3 +276,9 @@ export async function stagePendingRecording(sourcePath) {
 export async function deletePendingFile(path) {
   return invoke("delete_pending_file", { path });
 }
+
+/** Convert a native file path to a WebView-safe URL without reading the file into JS memory. */
+export function nativeFileUrl(path) {
+  if (!isTauri || !path) return path || "";
+  return window.__TAURI__.core.convertFileSrc(path);
+}

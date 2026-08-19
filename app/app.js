@@ -45,6 +45,7 @@ import {
   saveRecordingFile,
   stagePendingRecording,
   deletePendingFile,
+  nativeFileUrl,
 } from "./tauri-bridge.js";
 
 const systemAudioOption = document.getElementById("option-system-audio");
@@ -720,30 +721,32 @@ function revokeReviewObjectUrl() {
  * Space/Enter activation works with virtual cursor off, with no
  * custom key handling needed.
  */
-function buildRecordingPlaybackControls(video) {
+function buildRecordingPlaybackControls(video, capture) {
   const container = document.createElement("div");
   container.className = "playback-controls";
+
+  const label = captureLabel(capture);
 
   const playPauseButton = document.createElement("button");
   playPauseButton.type = "button";
   playPauseButton.className = "secondary-button";
-  playPauseButton.textContent = "Play";
+  playPauseButton.textContent = `Play - ${label}`;
   playPauseButton.setAttribute("aria-pressed", "false");
 
   const rewindButton = document.createElement("button");
   rewindButton.type = "button";
   rewindButton.className = "secondary-button";
-  rewindButton.textContent = "Rewind 5 Seconds";
+  rewindButton.textContent = `Rewind 5 Seconds - ${label}`;
 
   const forwardButton = document.createElement("button");
   forwardButton.type = "button";
   forwardButton.className = "secondary-button";
-  forwardButton.textContent = "Forward 5 Seconds";
+  forwardButton.textContent = `Forward 5 Seconds - ${label}`;
 
   const announceButton = document.createElement("button");
   announceButton.type = "button";
   announceButton.className = "secondary-button";
-  announceButton.textContent = "Announce Playback Position";
+  announceButton.textContent = `Announce Playback Position - ${label}`;
 
   const timeDisplay = document.createElement("p");
   timeDisplay.className = "playback-time";
@@ -754,7 +757,7 @@ function buildRecordingPlaybackControls(video) {
 
   function currentPositionText() {
     const current = formatDuration(video.currentTime || 0);
-    const total = formatDuration(video.duration || 0);
+    const total = formatDuration(video.duration || capture.durationSeconds || 0);
     return `${current} of ${total}`;
   }
 
@@ -763,13 +766,18 @@ function buildRecordingPlaybackControls(video) {
   }
 
   function setPlayingState(isPlaying) {
-    playPauseButton.textContent = isPlaying ? "Pause" : "Play";
+    playPauseButton.textContent = `${isPlaying ? "Pause" : "Play"} - ${label}`;
     playPauseButton.setAttribute("aria-pressed", isPlaying ? "true" : "false");
   }
 
-  playPauseButton.addEventListener("click", () => {
-    if (video.paused) video.play();
-    else video.pause();
+  playPauseButton.addEventListener("click", async () => {
+    try {
+      if (video.paused) await video.play();
+      else video.pause();
+    } catch (error) {
+      logDebug(`recording review playback failed for ${label}: ${error}`);
+      announceRaw(`Unable to play ${label}.`);
+    }
   });
   video.addEventListener("play", () => setPlayingState(true));
   video.addEventListener("pause", () => setPlayingState(false));
@@ -780,21 +788,18 @@ function buildRecordingPlaybackControls(video) {
   });
 
   forwardButton.addEventListener("click", () => {
-    const duration = video.duration || video.currentTime + 5;
+    const duration = video.duration || capture.durationSeconds || video.currentTime + 5;
     video.currentTime = Math.min(duration, video.currentTime + 5);
   });
 
   announceButton.addEventListener("click", () => {
-    announceRaw(`${currentPositionText()}.`);
+    announceRaw(`${label}, ${currentPositionText()}.`);
   });
 
-  // Current-time updates are plain text, never a live-region
-  // announcement - only the explicit "Announce Playback Position"
-  // button ever speaks a position.
   video.addEventListener("timeupdate", updateTimeDisplay);
   video.addEventListener("loadedmetadata", updateTimeDisplay);
 
-  return container;
+  return { container, playPauseButton };
 }
 
 function captureLabel(capture) {
@@ -813,9 +818,11 @@ function updateCaptureActionLabels(capture) {
 
 function renderReviewQueue() {
   reviewQueueList.innerHTML = "";
-  reviewQueueStatus.textContent = pendingCaptures.length === 1
-    ? "1 capture waiting for review."
-    : `${pendingCaptures.length} captures waiting for review.`;
+  reviewQueueStatus.textContent = pendingCaptures.length === 0
+    ? "No captures waiting for review."
+    : pendingCaptures.length === 1
+      ? "1 capture waiting for review."
+      : `${pendingCaptures.length} captures waiting for review.`;
   for (const capture of pendingCaptures) {
     const wrapper = document.createElement("div");
     const heading = document.createElement("h3");
@@ -824,6 +831,7 @@ function renderReviewQueue() {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "secondary-button";
+    button.dataset.captureId = capture.id;
     button.textContent = `Review ${captureLabel(capture)}`;
     button.addEventListener("click", () => selectPendingCapture(capture.id, true));
     wrapper.appendChild(button);
@@ -831,7 +839,19 @@ function renderReviewQueue() {
   }
 }
 
-function selectPendingCapture(id, focusHeading = false) {
+function focusReviewButton(id) {
+  requestAnimationFrame(() => {
+    const button = reviewQueueList.querySelector(`button[data-capture-id="${id}"]`);
+    if (button) button.focus({ preventScroll: false });
+    else reviewHeading.focus({ preventScroll: false });
+  });
+}
+
+function focusReviewEmptyState() {
+  requestAnimationFrame(() => reviewHeading.focus({ preventScroll: false }));
+}
+
+function selectPendingCapture(id, focusPrimaryControl = false) {
   const capture = pendingCaptures.find((item) => item.id === id);
   if (!capture) return;
   pendingCapture = capture;
@@ -846,23 +866,40 @@ function selectPendingCapture(id, focusHeading = false) {
   confirmScreenshotButton.disabled = false;
   updateCaptureActionLabels(capture);
 
+  let primaryControl = null;
+
   if (capture.kind === "screenshot" && capture.blob) {
     reviewObjectUrl = URL.createObjectURL(capture.blob);
     const img = document.createElement("img");
     img.src = reviewObjectUrl;
     img.alt = `Preview of ${captureLabel(capture)}`;
     reviewPreview.appendChild(img);
+    primaryControl = confirmScreenshotButton;
   } else if (capture.kind === "recording") {
-    const label = document.createElement("p");
-    label.textContent = `Recording length: ${formatDuration(capture.durationSeconds)}`;
-    reviewPreview.appendChild(label);
+    const detailHeading = document.createElement("h3");
+    detailHeading.textContent = `Review ${captureLabel(capture)}`;
+    reviewPreview.appendChild(detailHeading);
+
+    const video = document.createElement("video");
+    video.preload = "metadata";
+    video.controls = false;
+    video.setAttribute("aria-hidden", "true");
     if (capture.filePath) {
-      const note = document.createElement("p");
-      note.textContent = "Recording is safely stored on disk and ready to save.";
-      reviewPreview.appendChild(note);
+      video.src = nativeFileUrl(capture.filePath);
+    } else if (capture.blob) {
+      reviewObjectUrl = URL.createObjectURL(capture.blob);
+      video.src = reviewObjectUrl;
     }
+    reviewPreview.appendChild(video);
+
+    const playback = buildRecordingPlaybackControls(video, capture);
+    reviewPreview.appendChild(playback.container);
+    primaryControl = playback.playPauseButton;
   }
-  if (focusHeading) reviewHeading.focus({ preventScroll: false });
+
+  if (focusPrimaryControl && primaryControl) {
+    requestAnimationFrame(() => primaryControl.focus({ preventScroll: false }));
+  }
 }
 
 const PENDING_RECORDINGS_KEY = "accessibleScreenCapture.pendingRecordings.v1";
@@ -909,30 +946,32 @@ function showReview(capture) {
   persistPendingRecordings();
   reviewSection.hidden = false;
   renderReviewQueue();
-  selectPendingCapture(capture.id);
+  selectPendingCapture(capture.id, !capture.suppressReviewFocus);
   logDebug(`review queue: added ${captureLabel(capture)}; ${pendingCaptures.length} pending`);
   if (capture.suppressReviewFocus) {
     announceRaw(`${captureLabel(capture)} added to Review Queue. Recording continues.`);
-    return;
   }
-  requestAnimationFrame(() => {
-    reviewHeading.scrollIntoView({ block: "center" });
-    reviewHeading.focus({ preventScroll: false });
-  });
 }
 
 function removePendingCapture(capture) {
+  const removedIndex = pendingCaptures.findIndex((item) => item.id === capture.id);
   pendingCaptures = pendingCaptures.filter((item) => item.id !== capture.id);
   persistPendingRecordings();
-  pendingCapture = pendingCaptures[0] || null;
+  pendingCapture = pendingCaptures.length
+    ? pendingCaptures[Math.min(Math.max(removedIndex, 0), pendingCaptures.length - 1)]
+    : null;
   revokeReviewObjectUrl();
   reviewPreview.innerHTML = "";
-  if (pendingCaptures.length === 0) {
-    reviewSection.hidden = true;
-    diagnostics.pendingCaptureState = "Empty";
-  } else {
-    renderReviewQueue();
+  renderReviewQueue();
+  if (pendingCapture) {
+    diagnostics.pendingCaptureState = `${pendingCapture.kind} ${pendingCapture.queueNumber} awaiting review`;
     selectPendingCapture(pendingCapture.id);
+    focusReviewButton(pendingCapture.id);
+  } else {
+    diagnostics.pendingCaptureState = "Empty";
+    screenshotConfirmationControls.hidden = true;
+    screenshotConfirmationResult.hidden = true;
+    focusReviewEmptyState();
   }
   renderDiagnostics();
 }
@@ -1161,20 +1200,10 @@ discardButton.addEventListener("click", () => {
   if (!confirmed) return;
 
   const capture = pendingCapture;
-  const discardedKind = capture.kind;
   announce("captureDiscarded");
   removePendingCapture(capture);
   if (capture.filePath) deletePendingFile(capture.filePath).catch(() => {});
-  focusCaptureControl(discardedKind);
 });
-
-function focusCaptureControl(kind) {
-  if (kind === "recording") {
-    recordToggleButton.focus();
-  } else {
-    screenshotButton.focus();
-  }
-}
 
 function addRecentCapture(capture) {
   recentEmptyMessage.hidden = true;

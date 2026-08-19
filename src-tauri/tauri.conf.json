@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "AccessibleScreenCapture",
-  "version": "2.1.0-2",
+  "version": "2.1.0-3",
   "identifier": "org.opendoordesign.accessiblescreencapture",
   "build": {
     "beforeDevCommand": "node scripts/prepare-dist.js",
@@ -23,7 +23,13 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPCONFIG/pending-captures/**/*"
+        ]
+      }
     },
     "trayIcon": {
       "iconPath": "icons/icon.png",

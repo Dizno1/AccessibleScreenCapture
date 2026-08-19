@@ -2,6 +2,14 @@
 
 A screen-reader-first Windows tool for taking screenshots and recording the screen using accessible controls, keyboard shortcuts, system audio, and microphone audio.
 
+## Review Queue focus and recording playback
+
+- Activating Review for a screenshot moves focus directly to that capture's Confirm Capture button.
+- Activating Review for a recording moves focus directly to that capture's Play button.
+- Recording review plays the protected pending MP4 directly from disk and does not load the entire recording into JavaScript memory.
+- Save and Discard keep focus in the Review Queue. When another capture remains, focus moves to its Review button. When the queue becomes empty, focus moves to the Review Queue heading and the queue remains available with a No captures waiting for review status.
+- Recording playback buttons identify the recording they control.
+
 ## Status
 
 **Native Windows application, version 2.0.0. This is the completed free recorder.**
