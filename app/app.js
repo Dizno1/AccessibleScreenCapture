@@ -338,60 +338,43 @@ async function toggleNativePauseResume() {
 }
 
 /**
- * Instructions disclosure. aria-expanded on the button and the
- * hidden attribute on the content are kept in sync as the single
- * source of truth for expanded/collapsed state - no separate class
- * or flag to drift out of sync with them. Escape is handled with a
- * keydown listener scoped to the content element itself, so it only
- * ever fires when focus is within the instructions (native DOM event
- * bubbling) - this cannot intercept Escape anywhere else in the
- * application, by construction, not by a global check.
+ * Configuration disclosures. Every section starts expanded on first launch.
+ * Each section then remembers its own expanded/collapsed state locally.
+ * Escape collapses only the disclosure that currently contains focus and
+ * returns focus to that disclosure button.
  */
-function initInstructionsDisclosure() {
-  const button = document.getElementById("instructions-toggle");
-  const content = document.getElementById("instructions-content");
-  if (!button || !content) return;
+function initConfigurationDisclosures() {
+  document.querySelectorAll(".configuration-disclosure[data-disclosure-key]").forEach((wrapper) => {
+    const button = wrapper.querySelector(":scope > .configuration-toggle");
+    const content = wrapper.querySelector(":scope > .configuration-content");
+    if (!button || !content) return;
 
-  function setExpanded(expanded) {
-    button.setAttribute("aria-expanded", expanded ? "true" : "false");
-    content.hidden = !expanded;
-  }
+    const key = `asc-pro-disclosure-${wrapper.dataset.disclosureKey}`;
+    const stored = localStorage.getItem(key);
+    const initiallyExpanded = stored === null ? true : stored === "true";
 
-  async function persist(expanded) {
-    if (!isTauri) return;
-    try {
-      await setInstructionsExpanded(expanded);
-    } catch (error) {
-      console.error("Could not save instructions expanded state:", error);
+    function setExpanded(expanded, persist = true) {
+      button.setAttribute("aria-expanded", expanded ? "true" : "false");
+      content.hidden = !expanded;
+      if (persist) localStorage.setItem(key, expanded ? "true" : "false");
     }
-  }
 
-  button.addEventListener("click", () => {
-    const nowExpanded = button.getAttribute("aria-expanded") !== "true";
-    setExpanded(nowExpanded);
-    persist(nowExpanded);
+    setExpanded(initiallyExpanded, false);
+
+    button.addEventListener("click", () => {
+      setExpanded(button.getAttribute("aria-expanded") !== "true");
+    });
+
+    content.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || button.getAttribute("aria-expanded") !== "true") return;
+      event.preventDefault();
+      setExpanded(false);
+      button.focus();
+    });
   });
-
-  content.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape") return;
-    if (button.getAttribute("aria-expanded") !== "true") return; // already collapsed - do nothing
-    setExpanded(false);
-    persist(false);
-    button.focus();
-  });
-
-  if (isTauri) {
-    getOutputSettings()
-      .then((settings) => {
-        setExpanded(settings.instructionsExpanded !== false);
-      })
-      .catch((error) => {
-        console.error("Could not load instructions expanded state:", error);
-      });
-  }
 }
 
-initInstructionsDisclosure();
+initConfigurationDisclosures();
 
 renderScreenshotHint();
 renderRecordToggleButton();
@@ -758,10 +741,28 @@ function buildRecordingPlaybackControls(video, capture) {
   timeDisplay.setAttribute("aria-hidden", "true");
   timeDisplay.textContent = "0 seconds of 0 seconds";
 
-  const editingHelp = document.createElement("p");
-  editingHelp.textContent = "Editing: right bracket marks a beginning trim. Left bracket marks an ending trim or the start of a middle cut. Left bracket followed by right bracket marks a middle cut. Press Delete to apply the marked edit. Press Escape to cancel marks. Press Control+Z to undo the last edit.";
+  const editingHelpButton = document.createElement("button");
+  editingHelpButton.type = "button";
+  editingHelpButton.className = "secondary-button editing-instructions-toggle";
+  editingHelpButton.textContent = `Editing Instructions - ${label}`;
+  editingHelpButton.setAttribute("aria-expanded", "false");
 
-  container.append(playPauseButton, rewindButton, forwardButton, announceButton, timeDisplay, editingHelp);
+  const editingHelp = document.createElement("div");
+  const editingHelpId = `editing-instructions-${capture.id}`;
+  editingHelp.id = editingHelpId;
+  editingHelp.className = "editing-instructions";
+  editingHelp.hidden = true;
+  editingHelpButton.setAttribute("aria-controls", editingHelpId);
+  const editingHelpText = document.createElement("p");
+  editingHelpText.textContent = "Right bracket marks a beginning trim. Left bracket marks an ending trim or the start of a middle cut. Left bracket followed by right bracket marks a middle cut. Delete applies the marked edit. Escape cancels the current marks. Control+Z undoes the last committed edit. Editing changes only the working copy; the original pending recording remains unchanged.";
+  editingHelp.appendChild(editingHelpText);
+  editingHelpButton.addEventListener("click", () => {
+    const expanded = editingHelpButton.getAttribute("aria-expanded") !== "true";
+    editingHelpButton.setAttribute("aria-expanded", expanded ? "true" : "false");
+    editingHelp.hidden = !expanded;
+  });
+
+  container.append(playPauseButton, editingHelpButton, editingHelp, rewindButton, forwardButton, announceButton, timeDisplay);
 
   function currentPositionText() {
     const current = formatDuration(video.currentTime || 0);

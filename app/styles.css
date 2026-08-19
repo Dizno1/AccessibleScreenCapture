@@ -287,3 +287,43 @@ a:focus-visible,
   margin: 0;
   font-variant-numeric: tabular-nums;
 }
+
+/* AccessibleScreenCapture Pro 3.0: compact, screen-reader-first configuration. */
+.skip-link:nth-of-type(2):focus { top: 4rem; }
+.skip-link:nth-of-type(3):focus { top: 7.5rem; }
+
+#configuration {
+  padding: 1rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 0.375rem;
+}
+
+.configuration-disclosure {
+  margin: 0.75rem 0;
+}
+
+.configuration-toggle {
+  width: 100%;
+  text-align: left;
+  background: var(--color-surface);
+  color: var(--color-primary-dark);
+  border-color: var(--color-primary-dark);
+}
+
+.configuration-content {
+  padding: 0.75rem 0.5rem 0;
+}
+
+.configuration-content > section {
+  margin-bottom: 0;
+}
+
+.editing-instructions-toggle {
+  display: block;
+  margin-top: 0.75rem;
+}
+
+.editing-instructions {
+  padding: 0.5rem 0;
+}

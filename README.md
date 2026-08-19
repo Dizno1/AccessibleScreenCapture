@@ -1,4 +1,4 @@
-# AccessibleScreenCapture
+# AccessibleScreenCapture Pro
 
 A screen-reader-first Windows tool for taking screenshots and recording the screen using accessible controls, keyboard shortcuts, system audio, and microphone audio.
 
@@ -205,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture 2.2.0 Beta**.
+The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 1**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -237,3 +237,11 @@ The Review area now supports multiple pending captures. Screenshots can be taken
 Native recordings are now file-backed in Review. The completed MP4 is staged in the app data pending-captures folder instead of being read back into a JavaScript Blob. This removes the large in-memory handoff that caused the August 19, 2026 long-recording crash. Pending native recordings are recorded in recovery metadata and restored to the Review Queue after an app restart. Starting another recording does not overwrite a staged pending recording.
 
 The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.
+
+## AccessibleScreenCapture Pro 3.0.0 Beta 1
+
+This release establishes the Pro product identity and applies the Open Door Design screen-reader-first structure to the main interface. Configuration is grouped near the top of the page in independent expandable buttons. All configuration sections are expanded on first launch and each section remembers its state after the user collapses or expands it.
+
+The default workflow is intentionally lean: configuration first, then Capture Controls, Review Queue, and Recent Captures. Ordinary configuration sections no longer create unnecessary named regions. Skip links provide direct keyboard access to main content, Capture Controls, and Review Queue.
+
+Recording review keeps focus on the reviewed capture. Play is the first review control, followed immediately by an Editing Instructions disclosure. Editing remains non-destructive: bracket keys mark edits, Delete commits the marked edit to a working copy, Escape cancels marks, and Control+Z undoes the last committed edit. The original pending recording remains unchanged until the user explicitly discards it.
