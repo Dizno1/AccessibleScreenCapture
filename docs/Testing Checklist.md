@@ -174,7 +174,7 @@
 ## Review Queue basic recording editing
 
 - Review a pending recording and confirm focus moves to its Play control.
-- While focus remains inside Review Queue, move playback to a point after the beginning and press right bracket. Confirm the app announces a beginning trim point and says Delete is required.
+- While focus remains inside Review Queue, move playback to a point after the beginning and press right bracket. Confirm the app announces a beginning trim point and says Control+Delete is required.
 - Press Escape. Confirm the pending edit is canceled and the recording is unchanged.
 - Set the beginning trim point again and press Control+Delete. Confirm the app announces that the beginning was trimmed on the edited copy and that the original remains unchanged.
 - Press Control+Z. Confirm the edit is undone and the original remains available.

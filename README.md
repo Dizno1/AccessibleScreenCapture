@@ -6,7 +6,7 @@ A screen-reader-first Windows tool for taking screenshots and recording the scre
 
 The Review Queue editor is deliberately narrow. It is not a general-purpose video editor. It exists to let a keyboard and screen reader user remove unwanted material before saving a copy.
 
-Bracket keys only set edit points. They never remove video by themselves. Delete is always required to commit a trim or middle cut. Every committed edit creates a separate working file in the app-owned pending-captures area. The original pending recording is never modified.
+Bracket keys only set edit points. They never remove video by themselves. Control+Delete is always required to commit a trim or middle cut. Every committed edit creates a separate working file in the app-owned pending-captures area. The original pending recording is never modified.
 
 When an edited copy is saved, focus remains in Review Queue and the original recording remains available there unchanged. Recent Captures is updated without taking focus away from Review Queue.
 
@@ -205,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 3**.
+The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 4**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -238,10 +238,10 @@ Native recordings are now file-backed in Review. The completed MP4 is staged in 
 
 The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.
 
-## AccessibleScreenCapture Pro 3.0.0 Beta 3
+## AccessibleScreenCapture Pro 3.0.0 Beta 4
 
 This release establishes the Pro product identity and applies the Open Door Design screen-reader-first structure to the main interface. Configuration is grouped near the top of the page in independent expandable buttons. All configuration sections are expanded on first launch and each section remembers its state after the user collapses or expands it.
 
 The default workflow is intentionally lean: configuration first, then Capture Controls, Review Queue, and Recent Captures. Ordinary configuration sections no longer create unnecessary named regions. Skip links provide direct keyboard access to main content, Capture Controls, and Review Queue.
 
-Recording review keeps focus on the reviewed capture. Play is the first review control, followed immediately by an Editing Instructions disclosure. Editing remains non-destructive: bracket keys mark edits, Control+Delete commits the marked edit to a working copy, Escape cancels marks, and Control+Z undoes the last committed edit. The original pending recording remains unchanged until the user explicitly discards it.
+Recording review keeps focus on the reviewed capture. Editing Instructions appears immediately before the playback controls. Review Recording still moves focus directly to Play. Editing remains non-destructive: bracket keys mark edits, Control+Delete commits the marked edit to a working copy, Escape cancels marks, and Control+Z undoes the last committed edit. The original pending recording remains unchanged until the user explicitly discards it.

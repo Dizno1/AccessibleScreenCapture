@@ -719,23 +719,23 @@ function buildRecordingPlaybackControls(video, capture) {
   const playPauseButton = document.createElement("button");
   playPauseButton.type = "button";
   playPauseButton.className = "secondary-button";
-  playPauseButton.textContent = `Play - ${label}`;
+  playPauseButton.textContent = "Play";
   playPauseButton.setAttribute("aria-pressed", "false");
 
   const rewindButton = document.createElement("button");
   rewindButton.type = "button";
   rewindButton.className = "secondary-button";
-  rewindButton.textContent = `Rewind 5 Seconds - ${label}`;
+  rewindButton.textContent = "Rewind 5 Seconds";
 
   const forwardButton = document.createElement("button");
   forwardButton.type = "button";
   forwardButton.className = "secondary-button";
-  forwardButton.textContent = `Forward 5 Seconds - ${label}`;
+  forwardButton.textContent = "Forward 5 Seconds";
 
   const announceButton = document.createElement("button");
   announceButton.type = "button";
   announceButton.className = "secondary-button";
-  announceButton.textContent = `Announce Playback Position - ${label}`;
+  announceButton.textContent = "Announce Playback Position";
 
   const timeDisplay = document.createElement("p");
   timeDisplay.className = "playback-time";
@@ -745,7 +745,7 @@ function buildRecordingPlaybackControls(video, capture) {
   const editingHelpButton = document.createElement("button");
   editingHelpButton.type = "button";
   editingHelpButton.className = "secondary-button editing-instructions-toggle";
-  editingHelpButton.textContent = `Editing Instructions - ${label}`;
+  editingHelpButton.textContent = "Editing Instructions";
   editingHelpButton.setAttribute("aria-expanded", "false");
 
   const editingHelp = document.createElement("div");
@@ -755,7 +755,7 @@ function buildRecordingPlaybackControls(video, capture) {
   editingHelp.hidden = true;
   editingHelpButton.setAttribute("aria-controls", editingHelpId);
   const editingHelpText = document.createElement("p");
-  editingHelpText.textContent = "Right bracket marks a beginning trim. Left bracket marks an ending trim or the start of a middle cut. Left bracket followed by right bracket marks a middle cut. Control+Delete applies the marked edit. Escape cancels the current marks. Control+Z undoes the last committed edit. Editing changes only the working copy; the original pending recording remains unchanged.";
+  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. The original recording is never changed.";
   editingHelp.appendChild(editingHelpText);
   editingHelpButton.addEventListener("click", () => {
     const expanded = editingHelpButton.getAttribute("aria-expanded") !== "true";
@@ -776,7 +776,7 @@ function buildRecordingPlaybackControls(video, capture) {
   }
 
   function setPlayingState(isPlaying) {
-    playPauseButton.textContent = `${isPlaying ? "Pause" : "Play"} - ${label}`;
+    playPauseButton.textContent = isPlaying ? "Pause" : "Play";
     playPauseButton.setAttribute("aria-pressed", isPlaying ? "true" : "false");
   }
 
@@ -1029,8 +1029,9 @@ async function commitPendingRecordingEdit() {
       activeReviewVideo.src = nativeFileUrl(capture.editFilePath);
       activeReviewVideo.load();
     }
-    if (isTauri) await showMainWindow();
-    requestAnimationFrame(() => activeReviewPlayButton?.focus({ preventScroll: false }));
+    // Do not move application or DOM focus after an edit. The user remains
+    // exactly where the edit command was issued. Moving focus here caused
+    // screen readers to jump back to an earlier review/edit position.
     announceRaw(successMessage);
   } catch (error) {
     logDebug(`recording edit threw: ${error}`);
@@ -1061,9 +1062,8 @@ async function undoLastRecordingEdit() {
     activeReviewVideo.src = nativeFileUrl(capture.editFilePath || capture.filePath);
     activeReviewVideo.load();
   }
-  if (isTauri) await showMainWindow();
-  requestAnimationFrame(() => activeReviewPlayButton?.focus({ preventScroll: false }));
-  announceRaw(capture.hasEdits ? "Last edit undone." : "Last edit undone. Reviewing the unchanged original recording.");
+  // Undo also leaves focus untouched.
+  announceRaw(capture.hasEdits ? "Last edit undone." : "Last edit undone. Original recording restored.");
 }
 
 function handleRecordingEditKeydown(event) {
@@ -1160,6 +1160,7 @@ function restorePendingRecordings() {
     // than whichever control WebView happened to remember from the previous
     // session. The user can then move to the first capture predictably.
     requestAnimationFrame(() => reviewHeading.focus({ preventScroll: false }));
+    setTimeout(() => reviewHeading.focus({ preventScroll: false }), 150);
     diagnostics.pendingCaptureState = `${pendingCaptures.length} recovered recording(s) awaiting review`;
     renderDiagnostics();
     announceRaw(`${pendingCaptures.length} unsaved recording${pendingCaptures.length === 1 ? " was" : "s were"} recovered from the previous session.`);
