@@ -1178,10 +1178,17 @@ function showReview(capture) {
   persistPendingRecordings();
   reviewSection.hidden = false;
   renderReviewQueue();
-  selectPendingCapture(capture.id, !capture.suppressReviewFocus);
+  // Build the newly added capture's review content without moving focus.
+  // When capture has finished and the app returns to Review Queue, focus
+  // belongs at the oldest pending item, not at the newest capture.
+  selectPendingCapture(capture.id, false);
   logDebug(`review queue: added ${captureLabel(capture)}; ${pendingCaptures.length} pending`);
   if (capture.suppressReviewFocus) {
     announceRaw(`${captureLabel(capture)} added to Review Queue. Recording continues.`);
+  } else if (pendingCaptures.length) {
+    focusReviewButton(pendingCaptures[0].id);
+  } else {
+    focusReviewEmptyState();
   }
 }
 
