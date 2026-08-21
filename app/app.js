@@ -72,6 +72,7 @@ const screenshotConfirmationHeading = document.getElementById("screenshot-confir
 const screenshotConfirmationText = document.getElementById("screenshot-confirmation-text");
 const saveButton = document.getElementById("save-button");
 const discardButton = document.getElementById("discard-button");
+const reviewActions = document.querySelector(".review-actions");
 const recentList = document.getElementById("recent-captures-list");
 const recentEmptyMessage = document.getElementById("recent-empty-message");
 
@@ -755,7 +756,12 @@ function buildRecordingPlaybackControls(video, capture) {
   applyEditButton.type = "button";
   applyEditButton.className = "secondary-button";
   applyEditButton.textContent = "Apply Marked Edit";
-  applyEditButton.disabled = true;
+  applyEditButton.setAttribute("aria-describedby", `edit-status-${capture.id}`);
+
+  const editStatus = document.createElement("p");
+  editStatus.id = `edit-status-${capture.id}`;
+  editStatus.className = "section-hint";
+  editStatus.textContent = "No edit is marked.";
 
   const timeDisplay = document.createElement("p");
   timeDisplay.className = "playback-time";
@@ -783,10 +789,22 @@ function buildRecordingPlaybackControls(video, capture) {
     editingHelp.hidden = !expanded;
   });
 
-  container.append(editingHelpButton, editingHelp, playPauseButton, rewindButton, forwardButton, rewind30Button, forward30Button, announceButton, applyEditButton, timeDisplay);
+  container.append(editingHelpButton, applyEditButton, editStatus, editingHelp, playPauseButton, rewindButton, forwardButton, rewind30Button, forward30Button, announceButton, timeDisplay);
 
   function updateApplyEditButton() {
-    applyEditButton.disabled = !pendingEditMark || editInProgress || activeReviewCapture?.id !== capture.id;
+    if (editInProgress) {
+      applyEditButton.textContent = "Applying Marked Edit";
+      applyEditButton.setAttribute("aria-disabled", "true");
+      editStatus.textContent = "Applying the marked edit.";
+    } else if (pendingEditMark && activeReviewCapture?.id === capture.id) {
+      applyEditButton.textContent = "Apply Marked Edit";
+      applyEditButton.removeAttribute("aria-disabled");
+      editStatus.textContent = "Edit marked. Activate Apply Marked Edit, or press Control+Delete.";
+    } else {
+      applyEditButton.textContent = "Apply Marked Edit";
+      applyEditButton.removeAttribute("aria-disabled");
+      editStatus.textContent = "No edit is marked.";
+    }
   }
   refreshActiveApplyEditButton = updateApplyEditButton;
 
@@ -837,6 +855,10 @@ function buildRecordingPlaybackControls(video, capture) {
   });
 
   applyEditButton.addEventListener("click", () => {
+    if (editInProgress) {
+      announceRaw("An edit is already being applied.");
+      return;
+    }
     if (!pendingEditMark) {
       announceRaw("No edit is marked. Use left or right bracket to set an edit point first.");
       return;
@@ -876,20 +898,36 @@ function captureLabel(capture) {
   return `${type} ${capture.queueNumber}, captured ${when}${duration}`;
 }
 
+function reviewItemNoun(capture) {
+  if (capture?.kind === "screenshot") return "Screenshot";
+  if (capture?.imported) return "Video";
+  return "Recording";
+}
+
+function reviewQueueStatusText() {
+  if (pendingCaptures.length === 0) return "No items waiting for review.";
+  const screenshots = pendingCaptures.filter((capture) => capture.kind === "screenshot").length;
+  const videos = pendingCaptures.filter((capture) => capture.imported).length;
+  const recordings = pendingCaptures.length - screenshots - videos;
+  const parts = [];
+  if (screenshots) parts.push(`${screenshots} screenshot${screenshots === 1 ? "" : "s"}`);
+  if (recordings) parts.push(`${recordings} recording${recordings === 1 ? "" : "s"}`);
+  if (videos) parts.push(`${videos} imported video${videos === 1 ? "" : "s"}`);
+  return `${parts.join(", ")} waiting for review.`;
+}
+
 function updateCaptureActionLabels(capture) {
   const label = captureLabel(capture);
-  confirmScreenshotButton.textContent = `Confirm Capture - ${label}`;
-  saveButton.textContent = `Save Capture - ${label}`;
-  discardButton.textContent = `Discard Capture - ${label}`;
+  const noun = reviewItemNoun(capture);
+  confirmScreenshotButton.textContent = `Confirm Screenshot - ${label}`;
+  saveButton.textContent = `Save ${noun} - ${label}`;
+  discardButton.textContent = `Discard ${noun} - ${label}`;
 }
 
 function renderReviewQueue() {
   reviewQueueList.innerHTML = "";
-  reviewQueueStatus.textContent = pendingCaptures.length === 0
-    ? "No captures waiting for review."
-    : pendingCaptures.length === 1
-      ? "1 capture waiting for review."
-      : `${pendingCaptures.length} captures waiting for review.`;
+  reviewQueueStatus.textContent = reviewQueueStatusText();
+  if (reviewActions) reviewActions.hidden = !pendingCapture;
   for (const capture of pendingCaptures) {
     const wrapper = document.createElement("div");
     const heading = document.createElement("h3");
@@ -922,6 +960,7 @@ function selectPendingCapture(id, focusPrimaryControl = false) {
   const capture = pendingCaptures.find((item) => item.id === id);
   if (!capture) return;
   pendingCapture = capture;
+  if (reviewActions) reviewActions.hidden = false;
   diagnostics.pendingCaptureState = `${capture.kind} ${capture.queueNumber} awaiting review`;
   renderDiagnostics();
   revokeReviewObjectUrl();
@@ -1204,11 +1243,11 @@ function handleRecordingEditKeydown(event) {
       }
       pendingEditMark = { type: "cut_middle", start: pendingEditMark.at, end: position };
       refreshActiveApplyEditButton?.();
-      announceRaw(`Middle cut selected from ${formatEditPoint(pendingEditMark.start)} to ${formatEditPoint(position)}. Press Control+Delete to remove it.`);
+      announceRaw(`Middle cut selected from ${formatEditPoint(pendingEditMark.start)} to ${formatEditPoint(position)}. Activate Apply Marked Edit or press Control+Delete to remove it.`);
     } else {
       pendingEditMark = { type: "trim_start", at: position };
       refreshActiveApplyEditButton?.();
-      announceRaw(`Beginning trim point set at ${formatEditPoint(position)}. Press Control+Delete to trim the beginning.`);
+      announceRaw(`Beginning trim point set at ${formatEditPoint(position)}. Activate Apply Marked Edit or press Control+Delete to trim the beginning.`);
     }
     return;
   }
@@ -1217,7 +1256,7 @@ function handleRecordingEditKeydown(event) {
     event.preventDefault();
     pendingEditMark = { type: "trim_end_or_cut_start", at: position };
     refreshActiveApplyEditButton?.();
-    announceRaw(`Ending trim or middle cut start set at ${formatEditPoint(position)}. Press Control+Delete to trim the end, or press right bracket to set the end of a middle cut.`);
+    announceRaw(`Ending trim or middle cut start set at ${formatEditPoint(position)}. Activate Apply Marked Edit or press Control+Delete to trim the end, or press right bracket to set the end of a middle cut.`);
   }
 }
 
@@ -1351,6 +1390,7 @@ function removePendingCapture(capture) {
     focusReviewButton(pendingCapture.id);
   } else {
     diagnostics.pendingCaptureState = "Empty";
+    if (reviewActions) reviewActions.hidden = true;
     screenshotConfirmationControls.hidden = true;
     screenshotConfirmationResult.hidden = true;
     focusReviewEmptyState();
@@ -1618,7 +1658,7 @@ importVideoButton?.addEventListener("click", async () => {
       suggestedName: result.suggestedName || "Imported Video - Edited.mp4",
       durationSeconds: 0,
     });
-    announceRaw("Video imported. The original file remains unchanged.");
+    announceRaw("Imported video added to Review Queue. The original file remains unchanged.");
   } catch (error) {
     logDebug(`video import failed: ${error}`);
     announceRaw("The video could not be imported.");
@@ -1629,16 +1669,16 @@ importVideoButton?.addEventListener("click", async () => {
 
 discardButton.addEventListener("click", async () => {
   if (!pendingCapture) return;
-  const confirmed = window.confirm("Discard this capture? This cannot be undone.");
-  if (!confirmed) return;
-
   const capture = pendingCapture;
+  const noun = reviewItemNoun(capture).toLowerCase();
+  const confirmed = window.confirm(`Discard this ${noun}? This cannot be undone.`);
+  if (!confirmed) return;
   discardButton.disabled = true;
 
   // Pending metadata is authoritative. Remove it first so a file cleanup
   // failure can never resurrect a discarded capture after restart.
   removePendingCapture(capture);
-  announce("captureDiscarded");
+  announceRaw(`${reviewItemNoun(capture)} discarded.`);
 
   try {
     // capture.filePath is an app-owned pending/working copy. Imported source

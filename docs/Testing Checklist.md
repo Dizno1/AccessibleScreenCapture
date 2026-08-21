@@ -250,12 +250,25 @@
 
 ## Beta 10 - build identity, stale capture cleanup, and edit commit
 
-- [ ] App footer reports Version 3.0.0 Beta 10.
-- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 10.
-- [ ] Installer/package version identifies 3.0.0-10.
+- [ ] App footer reports Version 3.0.0 Beta 11.
+- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 11.
+- [ ] Installer/package version identifies 3.0.0-11.
 - [ ] Stale recovered captures with missing backing files are automatically removed on startup.
 - [ ] Discard removes a pending capture immediately and it does not return after restart.
 - [ ] Apply Marked Edit is disabled until an edit mark exists.
 - [ ] Apply Marked Edit commits the current trim or cut.
 - [ ] Control+Delete commits the same marked edit when received by the app.
 - [ ] Imported original source files remain unchanged.
+
+## Beta 11 - Review Queue semantics and edit discoverability
+
+- [ ] Installer and app identify as 3.0.0 Beta 11 / 3.0.0-11.
+- [ ] With an empty Review Queue, Save and Discard are absent from Tab and screen-reader navigation.
+- [ ] An imported MP4 is announced as an imported video, not a capture.
+- [ ] Imported-video actions say Save Video and Discard Video.
+- [ ] Native recording actions say Save Recording and Discard Recording.
+- [ ] Screenshot actions use Screenshot terminology.
+- [ ] Apply Marked Edit appears immediately after Editing Instructions in navigation order.
+- [ ] Apply Marked Edit remains discoverable before a mark and announces that no edit is marked if activated.
+- [ ] After a bracket mark, edit status says an edit is marked and the announcement names Apply Marked Edit as well as Control+Delete.
+- [ ] Discarded items remain gone after restarting the application.
