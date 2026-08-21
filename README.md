@@ -205,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 8**.
+The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 9**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -238,7 +238,7 @@ Native recordings are now file-backed in Review. The completed MP4 is staged in 
 
 The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.
 
-## AccessibleScreenCapture Pro 3.0.0 Beta 8
+## AccessibleScreenCapture Pro 3.0.0 Beta 9
 
 This release establishes the Pro product identity and applies the Open Door Design screen-reader-first structure to the main interface. Configuration is grouped near the top of the page in independent expandable buttons. All configuration sections are expanded on first launch and each section remembers its state after the user collapses or expands it.
 

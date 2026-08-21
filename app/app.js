@@ -805,30 +805,45 @@ function buildRecordingPlaybackControls(video, capture) {
   video.addEventListener("pause", () => setPlayingState(false));
   video.addEventListener("ended", () => setPlayingState(false));
 
-  rewindButton.addEventListener("click", () => {
-    video.currentTime = Math.max(0, video.currentTime - 5);
-  });
+  function seekBy(seconds) {
+    const duration = Number.isFinite(video.duration)
+      ? video.duration
+      : (capture.editDurationSeconds || capture.durationSeconds || video.currentTime + Math.abs(seconds));
+    const target = Math.max(0, Math.min(duration, video.currentTime + seconds));
+    video.currentTime = target;
+    announceRaw(`Position ${formatDuration(target)}.`);
+  }
 
-  forwardButton.addEventListener("click", () => {
-    const duration = video.duration || capture.durationSeconds || video.currentTime + 5;
-    video.currentTime = Math.min(duration, video.currentTime + 5);
-  });
-
-  rewind30Button.addEventListener("click", () => {
-    video.currentTime = Math.max(0, video.currentTime - 30);
-  });
-
-  forward30Button.addEventListener("click", () => {
-    const duration = video.duration || capture.durationSeconds || video.currentTime + 30;
-    video.currentTime = Math.min(duration, video.currentTime + 30);
-  });
+  rewindButton.addEventListener("click", () => seekBy(-5));
+  forwardButton.addEventListener("click", () => seekBy(5));
+  rewind30Button.addEventListener("click", () => seekBy(-30));
+  forward30Button.addEventListener("click", () => seekBy(30));
 
   announceButton.addEventListener("click", () => {
     announceRaw(`${label}, ${currentPositionText()}.`);
   });
 
   video.addEventListener("timeupdate", updateTimeDisplay);
-  video.addEventListener("loadedmetadata", updateTimeDisplay);
+  video.addEventListener("loadedmetadata", () => {
+    updateTimeDisplay();
+    if (Number.isFinite(video.duration) && video.duration > 0) {
+      const roundedDuration = video.duration;
+      const durationChanged = !capture.durationSeconds || Math.abs(capture.durationSeconds - roundedDuration) > 0.5;
+      if (durationChanged) {
+        capture.durationSeconds = roundedDuration;
+        persistPendingRecordings();
+        updateCaptureActionLabels(capture);
+        const queueButton = reviewQueueList.querySelector(`button[data-capture-id="${capture.id}"]`);
+        if (queueButton) {
+          queueButton.textContent = `Review ${captureLabel(capture)}`;
+          const queueHeading = queueButton.previousElementSibling;
+          if (queueHeading) queueHeading.textContent = `${captureLabel(capture)} - Pending Review`;
+        }
+        const detailHeading = reviewPreview.querySelector("h3");
+        if (detailHeading) detailHeading.textContent = `Review ${captureLabel(capture)}`;
+      }
+    }
+  });
 
   return { container, playPauseButton };
 }
@@ -984,6 +999,7 @@ async function commitPendingRecordingEdit() {
   let endSeconds = null;
   let newDuration;
   let successMessage;
+  let reviewPositionAfterEdit = 0;
 
   if (pendingEditMark.type === "trim_start") {
     operation = "trim_start";
@@ -993,6 +1009,7 @@ async function commitPendingRecordingEdit() {
       return;
     }
     newDuration = currentDuration - startSeconds;
+    reviewPositionAfterEdit = 0;
     successMessage = `Beginning trimmed by ${formatEditPoint(startSeconds)}.`;
   } else if (pendingEditMark.type === "trim_end_or_cut_start") {
     operation = "trim_end";
@@ -1002,6 +1019,7 @@ async function commitPendingRecordingEdit() {
       return;
     }
     newDuration = startSeconds;
+    reviewPositionAfterEdit = Math.max(0, newDuration - 0.25);
     successMessage = `Ending trimmed at ${formatEditPoint(startSeconds)}.`;
   } else if (pendingEditMark.type === "cut_middle") {
     operation = "cut_middle";
@@ -1013,6 +1031,7 @@ async function commitPendingRecordingEdit() {
     }
     const removed = endSeconds - startSeconds;
     newDuration = currentDuration - removed;
+    reviewPositionAfterEdit = Math.min(startSeconds, Math.max(0, newDuration - 0.01));
     successMessage = `${formatEditPoint(removed)} removed.`;
   } else {
     return;
@@ -1048,11 +1067,15 @@ async function commitPendingRecordingEdit() {
     if (activeReviewVideo && activeReviewCapture?.id === capture.id) {
       activeReviewVideo.pause();
       activeReviewVideo.src = nativeFileUrl(capture.editFilePath);
+      activeReviewVideo.addEventListener("loadedmetadata", () => {
+        const maxPosition = Number.isFinite(activeReviewVideo.duration)
+          ? Math.max(0, activeReviewVideo.duration - 0.01)
+          : reviewPositionAfterEdit;
+        activeReviewVideo.currentTime = Math.max(0, Math.min(reviewPositionAfterEdit, maxPosition));
+      }, { once: true });
       activeReviewVideo.load();
     }
-    // Do not move application or DOM focus after an edit. The user remains
-    // exactly where the edit command was issued. Moving focus here caused
-    // screen readers to jump back to an earlier review/edit position.
+    // Keep DOM focus exactly where the user issued the edit command.
     announceRaw(successMessage);
   } catch (error) {
     logDebug(`recording edit threw: ${error}`);
@@ -1071,6 +1094,7 @@ async function undoLastRecordingEdit() {
     return;
   }
   const currentEditedPath = capture.editFilePath;
+  const reviewPositionBeforeUndo = Number(activeReviewVideo?.currentTime || 0);
   const previous = stack.pop();
   capture.editFilePath = previous.isOriginal ? null : previous.path;
   capture.editDurationSeconds = previous.durationSeconds;
@@ -1081,6 +1105,12 @@ async function undoLastRecordingEdit() {
   if (activeReviewVideo && activeReviewCapture?.id === capture.id) {
     activeReviewVideo.pause();
     activeReviewVideo.src = nativeFileUrl(capture.editFilePath || capture.filePath);
+    activeReviewVideo.addEventListener("loadedmetadata", () => {
+      const maxPosition = Number.isFinite(activeReviewVideo.duration)
+        ? Math.max(0, activeReviewVideo.duration - 0.01)
+        : previous.durationSeconds;
+      activeReviewVideo.currentTime = Math.max(0, Math.min(reviewPositionBeforeUndo, maxPosition));
+    }, { once: true });
     activeReviewVideo.load();
   }
   // Undo also leaves focus untouched.

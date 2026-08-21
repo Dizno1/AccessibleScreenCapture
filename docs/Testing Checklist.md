@@ -221,3 +221,17 @@
 - [ ] Rewind 5 Seconds and Forward 5 Seconds work.
 - [ ] Rewind 30 Seconds and Forward 30 Seconds work.
 - [ ] Editing Instructions describe the 5-second and 30-second controls without relying on screen-reader-consumed Arrow keys.
+
+
+## Beta 9 - Imported Video Editing Experience
+
+- [ ] Imported video duration is announced in Review Queue after metadata loads.
+- [ ] Rewind 5 Seconds announces the new playback position.
+- [ ] Forward 5 Seconds announces the new playback position.
+- [ ] Rewind 30 Seconds announces the new playback position.
+- [ ] Forward 30 Seconds announces the new playback position.
+- [ ] Beginning trim returns review playback to the new beginning.
+- [ ] Ending trim leaves playback near the new ending.
+- [ ] Middle cut leaves playback at the splice point so the edit can be reviewed immediately.
+- [ ] Undo preserves a sensible playback position.
+- [ ] Imported video editing behaves the same as editing an app-recorded video.
