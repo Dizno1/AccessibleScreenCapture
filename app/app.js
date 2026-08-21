@@ -45,6 +45,7 @@ import {
   saveRecordingFile,
   stagePendingRecording,
   deletePendingFile,
+  pendingFileExists,
   editRecordingFile,
   importVideoFile,
   nativeFileUrl,
@@ -102,6 +103,7 @@ let activeReviewCapture = null;
 let activeReviewPlayButton = null;
 let pendingEditMark = null;
 let editInProgress = false;
+let refreshActiveApplyEditButton = null;
 const shortcutDisplay = {
   screenshot: "Alt+Ctrl+Space",
   recordToggle: "Alt+Ctrl+R",
@@ -749,6 +751,12 @@ function buildRecordingPlaybackControls(video, capture) {
   announceButton.className = "secondary-button";
   announceButton.textContent = "Announce Playback Position";
 
+  const applyEditButton = document.createElement("button");
+  applyEditButton.type = "button";
+  applyEditButton.className = "secondary-button";
+  applyEditButton.textContent = "Apply Marked Edit";
+  applyEditButton.disabled = true;
+
   const timeDisplay = document.createElement("p");
   timeDisplay.className = "playback-time";
   timeDisplay.setAttribute("aria-hidden", "true");
@@ -767,7 +775,7 @@ function buildRecordingPlaybackControls(video, capture) {
   editingHelp.hidden = true;
   editingHelpButton.setAttribute("aria-controls", editingHelpId);
   const editingHelpText = document.createElement("p");
-  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use the 5-second or 30-second controls to move through the video. The original recording is never changed.";
+  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete or Apply Marked Edit applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use the 5-second or 30-second controls to move through the video. The original recording is never changed.";
   editingHelp.appendChild(editingHelpText);
   editingHelpButton.addEventListener("click", () => {
     const expanded = editingHelpButton.getAttribute("aria-expanded") !== "true";
@@ -775,7 +783,12 @@ function buildRecordingPlaybackControls(video, capture) {
     editingHelp.hidden = !expanded;
   });
 
-  container.append(editingHelpButton, editingHelp, playPauseButton, rewindButton, forwardButton, rewind30Button, forward30Button, announceButton, timeDisplay);
+  container.append(editingHelpButton, editingHelp, playPauseButton, rewindButton, forwardButton, rewind30Button, forward30Button, announceButton, applyEditButton, timeDisplay);
+
+  function updateApplyEditButton() {
+    applyEditButton.disabled = !pendingEditMark || editInProgress || activeReviewCapture?.id !== capture.id;
+  }
+  refreshActiveApplyEditButton = updateApplyEditButton;
 
   function currentPositionText() {
     const current = formatDuration(video.currentTime || 0);
@@ -821,6 +834,14 @@ function buildRecordingPlaybackControls(video, capture) {
 
   announceButton.addEventListener("click", () => {
     announceRaw(`${label}, ${currentPositionText()}.`);
+  });
+
+  applyEditButton.addEventListener("click", () => {
+    if (!pendingEditMark) {
+      announceRaw("No edit is marked. Use left or right bracket to set an edit point first.");
+      return;
+    }
+    commitPendingRecordingEdit();
   });
 
   video.addEventListener("timeupdate", updateTimeDisplay);
@@ -950,6 +971,7 @@ function selectPendingCapture(id, focusPrimaryControl = false) {
     activeReviewCapture = capture;
     activeReviewPlayButton = playback.playPauseButton;
     pendingEditMark = null;
+    refreshActiveApplyEditButton?.();
   } else {
     activeReviewVideo = null;
     activeReviewCapture = null;
@@ -979,6 +1001,7 @@ function editedSuggestedName(capture) {
 function clearPendingEditMark(announceCancel = false) {
   if (!pendingEditMark) return;
   pendingEditMark = null;
+  refreshActiveApplyEditButton?.();
   if (announceCancel) announceRaw("Pending edit canceled. No video was changed.");
 }
 
@@ -1048,6 +1071,7 @@ async function commitPendingRecordingEdit() {
   }
 
   editInProgress = true;
+  refreshActiveApplyEditButton?.();
   try {
     const result = await editRecordingFile(sourcePath, operation, startSeconds, endSeconds);
     if (!result?.ok || !result?.editedPath) {
@@ -1068,6 +1092,7 @@ async function commitPendingRecordingEdit() {
     capture.hasEdits = true;
     capture.editSuggestedName = editedSuggestedName(capture);
     pendingEditMark = null;
+    refreshActiveApplyEditButton?.();
     logDebug(`recording edit applied: ${operation}, editedPath=${result.editedPath}`);
 
     // Keep the current review controls alive after an edit. Rebuilding the
@@ -1092,6 +1117,7 @@ async function commitPendingRecordingEdit() {
     announceRaw("The edit could not be applied. The original recording was not changed.");
   } finally {
     editInProgress = false;
+    refreshActiveApplyEditButton?.();
   }
 }
 
@@ -1111,6 +1137,7 @@ async function undoLastRecordingEdit() {
   capture.hasEdits = Boolean(capture.editFilePath);
   capture.editSuggestedName = capture.hasEdits ? editedSuggestedName(capture) : null;
   pendingEditMark = null;
+  refreshActiveApplyEditButton?.();
   await deletePendingFile(currentEditedPath).catch(() => {});
   if (activeReviewVideo && activeReviewCapture?.id === capture.id) {
     activeReviewVideo.pause();
@@ -1176,9 +1203,11 @@ function handleRecordingEditKeydown(event) {
         return;
       }
       pendingEditMark = { type: "cut_middle", start: pendingEditMark.at, end: position };
+      refreshActiveApplyEditButton?.();
       announceRaw(`Middle cut selected from ${formatEditPoint(pendingEditMark.start)} to ${formatEditPoint(position)}. Press Control+Delete to remove it.`);
     } else {
       pendingEditMark = { type: "trim_start", at: position };
+      refreshActiveApplyEditButton?.();
       announceRaw(`Beginning trim point set at ${formatEditPoint(position)}. Press Control+Delete to trim the beginning.`);
     }
     return;
@@ -1187,6 +1216,7 @@ function handleRecordingEditKeydown(event) {
   if (isLeftBracket) {
     event.preventDefault();
     pendingEditMark = { type: "trim_end_or_cut_start", at: position };
+    refreshActiveApplyEditButton?.();
     announceRaw(`Ending trim or middle cut start set at ${formatEditPoint(position)}. Press Control+Delete to trim the end, or press right bracket to set the end of a middle cut.`);
   }
 }
@@ -1223,12 +1253,40 @@ function persistPendingRecordings() {
   }
 }
 
-function restorePendingRecordings() {
+async function restorePendingRecordings() {
   if (!isTauri) return;
   try {
     const restored = JSON.parse(localStorage.getItem(PENDING_RECORDINGS_KEY) || "[]");
     if (!Array.isArray(restored) || restored.length === 0) return;
+
+    const validRestored = [];
+    let staleCount = 0;
     for (const capture of restored) {
+      if (!capture?.filePath) {
+        staleCount += 1;
+        continue;
+      }
+      const exists = await pendingFileExists(capture.filePath).catch(() => false);
+      if (!exists) {
+        staleCount += 1;
+        logDebug(`review queue: removed stale recovered capture with missing file: ${capture.filePath}`);
+        continue;
+      }
+      validRestored.push(capture);
+    }
+
+    if (staleCount) {
+      localStorage.setItem(PENDING_RECORDINGS_KEY, JSON.stringify(validRestored));
+      announceRaw(`${staleCount} stale recovered capture${staleCount === 1 ? " was" : "s were"} removed from Review Queue.`);
+    }
+    if (validRestored.length === 0) {
+      pendingCaptures = [];
+      pendingCapture = null;
+      renderReviewQueue();
+      return;
+    }
+
+    for (const capture of validRestored) {
       capture.queueNumber = nextPendingCaptureId++;
       pendingCaptures.push(capture);
     }
@@ -1576,27 +1634,23 @@ discardButton.addEventListener("click", async () => {
 
   const capture = pendingCapture;
   discardButton.disabled = true;
+
+  // Pending metadata is authoritative. Remove it first so a file cleanup
+  // failure can never resurrect a discarded capture after restart.
+  removePendingCapture(capture);
+  announce("captureDiscarded");
+
   try {
-    // Imported source files belong to the user and must never be deleted by
-    // Discard. App-owned recording sources are best-effort cleanup: if a
-    // recovered file is already missing or locked, remove the stale queue
-    // metadata anyway so it cannot become an immortal Review Queue item.
-    if (capture.filePath && !capture.imported) {
-      try {
-        await deletePendingFile(capture.filePath);
-      } catch (error) {
+    // capture.filePath is an app-owned pending/working copy. Imported source
+    // files chosen by the user are never stored here.
+    if (capture.filePath) {
+      await deletePendingFile(capture.filePath).catch((error) => {
         logDebug(`discard source cleanup skipped for ${captureLabel(capture)}: ${error}`);
-      }
+      });
     }
     await cleanupCaptureEditFiles(capture);
-    removePendingCapture(capture);
-    announce("captureDiscarded");
   } catch (error) {
-    logDebug(`discard queue cleanup failed for ${captureLabel(capture)}: ${error}`);
-    // The queue record is the authoritative pending state. Remove it even if
-    // secondary edit-file cleanup failed.
-    removePendingCapture(capture);
-    announceRaw("Capture discarded. Some temporary edit files could not be cleaned up.");
+    logDebug(`discard temporary-file cleanup failed for ${captureLabel(capture)}: ${error}`);
   } finally {
     discardButton.disabled = false;
   }

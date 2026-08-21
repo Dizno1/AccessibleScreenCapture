@@ -247,3 +247,15 @@
 - [ ] Discard removes a recovered recording whose backing file is already missing.
 - [ ] Discarding an imported video never deletes the user's original imported file.
 - [ ] Recovery announcements distinguish app recordings from imported videos.
+
+## Beta 10 - build identity, stale capture cleanup, and edit commit
+
+- [ ] App footer reports Version 3.0.0 Beta 10.
+- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 10.
+- [ ] Installer/package version identifies 3.0.0-10.
+- [ ] Stale recovered captures with missing backing files are automatically removed on startup.
+- [ ] Discard removes a pending capture immediately and it does not return after restart.
+- [ ] Apply Marked Edit is disabled until an edit mark exists.
+- [ ] Apply Marked Edit commits the current trim or cut.
+- [ ] Control+Delete commits the same marked edit when received by the app.
+- [ ] Imported original source files remain unchanged.

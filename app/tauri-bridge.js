@@ -279,6 +279,9 @@ export async function stagePendingRecording(sourcePath) {
 export async function deletePendingFile(path) {
   return invoke("delete_pending_file", { path });
 }
+export async function pendingFileExists(path) {
+  return invoke("pending_file_exists", { path });
+}
 export async function editRecordingFile(sourcePath, operation, startSeconds, endSeconds = null) {
   return invoke("edit_recording_file", { sourcePath, operation, startSeconds, endSeconds });
 }

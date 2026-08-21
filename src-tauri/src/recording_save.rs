@@ -502,6 +502,11 @@ pub async fn stage_pending_recording(app: AppHandle, source_path: String) -> Res
 }
 
 #[tauri::command]
+pub fn pending_file_exists(path: String) -> bool {
+    std::path::PathBuf::from(path).exists()
+}
+
+#[tauri::command]
 pub fn delete_pending_file(app: AppHandle, path: String) -> Result<(), String> {
     let p = std::path::PathBuf::from(path);
     if p.exists() { fs::remove_file(&p).map_err(|e| e.to_string())?; }
