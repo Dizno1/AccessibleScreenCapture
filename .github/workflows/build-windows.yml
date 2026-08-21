@@ -206,6 +206,8 @@ jobs:
         # the installer) is Apache 2.0 licensed and explicitly
         # redistributable.
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = "Stop"
 
@@ -225,7 +227,13 @@ jobs:
           }
           Write-Host "Determined target triple: $hostTuple"
 
-          $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers @{ "User-Agent" = "AccessibleScreenCapture-CI" }
+          $llamaHeaders = @{
+            "Accept" = "application/vnd.github+json"
+            "Authorization" = "Bearer $env:GH_TOKEN"
+            "User-Agent" = "AccessibleScreenCapture-GitHub-Actions"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers $llamaHeaders -Method Get
           $asset = $releaseInfo.assets | Where-Object { $_.name -match "^llama-.*-bin-win-cpu-x64\.zip$" } | Select-Object -First 1
           if (-not $asset) {
             throw "Could not find a win-cpu-x64 asset in the latest ggml-org/llama.cpp release ($($releaseInfo.tag_name)). Available assets: $($releaseInfo.assets.name -join ', ')"
