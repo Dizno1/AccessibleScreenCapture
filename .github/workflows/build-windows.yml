@@ -193,12 +193,11 @@ jobs:
         # Windows CPU-only build, since this feature has no
         # GPU-specific requirement and a CPU build keeps the
         # dependency surface (and download size) smaller. Pinned to
-        # the latest published release via the GitHub API, resolved
-        # at build time rather than a hardcoded version string that
-        # would immediately go stale - reproducibility here is
-        # secondary to the sidecar simply continuing to exist and
-        # work, the same tradeoff already made and documented for the
-        # FFmpeg sidecar's own "latest"-style acquisition.
+        # a known-good upstream release. This is pinned intentionally
+        # because llama.cpp's generic releases/latest endpoint can
+        # point at releases that do not contain Windows binary assets.
+        # Pinning keeps CI reproducible and prevents an unrelated
+        # upstream release layout change from breaking our installer.
         #
         # LICENSE: llama.cpp is MIT licensed. The model it loads
         # (Gemma 3 4B Instruct, downloaded separately by llama-server
@@ -233,15 +232,18 @@ jobs:
             "User-Agent" = "AccessibleScreenCapture-GitHub-Actions"
             "X-GitHub-Api-Version" = "2022-11-28"
           }
-          $releaseInfo = Invoke-RestMethod -Uri "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest" -Headers $llamaHeaders -Method Get
-          $asset = $releaseInfo.assets | Where-Object { $_.name -match "^llama-.*-bin-win-cpu-x64\.zip$" } | Select-Object -First 1
+          $llamaReleaseTag = "b10345"
+          $llamaAssetName = "llama-$llamaReleaseTag-bin-win-cpu-x64.zip"
+          $releaseUrl = "https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/$llamaReleaseTag"
+          $releaseInfo = Invoke-RestMethod -Uri $releaseUrl -Headers $llamaHeaders -Method Get
+          $asset = $releaseInfo.assets | Where-Object { $_.name -eq $llamaAssetName } | Select-Object -First 1
           if (-not $asset) {
-            throw "Could not find a win-cpu-x64 asset in the latest ggml-org/llama.cpp release ($($releaseInfo.tag_name)). Available assets: $($releaseInfo.assets.name -join ', ')"
+            throw "Could not find pinned llama.cpp asset $llamaAssetName in release $llamaReleaseTag. Available assets: $($releaseInfo.assets.name -join ', ')"
           }
-          Write-Host "Using llama.cpp release $($releaseInfo.tag_name), asset $($asset.name)"
+          Write-Host "Using pinned llama.cpp release $llamaReleaseTag, asset $($asset.name)"
 
           $downloadPath = "llama-server-download.zip"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $downloadPath
+          Invoke-WebRequest -Uri $asset.browser_download_url -Headers $llamaHeaders -OutFile $downloadPath
 
           $extractDir = "llama-server-extracted"
           Expand-Archive -Path $downloadPath -DestinationPath $extractDir -Force
