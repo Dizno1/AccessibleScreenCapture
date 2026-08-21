@@ -983,9 +983,19 @@ function clearPendingEditMark(announceCancel = false) {
 }
 
 async function commitPendingRecordingEdit() {
-  if (!activeReviewCapture || !activeReviewVideo || !pendingEditMark || editInProgress) return;
+  if (editInProgress) {
+    announceRaw("An edit is already being applied.");
+    return;
+  }
+  if (!activeReviewCapture || !activeReviewVideo || !pendingEditMark) {
+    announceRaw("No edit is ready to apply.");
+    return;
+  }
   const capture = activeReviewCapture;
-  if (capture.kind !== "recording" || pendingCapture?.id !== capture.id) return;
+  if (capture.kind !== "recording" || pendingCapture?.id !== capture.id) {
+    announceRaw("The active review item is not available for editing.");
+    return;
+  }
 
   const sourcePath = capture.editFilePath || capture.filePath;
   if (!sourcePath) {
@@ -1120,9 +1130,15 @@ async function undoLastRecordingEdit() {
 function handleRecordingEditKeydown(event) {
   if (!activeReviewCapture || !activeReviewVideo || pendingCapture?.id !== activeReviewCapture.id) return;
   if (!reviewSection.contains(document.activeElement)) return;
-  if (activeReviewCapture.kind !== "recording" || editInProgress) return;
+  if (activeReviewCapture.kind !== "recording") return;
 
-  if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "z") {
+  const key = String(event.key || "");
+  const code = String(event.code || "");
+  const isDelete = key === "Delete" || code === "Delete";
+  const isLeftBracket = key === "[" || code === "BracketLeft";
+  const isRightBracket = key === "]" || code === "BracketRight";
+
+  if (event.ctrlKey && !event.altKey && !event.shiftKey && key.toLowerCase() === "z") {
     event.preventDefault();
     undoLastRecordingEdit();
     return;
@@ -1134,14 +1150,25 @@ function handleRecordingEditKeydown(event) {
     return;
   }
 
-  if (event.ctrlKey && !event.altKey && !event.shiftKey && event.key === "Delete" && pendingEditMark) {
+  if (event.ctrlKey && !event.altKey && !event.shiftKey && isDelete) {
     event.preventDefault();
+    event.stopPropagation();
+    if (editInProgress) {
+      announceRaw("An edit is already being applied.");
+      return;
+    }
+    if (!pendingEditMark) {
+      announceRaw("No edit is marked. Use left or right bracket to set an edit point first.");
+      return;
+    }
     commitPendingRecordingEdit();
     return;
   }
 
+  if (editInProgress) return;
+
   const position = Number(activeReviewVideo.currentTime || 0);
-  if (event.key === "]") {
+  if (isRightBracket) {
     event.preventDefault();
     if (pendingEditMark?.type === "trim_end_or_cut_start") {
       if (position <= pendingEditMark.at) {
@@ -1157,14 +1184,16 @@ function handleRecordingEditKeydown(event) {
     return;
   }
 
-  if (event.key === "[") {
+  if (isLeftBracket) {
     event.preventDefault();
     pendingEditMark = { type: "trim_end_or_cut_start", at: position };
     announceRaw(`Ending trim or middle cut start set at ${formatEditPoint(position)}. Press Control+Delete to trim the end, or press right bracket to set the end of a middle cut.`);
   }
 }
 
-document.addEventListener("keydown", handleRecordingEditKeydown);
+// Capture phase is intentional: review controls and WebView behavior must not
+// swallow editing commands before the editor sees them.
+window.addEventListener("keydown", handleRecordingEditKeydown, true);
 
 async function cleanupCaptureEditFiles(capture, includeCurrent = true) {
   const paths = new Set();
@@ -1212,10 +1241,15 @@ function restorePendingRecordings() {
     // session. The user can then move to the first capture predictably.
     requestAnimationFrame(() => reviewHeading.focus({ preventScroll: false }));
     setTimeout(() => reviewHeading.focus({ preventScroll: false }), 150);
-    diagnostics.pendingCaptureState = `${pendingCaptures.length} recovered recording(s) awaiting review`;
+    const importedCount = pendingCaptures.filter((capture) => capture.imported).length;
+    const recordedCount = pendingCaptures.length - importedCount;
+    diagnostics.pendingCaptureState = `${pendingCaptures.length} recovered capture(s) awaiting review`;
     renderDiagnostics();
-    announceRaw(`${pendingCaptures.length} unsaved recording${pendingCaptures.length === 1 ? " was" : "s were"} recovered from the previous session.`);
-    logDebug(`review queue: restored ${pendingCaptures.length} pending recording(s)`);
+    const recoveredParts = [];
+    if (recordedCount) recoveredParts.push(`${recordedCount} unsaved recording${recordedCount === 1 ? "" : "s"}`);
+    if (importedCount) recoveredParts.push(`${importedCount} imported video${importedCount === 1 ? "" : "s"}`);
+    announceRaw(`${recoveredParts.join(" and ")} recovered in Review Queue from the previous session.`);
+    logDebug(`review queue: restored ${pendingCaptures.length} pending capture(s)`);
   } catch (error) {
     logDebug(`review queue: recovery metadata could not be read: ${error}`);
   }
@@ -1543,18 +1577,26 @@ discardButton.addEventListener("click", async () => {
   const capture = pendingCapture;
   discardButton.disabled = true;
   try {
-    // A recording is not removed from Review Queue until its persistent
-    // app-owned source has actually been deleted. This prevents a false
-    // "Capture discarded" announcement followed by recovery on restart.
-    if (capture.filePath) {
-      await deletePendingFile(capture.filePath);
+    // Imported source files belong to the user and must never be deleted by
+    // Discard. App-owned recording sources are best-effort cleanup: if a
+    // recovered file is already missing or locked, remove the stale queue
+    // metadata anyway so it cannot become an immortal Review Queue item.
+    if (capture.filePath && !capture.imported) {
+      try {
+        await deletePendingFile(capture.filePath);
+      } catch (error) {
+        logDebug(`discard source cleanup skipped for ${captureLabel(capture)}: ${error}`);
+      }
     }
     await cleanupCaptureEditFiles(capture);
     removePendingCapture(capture);
     announce("captureDiscarded");
   } catch (error) {
-    logDebug(`discard failed for ${captureLabel(capture)}: ${error}`);
-    announceRaw("Capture could not be discarded. The file remains in the Review Queue.");
+    logDebug(`discard queue cleanup failed for ${captureLabel(capture)}: ${error}`);
+    // The queue record is the authoritative pending state. Remove it even if
+    // secondary edit-file cleanup failed.
+    removePendingCapture(capture);
+    announceRaw("Capture discarded. Some temporary edit files could not be cleaned up.");
   } finally {
     discardButton.disabled = false;
   }

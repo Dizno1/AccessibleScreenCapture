@@ -235,3 +235,15 @@
 - [ ] Middle cut leaves playback at the splice point so the edit can be reviewed immediately.
 - [ ] Undo preserves a sensible playback position.
 - [ ] Imported video editing behaves the same as editing an app-recorded video.
+
+
+## Beta 9 regression - edit commands and recovered captures
+
+- [ ] In an active recording review, right bracket sets a beginning mark and announces it.
+- [ ] In an active recording review, left bracket sets an ending or middle-cut start mark and announces it.
+- [ ] Control+Delete applies the pending edit from review controls.
+- [ ] Control+Delete with no mark announces that no edit is marked instead of failing silently.
+- [ ] Editing commands affect only the recording currently being reviewed.
+- [ ] Discard removes a recovered recording whose backing file is already missing.
+- [ ] Discarding an imported video never deletes the user's original imported file.
+- [ ] Recovery announcements distinguish app recordings from imported videos.
