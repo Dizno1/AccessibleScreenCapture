@@ -211,3 +211,13 @@
 - [ ] Control+Left Arrow rewinds the reviewed recording by 30 seconds.
 - [ ] Control+Right Arrow advances the reviewed recording by 30 seconds.
 - [ ] Arrow-key navigation does not affect other captures or text fields.
+
+
+## Beta 8 - Video Editing Navigation
+
+- [ ] Video Editing appears as its own level 2 heading before Review Queue.
+- [ ] Skip to Video Editing moves directly to the Video Editing heading.
+- [ ] Import Video for Editing is easy to locate under Video Editing.
+- [ ] Rewind 5 Seconds and Forward 5 Seconds work.
+- [ ] Rewind 30 Seconds and Forward 30 Seconds work.
+- [ ] Editing Instructions describe the 5-second and 30-second controls without relying on screen-reader-consumed Arrow keys.

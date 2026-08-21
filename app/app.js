@@ -734,6 +734,16 @@ function buildRecordingPlaybackControls(video, capture) {
   forwardButton.className = "secondary-button";
   forwardButton.textContent = "Forward 5 Seconds";
 
+  const rewind30Button = document.createElement("button");
+  rewind30Button.type = "button";
+  rewind30Button.className = "secondary-button";
+  rewind30Button.textContent = "Rewind 30 Seconds";
+
+  const forward30Button = document.createElement("button");
+  forward30Button.type = "button";
+  forward30Button.className = "secondary-button";
+  forward30Button.textContent = "Forward 30 Seconds";
+
   const announceButton = document.createElement("button");
   announceButton.type = "button";
   announceButton.className = "secondary-button";
@@ -757,7 +767,7 @@ function buildRecordingPlaybackControls(video, capture) {
   editingHelp.hidden = true;
   editingHelpButton.setAttribute("aria-controls", editingHelpId);
   const editingHelpText = document.createElement("p");
-  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. The original recording is never changed.";
+  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use the 5-second or 30-second controls to move through the video. The original recording is never changed.";
   editingHelp.appendChild(editingHelpText);
   editingHelpButton.addEventListener("click", () => {
     const expanded = editingHelpButton.getAttribute("aria-expanded") !== "true";
@@ -765,7 +775,7 @@ function buildRecordingPlaybackControls(video, capture) {
     editingHelp.hidden = !expanded;
   });
 
-  container.append(editingHelpButton, editingHelp, playPauseButton, rewindButton, forwardButton, announceButton, timeDisplay);
+  container.append(editingHelpButton, editingHelp, playPauseButton, rewindButton, forwardButton, rewind30Button, forward30Button, announceButton, timeDisplay);
 
   function currentPositionText() {
     const current = formatDuration(video.currentTime || 0);
@@ -802,6 +812,15 @@ function buildRecordingPlaybackControls(video, capture) {
   forwardButton.addEventListener("click", () => {
     const duration = video.duration || capture.durationSeconds || video.currentTime + 5;
     video.currentTime = Math.min(duration, video.currentTime + 5);
+  });
+
+  rewind30Button.addEventListener("click", () => {
+    video.currentTime = Math.max(0, video.currentTime - 30);
+  });
+
+  forward30Button.addEventListener("click", () => {
+    const duration = video.duration || capture.durationSeconds || video.currentTime + 30;
+    video.currentTime = Math.min(duration, video.currentTime + 30);
   });
 
   announceButton.addEventListener("click", () => {
@@ -1092,29 +1111,6 @@ function handleRecordingEditKeydown(event) {
   }
 
   const position = Number(activeReviewVideo.currentTime || 0);
-  if (activeReviewCapture?.kind === "recording") {
-    if (event.key === "ArrowLeft" && !event.altKey && !event.shiftKey) {
-      event.preventDefault();
-      const jump = event.ctrlKey ? 30 : 5;
-      const player = document.getElementById("review-video");
-      if (player) {
-        player.currentTime = Math.max(0, player.currentTime - jump);
-      }
-      return;
-    }
-
-    if (event.key === "ArrowRight" && !event.altKey && !event.shiftKey) {
-      event.preventDefault();
-      const jump = event.ctrlKey ? 30 : 5;
-      const player = document.getElementById("review-video");
-      if (player) {
-        const duration = Number.isFinite(player.duration) ? player.duration : player.currentTime + jump;
-        player.currentTime = Math.min(duration, player.currentTime + jump);
-      }
-      return;
-    }
-  }
-
   if (event.key === "]") {
     event.preventDefault();
     if (pendingEditMark?.type === "trim_end_or_cut_start") {
