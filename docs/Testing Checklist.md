@@ -188,3 +188,26 @@
 - Review the original again and confirm its duration/content are unchanged.
 - Save or discard a non-edited capture when another capture remains. Confirm focus moves to the next pending capture's Review button.
 - Remove the final pending capture. Confirm focus moves to the Review Queue heading and the queue reports that no captures are waiting for review.
+
+
+## Beta 6 - Import Video and Discard
+
+- [ ] Import Video for Editing opens a native file picker.
+- [ ] An existing MP4 can be imported and reviewed.
+- [ ] A supported non-MP4 video can be imported and reviewed.
+- [ ] The imported video's original file remains unchanged.
+- [ ] Imported video editing uses the same bracket, Control+Delete, Escape, and Control+Z workflow.
+- [ ] Saving an edited imported video creates a new file and leaves the original untouched.
+- [ ] Discard removes the app-owned imported working copy, not the user's original file.
+- [ ] Discarded recordings do not return after closing and reopening the app.
+- [ ] Capture discarded is announced only after persistent deletion succeeds.
+- [ ] If deletion fails, the capture remains in Review Queue and the failure is announced.
+
+
+## Beta 7 - Recording Navigation
+
+- [ ] Left Arrow rewinds the reviewed recording by 5 seconds.
+- [ ] Right Arrow advances the reviewed recording by 5 seconds.
+- [ ] Control+Left Arrow rewinds the reviewed recording by 30 seconds.
+- [ ] Control+Right Arrow advances the reviewed recording by 30 seconds.
+- [ ] Arrow-key navigation does not affect other captures or text fields.

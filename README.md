@@ -205,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 5**.
+The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 7**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -238,10 +238,19 @@ Native recordings are now file-backed in Review. The completed MP4 is staged in 
 
 The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.
 
-## AccessibleScreenCapture Pro 3.0.0 Beta 5
+## AccessibleScreenCapture Pro 3.0.0 Beta 7
 
 This release establishes the Pro product identity and applies the Open Door Design screen-reader-first structure to the main interface. Configuration is grouped near the top of the page in independent expandable buttons. All configuration sections are expanded on first launch and each section remembers its state after the user collapses or expands it.
 
 The default workflow is intentionally lean: configuration first, then Capture Controls, Review Queue, and Recent Captures. Ordinary configuration sections no longer create unnecessary named regions. Skip links provide direct keyboard access to main content, Capture Controls, and Review Queue.
 
 Recording review keeps focus on the reviewed capture. Editing Instructions appears immediately before the playback controls. Review Recording still moves focus directly to Play. Editing remains non-destructive: bracket keys mark edits, Control+Delete commits the marked edit to a working copy, Escape cancels marks, and Control+Z undoes the last committed edit. The original pending recording remains unchanged until the user explicitly discards it.
+
+
+### Beta 6: imported video editing and reliable discard
+
+- Added **Import Video for Editing** to Capture Controls.
+- Imported videos use an app-owned working copy; the user's original file is never modified or deleted.
+- MP4 files are copied into the protected workspace. MOV, M4V, WebM, AVI, and MKV files are normalized to MP4 with the bundled FFmpeg before review.
+- Imported videos use the same Review Queue, playback, and non-destructive bracket/Ctrl+Delete editing workflow as recordings made by the app.
+- Discard now reports success only after the persistent pending recording has actually been deleted. If deletion fails, the capture stays in Review Queue and an error is announced.

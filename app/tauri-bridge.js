@@ -270,6 +270,9 @@ export async function abortRecordingSave(sessionId) {
 export async function saveRecordingFile(sourcePath, suggestedName) {
   return invoke("save_recording_file", { sourcePath, suggestedName });
 }
+export async function importVideoFile() {
+  return invoke("import_video_file");
+}
 export async function stagePendingRecording(sourcePath) {
   return invoke("stage_pending_recording", { sourcePath });
 }

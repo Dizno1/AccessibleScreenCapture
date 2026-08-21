@@ -13,13 +13,13 @@
 <h1>AccessibleScreenCapture Pro</h1>
 <p class="app-tagline">Take screenshots and record your screen using only the keyboard.</p>
 <p class="app-publisher">An Open Door Design application.</p>
-<p class="app-version">Version 3.0.0 Beta 5</p></header>
+<p class="app-version">Version 3.0.0 Beta 7</p></header>
 <!-- Application-generated status announcements are restricted to approved capture, recording, save, cancellation, permission, and failure messages. -->
 <div aria-live="polite" class="visually-hidden" id="status-announcer" role="status"></div>
 <main id="main-content" tabindex="-1"><section id="configuration"><h2 id="configuration-heading">Configuration</h2><p class="section-hint">Configuration sections are expanded on first launch. Collapse any section you do not need; AccessibleScreenCapture Pro remembers your choices for future launches.</p><section class="configuration-disclosure" data-disclosure-key="instructions">
 <button aria-controls="instructions-content" aria-expanded="true" class="configuration-toggle" id="instructions-toggle" type="button">Instructions</button>
 <div class="configuration-content" id="instructions-content">
-<ul><li>Alt+Ctrl+Space takes a screenshot. Alt+Ctrl+R starts or stops recording. Alt+Ctrl+P pauses or resumes recording.</li><li>Alt+Ctrl+D turns the Capture Context Descriptor on or off. Alt+Ctrl+X checks capture readiness.</li><li>Global shortcuts work anywhere in Windows. The same actions are available from the application controls.</li><li>Captures wait in Review Queue until you save or discard them. You can keep capturing while items wait.</li><li>For screenshots, Confirm Capture privately identifies the captured window and content.</li><li>For recordings, Review Recording moves focus to Play. Editing Instructions is immediately before Play.</li><li>Editing never changes the original recording. Open Editing Instructions for the editing keys.</li></ul>
+<ul><li>Alt+Ctrl+Space takes a screenshot. Alt+Ctrl+R starts or stops recording. Alt+Ctrl+P pauses or resumes recording.</li><li>Alt+Ctrl+D turns the Capture Context Descriptor on or off. Alt+Ctrl+X checks capture readiness.</li><li>Global shortcuts work anywhere in Windows. The same actions are available from the application controls.</li><li>Captures wait in Review Queue until you save or discard them. You can keep capturing while items wait.</li><li>For screenshots, Confirm Capture privately identifies the captured window and content.</li><li>Import Video for Editing adds an existing video to Review Queue using a protected working copy. The original file is never changed.</li><li>For recordings, Review Recording moves focus to Play. Editing Instructions is immediately before Play.</li><li>Editing never changes the original recording. Open Editing Instructions for the editing keys.</li></ul>
 </div>
 </section><div class="configuration-disclosure" data-disclosure-key="recording-options"><button aria-controls="recording-options-content" aria-expanded="true" class="configuration-toggle" type="button">Recording Options</button><div class="configuration-content" id="recording-options-content"><section id="audio-options-section">
 <p class="section-hint">Screenshot feedback</p><label class="checkbox-option">
@@ -275,6 +275,9 @@
         Take Screenshot <span class="shortcut-hint" id="screenshot-shortcut-hint">(Alt+Ctrl+Space)</span>
 </button>
 </div>
+<div id="import-controls">
+<button class="secondary-button" id="import-video-button" type="button">Import Video for Editing</button>
+</div>
 <div id="recording-controls">
 <button aria-pressed="false" class="primary-button" id="record-toggle-button" type="button">
         Start Recording <span class="shortcut-hint" id="record-toggle-shortcut-hint">Alt+Ctrl+R</span>
@@ -306,7 +309,7 @@
 <h2 id="recent-heading">Recent Captures</h2>
 <p id="recent-empty-message">No captures saved yet this session.</p>
 <ul class="recent-list" id="recent-captures-list"></ul>
-</section><footer class="product-information"><p>AccessibleScreenCapture Pro</p><p>Version 3.0.0 Beta 5</p><p>Copyright 2026 Open Door Design</p></footer></main>
+</section><footer class="product-information"><p>AccessibleScreenCapture Pro</p><p>Version 3.0.0 Beta 7</p><p>Copyright 2026 Open Door Design</p></footer></main>
 <script src="app/app.js" type="module"></script>
 </body>
 </html>

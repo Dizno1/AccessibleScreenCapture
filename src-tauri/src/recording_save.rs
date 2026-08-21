@@ -390,6 +390,103 @@ pub async fn edit_recording_file(
     }
 }
 
+
+#[derive(Serialize)]
+pub struct ImportVideoResult {
+    ok: bool,
+    canceled: bool,
+    #[serde(rename = "importedPath")]
+    imported_path: Option<String>,
+    #[serde(rename = "suggestedName")]
+    suggested_name: Option<String>,
+    error: Option<String>,
+}
+
+/// Lets the user choose an existing video and creates an app-owned working
+/// copy in pending-captures. The user's source file is never modified or
+/// deleted. MP4 files are copied directly; other supported containers are
+/// normalized to MP4 with FFmpeg so the existing review/editor can use them.
+#[tauri::command]
+pub async fn import_video_file(app: AppHandle) -> Result<ImportVideoResult, String> {
+    let dialog_app = app.clone();
+    let chosen = tauri::async_runtime::spawn_blocking(move || {
+        let mut builder = dialog_app
+            .dialog()
+            .file()
+            .add_filter("Video files", &["mp4", "mov", "m4v", "webm", "avi", "mkv"]);
+        if let Some(window) = dialog_app.get_webview_window("main") {
+            builder = builder.set_parent(&window);
+        }
+        builder.blocking_pick_file()
+    })
+    .await
+    .map_err(|e| format!("Import dialog task failed: {e}"))?;
+
+    let Some(file_path) = chosen else {
+        return Ok(ImportVideoResult {
+            ok: false, canceled: true, imported_path: None, suggested_name: None, error: None
+        });
+    };
+    let source = file_path.into_path().map_err(|_| "The selected video is not a local file.".to_string())?;
+    if !source.exists() {
+        return Err("The selected video no longer exists.".to_string());
+    }
+
+    let pending_dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");
+    fs::create_dir_all(&pending_dir).map_err(|e| e.to_string())?;
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis();
+    let destination = pending_dir.join(format!("imported-{stamp}.mp4"));
+    let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported Video");
+    let suggested_name = format!("{stem}.mp4");
+    let extension = source.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+
+    crate::debug_log::log(&app, &format!("video import: selected {}", source.display()));
+
+    if extension == "mp4" {
+        let src = source.clone();
+        let dst = destination.clone();
+        tauri::async_runtime::spawn_blocking(move || fs::copy(src, dst))
+            .await.map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?;
+    } else {
+        let args = vec![
+            "-y".to_string(), "-i".to_string(), source.to_string_lossy().to_string(),
+            "-map".to_string(), "0:v:0".to_string(),
+            "-map".to_string(), "0:a?".to_string(),
+            "-c:v".to_string(), "mpeg4".to_string(),
+            "-q:v".to_string(), "5".to_string(),
+            "-c:a".to_string(), "aac".to_string(),
+            "-movflags".to_string(), "+faststart".to_string(),
+            destination.to_string_lossy().to_string(),
+        ];
+        let sidecar = app.shell().sidecar("ffmpeg").map_err(|e| format!("Could not locate FFmpeg: {e}"))?;
+        let output = sidecar.args(args).output().await.map_err(|e| format!("Could not import video: {e}"))?;
+        if !output.status.success() || !destination.exists() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let error = if stderr.chars().count() > 1200 {
+                format!("{}... [truncated]", stderr.chars().take(1200).collect::<String>())
+            } else { stderr.to_string() };
+            let _ = fs::remove_file(&destination);
+            crate::debug_log::log(&app, &format!("video import FAILED: {error}"));
+            return Ok(ImportVideoResult {
+                ok: false, canceled: false, imported_path: None, suggested_name: None, error: Some(error)
+            });
+        }
+    }
+
+    crate::debug_log::log(&app, &format!("video import: working copy created {}", destination.display()));
+    Ok(ImportVideoResult {
+        ok: true,
+        canceled: false,
+        imported_path: Some(destination.to_string_lossy().to_string()),
+        suggested_name: Some(suggested_name),
+        error: None,
+    })
+}
+
 #[tauri::command]
 pub async fn stage_pending_recording(app: AppHandle, source_path: String) -> Result<String, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");

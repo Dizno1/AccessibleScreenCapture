@@ -46,6 +46,7 @@ import {
   stagePendingRecording,
   deletePendingFile,
   editRecordingFile,
+  importVideoFile,
   nativeFileUrl,
 } from "./tauri-bridge.js";
 
@@ -55,6 +56,7 @@ const microphoneSelectWrapper = document.getElementById("microphone-select-wrapp
 const microphoneSelect = document.getElementById("microphone-select");
 const screenshotButton = document.getElementById("screenshot-button");
 const recordToggleButton = document.getElementById("record-toggle-button");
+const importVideoButton = document.getElementById("import-video-button");
 const pauseResumeButton = document.getElementById("pause-resume-button");
 const reviewSection = document.getElementById("review-section");
 const reviewHeading = document.getElementById("review-heading");
@@ -813,7 +815,7 @@ function buildRecordingPlaybackControls(video, capture) {
 }
 
 function captureLabel(capture) {
-  const type = capture.kind === "screenshot" ? "Screenshot" : "Recording";
+  const type = capture.kind === "screenshot" ? "Screenshot" : (capture.imported ? "Imported Video" : "Recording");
   const when = capture.capturedAt ? new Date(capture.capturedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : nowText();
   const duration = capture.kind === "recording" && capture.durationSeconds ? `, ${formatDuration(capture.durationSeconds)}` : "";
   return `${type} ${capture.queueNumber}, captured ${when}${duration}`;
@@ -1090,6 +1092,29 @@ function handleRecordingEditKeydown(event) {
   }
 
   const position = Number(activeReviewVideo.currentTime || 0);
+  if (activeReviewCapture?.kind === "recording") {
+    if (event.key === "ArrowLeft" && !event.altKey && !event.shiftKey) {
+      event.preventDefault();
+      const jump = event.ctrlKey ? 30 : 5;
+      const player = document.getElementById("review-video");
+      if (player) {
+        player.currentTime = Math.max(0, player.currentTime - jump);
+      }
+      return;
+    }
+
+    if (event.key === "ArrowRight" && !event.altKey && !event.shiftKey) {
+      event.preventDefault();
+      const jump = event.ctrlKey ? 30 : 5;
+      const player = document.getElementById("review-video");
+      if (player) {
+        const duration = Number.isFinite(player.duration) ? player.duration : player.currentTime + jump;
+        player.currentTime = Math.min(duration, player.currentTime + jump);
+      }
+      return;
+    }
+  }
+
   if (event.key === "]") {
     event.preventDefault();
     if (pendingEditMark?.type === "trim_end_or_cut_start") {
@@ -1135,7 +1160,7 @@ function persistPendingRecordings() {
   try {
     const recordings = pendingCaptures.filter((c) => c.kind === "recording" && c.filePath).map((c) => ({
       id: c.id, queueNumber: c.queueNumber, capturedAt: c.capturedAt, kind: c.kind,
-      filePath: c.filePath, suggestedName: c.suggestedName, durationSeconds: c.durationSeconds,
+      filePath: c.filePath, suggestedName: c.suggestedName, durationSeconds: c.durationSeconds, imported: Boolean(c.imported),
     }));
     localStorage.setItem(PENDING_RECORDINGS_KEY, JSON.stringify(recordings));
   } catch (error) {
@@ -1453,17 +1478,60 @@ saveButton.addEventListener("click", async () => {
   }
 });
 
-discardButton.addEventListener("click", () => {
+
+importVideoButton?.addEventListener("click", async () => {
+  if (!isTauri) {
+    announceRaw("Import Video is available in the installed Windows application.");
+    return;
+  }
+  importVideoButton.disabled = true;
+  try {
+    const result = await importVideoFile();
+    if (result?.canceled) return;
+    if (!result?.ok || !result?.importedPath) {
+      logDebug(`video import failed: ${result?.error || "unknown error"}`);
+      announceRaw("The video could not be imported.");
+      return;
+    }
+    showReview({
+      kind: "recording",
+      imported: true,
+      filePath: result.importedPath,
+      suggestedName: result.suggestedName || "Imported Video - Edited.mp4",
+      durationSeconds: 0,
+    });
+    announceRaw("Video imported. The original file remains unchanged.");
+  } catch (error) {
+    logDebug(`video import failed: ${error}`);
+    announceRaw("The video could not be imported.");
+  } finally {
+    importVideoButton.disabled = false;
+  }
+});
+
+discardButton.addEventListener("click", async () => {
   if (!pendingCapture) return;
   const confirmed = window.confirm("Discard this capture? This cannot be undone.");
   if (!confirmed) return;
 
   const capture = pendingCapture;
-  announce("captureDiscarded");
-  cleanupCaptureEditFiles(capture).finally(() => {
+  discardButton.disabled = true;
+  try {
+    // A recording is not removed from Review Queue until its persistent
+    // app-owned source has actually been deleted. This prevents a false
+    // "Capture discarded" announcement followed by recovery on restart.
+    if (capture.filePath) {
+      await deletePendingFile(capture.filePath);
+    }
+    await cleanupCaptureEditFiles(capture);
     removePendingCapture(capture);
-    if (capture.filePath) deletePendingFile(capture.filePath).catch(() => {});
-  });
+    announce("captureDiscarded");
+  } catch (error) {
+    logDebug(`discard failed for ${captureLabel(capture)}: ${error}`);
+    announceRaw("Capture could not be discarded. The file remains in the Review Queue.");
+  } finally {
+    discardButton.disabled = false;
+  }
 });
 
 function addRecentCapture(capture, focusHeading = true) {
