@@ -250,9 +250,9 @@
 
 ## Beta 10 - build identity, stale capture cleanup, and edit commit
 
-- [ ] App footer reports Version 3.0.0 Beta 12.
-- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 12.
-- [ ] Installer/package version identifies 3.0.0-12.
+- [ ] App footer reports Version 3.0.0 Beta 13.
+- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 13.
+- [ ] Installer/package version identifies 3.0.0-13.
 - [ ] Stale recovered captures with missing backing files are automatically removed on startup.
 - [ ] Discard removes a pending capture immediately and it does not return after restart.
 - [ ] Apply Marked Edit is disabled until an edit mark exists.
@@ -262,7 +262,7 @@
 
 ## Beta 11 - Review Queue semantics and edit discoverability
 
-- [ ] Installer and app identify as 3.0.0 Beta 12 / 3.0.0-12.
+- [ ] Installer and app identify as 3.0.0 Beta 13 / 3.0.0-13.
 - [ ] With an empty Review Queue, Save and Discard are absent from Tab and screen-reader navigation.
 - [ ] An imported MP4 is announced as an imported video, not a capture.
 - [ ] Imported-video actions say Save Video and Discard Video.
@@ -275,7 +275,7 @@
 
 ## Beta 12 - non-destructive edit timeline
 
-- [ ] Installer and app identify as 3.0.0 Beta 12 / 3.0.0-12.
+- [ ] Installer and app identify as 3.0.0 Beta 13 / 3.0.0-13.
 - [ ] Applying a beginning trim, ending trim, or middle cut returns a completion announcement immediately without running FFmpeg.
 - [ ] Playback skips removed middle sections and uses the edited timeline for position announcements.
 - [ ] Rewind/Forward controls move through the edited timeline.
@@ -283,3 +283,11 @@
 - [ ] Saving an edited video announces that the finished video is being created and that larger/longer videos may take more time.
 - [ ] FFmpeg renders all accumulated edits once at Save.
 - [ ] The imported original remains unchanged.
+
+
+## Beta 13 - Build correction
+
+- [ ] Windows GitHub Actions build completes with the non-destructive edit-plan renderer.
+- [ ] Installer/package identifies as 3.0.0-13.
+- [ ] App footer identifies as Version 3.0.0 Beta 13.
+- [ ] Imported-video edits remain immediate and render only when Save Video is activated.

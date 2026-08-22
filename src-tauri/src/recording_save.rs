@@ -424,7 +424,7 @@ pub async fn render_recording_edit_plan(
     let with_audio = format!("{};{};{}concat=n={}:v=1:a=0[vout];{}concat=n={}:v=0:a=1[aout]",
         video_filters.join(";"), audio_filters.join(";"), vinputs, segments.len(), ainputs, segments.len());
 
-    async fn run(app: &AppHandle, source: &std::path::Path, destination: &std::path::Path, filter: String, audio: bool) -> Result<std::process::Output, String> {
+    async fn run(app: &AppHandle, source: &std::path::Path, destination: &std::path::Path, filter: String, audio: bool) -> Result<tauri_plugin_shell::process::Output, String> {
         let mut args = vec!["-y".to_string(), "-i".to_string(), source.to_string_lossy().to_string(), "-filter_complex".to_string(), filter, "-map".to_string(), "[vout]".to_string()];
         if audio { args.extend(["-map".to_string(), "[aout]".to_string()]); }
         args.extend(["-c:v".to_string(), "mpeg4".to_string(), "-q:v".to_string(), "5".to_string()]);
