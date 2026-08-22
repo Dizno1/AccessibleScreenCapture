@@ -250,9 +250,9 @@
 
 ## Beta 10 - build identity, stale capture cleanup, and edit commit
 
-- [ ] App footer reports Version 3.0.0 Beta 11.
-- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 11.
-- [ ] Installer/package version identifies 3.0.0-11.
+- [ ] App footer reports Version 3.0.0 Beta 12.
+- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 12.
+- [ ] Installer/package version identifies 3.0.0-12.
 - [ ] Stale recovered captures with missing backing files are automatically removed on startup.
 - [ ] Discard removes a pending capture immediately and it does not return after restart.
 - [ ] Apply Marked Edit is disabled until an edit mark exists.
@@ -262,7 +262,7 @@
 
 ## Beta 11 - Review Queue semantics and edit discoverability
 
-- [ ] Installer and app identify as 3.0.0 Beta 11 / 3.0.0-11.
+- [ ] Installer and app identify as 3.0.0 Beta 12 / 3.0.0-12.
 - [ ] With an empty Review Queue, Save and Discard are absent from Tab and screen-reader navigation.
 - [ ] An imported MP4 is announced as an imported video, not a capture.
 - [ ] Imported-video actions say Save Video and Discard Video.
@@ -272,3 +272,14 @@
 - [ ] Apply Marked Edit remains discoverable before a mark and announces that no edit is marked if activated.
 - [ ] After a bracket mark, edit status says an edit is marked and the announcement names Apply Marked Edit as well as Control+Delete.
 - [ ] Discarded items remain gone after restarting the application.
+
+## Beta 12 - non-destructive edit timeline
+
+- [ ] Installer and app identify as 3.0.0 Beta 12 / 3.0.0-12.
+- [ ] Applying a beginning trim, ending trim, or middle cut returns a completion announcement immediately without running FFmpeg.
+- [ ] Playback skips removed middle sections and uses the edited timeline for position announcements.
+- [ ] Rewind/Forward controls move through the edited timeline.
+- [ ] Control+Z restores the previous logical edit immediately.
+- [ ] Saving an edited video announces that the finished video is being created and that larger/longer videos may take more time.
+- [ ] FFmpeg renders all accumulated edits once at Save.
+- [ ] The imported original remains unchanged.

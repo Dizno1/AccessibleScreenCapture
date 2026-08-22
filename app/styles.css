@@ -327,3 +327,6 @@ a:focus-visible,
 .editing-instructions {
   padding: 0.5rem 0;
 }
+
+/* Hidden review actions must also disappear from the accessibility tree. */
+.review-actions[hidden] { display: none !important; }

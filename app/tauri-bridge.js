@@ -286,6 +286,10 @@ export async function editRecordingFile(sourcePath, operation, startSeconds, end
   return invoke("edit_recording_file", { sourcePath, operation, startSeconds, endSeconds });
 }
 
+export async function renderRecordingEditPlan(sourcePath, segments) {
+  return invoke("render_recording_edit_plan", { sourcePath, segments });
+}
+
 /** Convert a native file path to a WebView-safe URL without reading the file into JS memory. */
 export function nativeFileUrl(path) {
   if (!isTauri || !path) return path || "";

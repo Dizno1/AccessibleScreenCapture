@@ -391,6 +391,68 @@ pub async fn edit_recording_file(
 }
 
 
+#[derive(serde::Deserialize)]
+pub struct EditSegment {
+    start: f64,
+    end: f64,
+}
+
+#[tauri::command]
+pub async fn render_recording_edit_plan(
+    app: AppHandle,
+    source_path: String,
+    segments: Vec<EditSegment>,
+) -> Result<EditRecordingResult, String> {
+    let source = std::path::PathBuf::from(&source_path);
+    if !source.exists() { return Err("The video selected for editing no longer exists.".to_string()); }
+    if segments.is_empty() { return Err("The edit plan is empty.".to_string()); }
+
+    let pending_dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");
+    fs::create_dir_all(&pending_dir).map_err(|e| e.to_string())?;
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
+    let destination = pending_dir.join(format!("rendered-{stamp}.mp4"));
+
+    let mut video_filters = Vec::new();
+    let mut audio_filters = Vec::new();
+    for (i, segment) in segments.iter().enumerate() {
+        if segment.end <= segment.start { return Err("An edit segment has an invalid range.".to_string()); }
+        video_filters.push(format!("[0:v]trim=start={:.6}:end={:.6},setpts=PTS-STARTPTS[v{}]", segment.start, segment.end, i));
+        audio_filters.push(format!("[0:a]atrim=start={:.6}:end={:.6},asetpts=PTS-STARTPTS[a{}]", segment.start, segment.end, i));
+    }
+    let vinputs = (0..segments.len()).map(|i| format!("[v{i}]")).collect::<String>();
+    let ainputs = (0..segments.len()).map(|i| format!("[a{i}]")).collect::<String>();
+    let with_audio = format!("{};{};{}concat=n={}:v=1:a=0[vout];{}concat=n={}:v=0:a=1[aout]",
+        video_filters.join(";"), audio_filters.join(";"), vinputs, segments.len(), ainputs, segments.len());
+
+    async fn run(app: &AppHandle, source: &std::path::Path, destination: &std::path::Path, filter: String, audio: bool) -> Result<std::process::Output, String> {
+        let mut args = vec!["-y".to_string(), "-i".to_string(), source.to_string_lossy().to_string(), "-filter_complex".to_string(), filter, "-map".to_string(), "[vout]".to_string()];
+        if audio { args.extend(["-map".to_string(), "[aout]".to_string()]); }
+        args.extend(["-c:v".to_string(), "mpeg4".to_string(), "-q:v".to_string(), "5".to_string()]);
+        if audio { args.extend(["-c:a".to_string(), "aac".to_string()]); }
+        args.extend(["-movflags".to_string(), "+faststart".to_string(), destination.to_string_lossy().to_string()]);
+        let sidecar = app.shell().sidecar("ffmpeg").map_err(|e| format!("Could not locate FFmpeg: {e}"))?;
+        sidecar.args(args).output().await.map_err(|e| format!("Could not render edited video: {e}"))
+    }
+
+    crate::debug_log::log(&app, &format!("edit plan render: {} segments from {}", segments.len(), source.display()));
+    let mut output = run(&app, &source, &destination, with_audio, true).await?;
+    if !output.status.success() {
+        let _ = fs::remove_file(&destination);
+        let video_only = format!("{};{}concat=n={}:v=1:a=0[vout]", video_filters.join(";"), vinputs, segments.len());
+        output = run(&app, &source, &destination, video_only, false).await?;
+    }
+    if output.status.success() && destination.exists() {
+        crate::debug_log::log(&app, &format!("edit plan render: created {}", destination.display()));
+        Ok(EditRecordingResult { ok: true, edited_path: Some(destination.to_string_lossy().to_string()), error: None })
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let error = stderr.chars().take(2000).collect::<String>();
+        let _ = fs::remove_file(&destination);
+        crate::debug_log::log(&app, &format!("edit plan render FAILED: {error}"));
+        Ok(EditRecordingResult { ok: false, edited_path: None, error: Some(error) })
+    }
+}
+
 #[derive(Serialize)]
 pub struct ImportVideoResult {
     ok: bool,
