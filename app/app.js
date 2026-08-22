@@ -103,6 +103,7 @@ let playCaptureSound = true;
 let activeReviewVideo = null;
 let activeReviewCapture = null;
 let activeReviewPlayButton = null;
+let saveInProgress = false;
 let pendingEditMark = null;
 let editInProgress = false;
 let refreshActiveApplyEditButton = null;
@@ -1561,6 +1562,39 @@ async function confirmPendingScreenshot() {
   }
 }
 
+function setReviewSaveBusy(busy) {
+  saveInProgress = busy;
+  saveButton.disabled = busy;
+  discardButton.disabled = busy;
+  reviewPreview.setAttribute("aria-busy", busy ? "true" : "false");
+  for (const control of reviewPreview.querySelectorAll("button, input, select, textarea")) {
+    if (control === saveButton || control === discardButton) continue;
+    if (busy) {
+      control.dataset.disabledForSave = control.disabled ? "already" : "yes";
+      control.disabled = true;
+    } else if (control.dataset.disabledForSave === "yes") {
+      control.disabled = false;
+      delete control.dataset.disabledForSave;
+    } else if (control.dataset.disabledForSave === "already") {
+      delete control.dataset.disabledForSave;
+    }
+  }
+}
+
+async function renderEditedVideoWithStatus(capture) {
+  announceRaw("Creating edited video. Please wait. Larger or longer videos may take more time.");
+  let elapsed = 0;
+  const statusTimer = window.setInterval(() => {
+    elapsed += 15;
+    announceRaw(`Still creating edited video. ${elapsed} seconds elapsed.`);
+  }, 15000);
+  try {
+    return await renderRecordingEditPlan(capture.filePath, capture.editSegments);
+  } finally {
+    window.clearInterval(statusTimer);
+  }
+}
+
 async function saveCapture(capture) {
   logDebug(
     `saveCapture: kind=${capture.kind}, blobSize=${capture.blob?.size ?? "file-backed"}, blobType=${capture.blob?.type ?? "video/mp4"}, filename=${capture.suggestedName}`
@@ -1568,12 +1602,12 @@ async function saveCapture(capture) {
 
   if (isTauri && capture.kind === "recording" && capture.filePath) {
     if (capture.hasEdits && Array.isArray(capture.editSegments) && capture.editSegments.length) {
-      announceRaw("Creating edited video. Please wait. Larger or longer videos may take more time.");
-      const rendered = await renderRecordingEditPlan(capture.filePath, capture.editSegments);
+      const rendered = await renderEditedVideoWithStatus(capture);
       if (!rendered?.ok || !rendered?.editedPath) {
         logDebug(`saveCapture: edit-plan render failed: ${rendered?.error || "unknown error"}`);
         return { ok: false, canceled: false };
       }
+      announceRaw("Edited video is ready. Save As dialog opening.");
       const result = await saveRecordingFile(rendered.editedPath, capture.editSuggestedName || editedSuggestedName(capture));
       await deletePendingFile(rendered.editedPath).catch(() => {});
       return result;
@@ -1651,11 +1685,17 @@ confirmScreenshotButton.addEventListener("click", () => {
 });
 
 saveButton.addEventListener("click", async () => {
-  if (!pendingCapture) return;
+  if (!pendingCapture || saveInProgress) return;
   const capture = pendingCapture;
-  const result = await performSave(capture);
+  setReviewSaveBusy(true);
+  let result;
+  try {
+    result = await performSave(capture);
+  } finally {
+    setReviewSaveBusy(false);
+  }
 
-  if (result.ok) {
+  if (result?.ok) {
     announce(capture.kind === "screenshot" ? "screenshotSaved" : "recordingSaved");
 
     if (capture.kind === "recording" && capture.hasEdits) {
@@ -1689,7 +1729,7 @@ saveButton.addEventListener("click", async () => {
     }
     diagnostics.recentCapturesUpdated = `Yes at ${nowText()}`;
     renderDiagnostics();
-  } else if (result.canceled) {
+  } else if (result?.canceled) {
     announce("saveCanceled");
   } else {
     announce(capture.kind === "screenshot" ? "screenshotSaveFailed" : "recordingSaveFailed");

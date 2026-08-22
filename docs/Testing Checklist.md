@@ -250,9 +250,9 @@
 
 ## Beta 10 - build identity, stale capture cleanup, and edit commit
 
-- [ ] App footer reports Version 3.0.0 Beta 13.
-- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 13.
-- [ ] Installer/package version identifies 3.0.0-13.
+- [ ] App footer reports Version 3.0.0 Beta 14.
+- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 14.
+- [ ] Installer/package version identifies 3.0.0-14.
 - [ ] Stale recovered captures with missing backing files are automatically removed on startup.
 - [ ] Discard removes a pending capture immediately and it does not return after restart.
 - [ ] Apply Marked Edit is disabled until an edit mark exists.
@@ -262,7 +262,7 @@
 
 ## Beta 11 - Review Queue semantics and edit discoverability
 
-- [ ] Installer and app identify as 3.0.0 Beta 13 / 3.0.0-13.
+- [ ] Installer and app identify as 3.0.0 Beta 14 / 3.0.0-14.
 - [ ] With an empty Review Queue, Save and Discard are absent from Tab and screen-reader navigation.
 - [ ] An imported MP4 is announced as an imported video, not a capture.
 - [ ] Imported-video actions say Save Video and Discard Video.
@@ -275,7 +275,7 @@
 
 ## Beta 12 - non-destructive edit timeline
 
-- [ ] Installer and app identify as 3.0.0 Beta 13 / 3.0.0-13.
+- [ ] Installer and app identify as 3.0.0 Beta 14 / 3.0.0-14.
 - [ ] Applying a beginning trim, ending trim, or middle cut returns a completion announcement immediately without running FFmpeg.
 - [ ] Playback skips removed middle sections and uses the edited timeline for position announcements.
 - [ ] Rewind/Forward controls move through the edited timeline.
@@ -288,6 +288,18 @@
 ## Beta 13 - Build correction
 
 - [ ] Windows GitHub Actions build completes with the non-destructive edit-plan renderer.
-- [ ] Installer/package identifies as 3.0.0-13.
-- [ ] App footer identifies as Version 3.0.0 Beta 13.
+- [ ] Installer/package identifies as 3.0.0-14.
+- [ ] App footer identifies as Version 3.0.0 Beta 14.
 - [ ] Imported-video edits remain immediate and render only when Save Video is activated.
+
+
+## Beta 14 - Save/render accessibility
+
+- [ ] Save Video becomes unavailable immediately after activation and cannot start a duplicate render.
+- [ ] Discard and review editing controls are unavailable while an edited video is rendering/saving.
+- [ ] Rendering announces immediately that work has started.
+- [ ] A status announcement is provided every 15 seconds while rendering continues.
+- [ ] When rendering completes, the app announces that the edited video is ready and that Save As is opening.
+- [ ] Canceling Save As restores the controls and announces that saving was canceled.
+- [ ] Successful save restores the controls and announces completion.
+- [ ] Version is 3.0.0 Beta 14 / package 3.0.0-14.
