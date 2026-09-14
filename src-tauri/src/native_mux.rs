@@ -121,6 +121,37 @@ pub struct MuxResult {
     pub muxing_error: Option<String>,
 }
 
+fn valid_duration(value: Option<f64>) -> Option<f64> {
+    value.filter(|v| v.is_finite() && *v > 0.001)
+}
+
+fn duration_ratio(actual: Option<f64>, target: f64) -> f64 {
+    match (valid_duration(actual), target.is_finite() && target > 0.001) {
+        (Some(actual), true) => {
+            // FFmpeg atempo > 1 shortens a stream and < 1 lengthens it.
+            // Real hardware-clock drift should be tiny, but clamp defensively
+            // to atempo's directly supported range rather than generating an
+            // invalid filter for corrupt timing metadata.
+            (actual / target).clamp(0.5, 2.0)
+        }
+        _ => 1.0,
+    }
+}
+
+fn video_timestamp_scale(video_duration: Option<f64>, target: f64) -> f64 {
+    match (valid_duration(video_duration), target.is_finite() && target > 0.001) {
+        (Some(actual), true) => (target / actual).clamp(0.5, 2.0),
+        _ => 1.0,
+    }
+}
+
+fn synced_audio_filter(input_index: usize, label: &str, actual_duration: Option<f64>, target: f64) -> String {
+    let tempo = duration_ratio(actual_duration, target);
+    format!(
+        "[{input_index}:a]asetpts=PTS-STARTPTS,atempo={tempo:.9},aresample=async=1000:first_pts=0,apad,atrim=duration={target:.9}[{label}]"
+    )
+}
+
 fn truncated_stderr(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     if text.chars().count() > MAX_STDERR_CHARS {
@@ -267,6 +298,10 @@ pub async fn mux_recording(
     system_audio_path: Option<&Path>,
     mic_audio_path: Option<&Path>,
     output_path: &Path,
+    master_duration_seconds: f64,
+    video_duration_seconds: Option<f64>,
+    system_audio_duration_seconds: Option<f64>,
+    mic_audio_duration_seconds: Option<f64>,
 ) -> MuxResult {
     let video_stream_handling = "copy (no re-encode)".to_string();
     let muxing_method = "ffmpeg sidecar".to_string();
@@ -292,66 +327,104 @@ pub async fn mux_recording(
     let _ = std::fs::remove_file(output_path);
 
     let video_str = video_path.to_string_lossy().to_string();
-    let mut args: Vec<String> = vec!["-y".to_string(), "-i".to_string(), video_str];
+    let target_duration = if master_duration_seconds.is_finite() && master_duration_seconds > 0.001 {
+        master_duration_seconds
+    } else {
+        valid_duration(video_duration_seconds)
+            .or(valid_duration(system_audio_duration_seconds))
+            .or(valid_duration(mic_audio_duration_seconds))
+            .unwrap_or(0.0)
+    };
+
+    // Rescale the already-encoded video's timestamps to the authoritative
+    // active recording duration without re-encoding the video bitstream.
+    // This corrects a video timeline that became slightly short/long because
+    // raw-frame writes could not perfectly keep pace with wall-clock time.
+    let v_scale = video_timestamp_scale(video_duration_seconds, target_duration);
+    let mut args: Vec<String> = vec![
+        "-y".to_string(),
+        "-itsscale".to_string(),
+        format!("{v_scale:.9}"),
+        "-i".to_string(),
+        video_str,
+    ];
     let audio_codec_used: String;
 
     match (system_audio_path, mic_audio_path) {
         (None, None) => {
-            args.extend(["-map".to_string(), "0:v:0".to_string(), "-c:v".to_string(), "copy".to_string(), "-an".to_string()]);
+            args.extend([
+                "-map".to_string(), "0:v:0".to_string(),
+                "-c:v".to_string(), "copy".to_string(),
+                "-an".to_string(),
+            ]);
             audio_codec_used = "none".to_string();
         }
         (Some(sys_path), None) => {
+            args.extend(["-i".to_string(), sys_path.to_string_lossy().to_string()]);
+            let filter = synced_audio_filter(1, "aout", system_audio_duration_seconds, target_duration);
             args.extend([
-                "-i".to_string(),
-                sys_path.to_string_lossy().to_string(),
-                "-map".to_string(),
-                "0:v:0".to_string(),
-                "-map".to_string(),
-                "1:a:0".to_string(),
-                "-c:v".to_string(),
-                "copy".to_string(),
-                "-c:a".to_string(),
-                "aac".to_string(),
+                "-filter_complex".to_string(), filter,
+                "-map".to_string(), "0:v:0".to_string(),
+                "-map".to_string(), "[aout]".to_string(),
+                "-c:v".to_string(), "copy".to_string(),
+                "-c:a".to_string(), "aac".to_string(),
             ]);
-            audio_codec_used = "aac".to_string();
+            audio_codec_used = format!(
+                "aac (system synchronized to master; tempo {:.9})",
+                duration_ratio(system_audio_duration_seconds, target_duration)
+            );
         }
         (None, Some(mic_path)) => {
+            args.extend(["-i".to_string(), mic_path.to_string_lossy().to_string()]);
+            let filter = synced_audio_filter(1, "aout", mic_audio_duration_seconds, target_duration);
             args.extend([
-                "-i".to_string(),
-                mic_path.to_string_lossy().to_string(),
-                "-map".to_string(),
-                "0:v:0".to_string(),
-                "-map".to_string(),
-                "1:a:0".to_string(),
-                "-c:v".to_string(),
-                "copy".to_string(),
-                "-c:a".to_string(),
-                "aac".to_string(),
+                "-filter_complex".to_string(), filter,
+                "-map".to_string(), "0:v:0".to_string(),
+                "-map".to_string(), "[aout]".to_string(),
+                "-c:v".to_string(), "copy".to_string(),
+                "-c:a".to_string(), "aac".to_string(),
             ]);
-            audio_codec_used = "aac".to_string();
+            audio_codec_used = format!(
+                "aac (microphone synchronized to master; tempo {:.9})",
+                duration_ratio(mic_audio_duration_seconds, target_duration)
+            );
         }
         (Some(sys_path), Some(mic_path)) => {
             args.extend([
-                "-i".to_string(),
-                sys_path.to_string_lossy().to_string(),
-                "-i".to_string(),
-                mic_path.to_string_lossy().to_string(),
-                "-filter_complex".to_string(),
-                "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0[aout]".to_string(),
-                "-map".to_string(),
-                "0:v:0".to_string(),
-                "-map".to_string(),
-                "[aout]".to_string(),
-                "-c:v".to_string(),
-                "copy".to_string(),
-                "-c:a".to_string(),
-                "aac".to_string(),
+                "-i".to_string(), sys_path.to_string_lossy().to_string(),
+                "-i".to_string(), mic_path.to_string_lossy().to_string(),
             ]);
-            audio_codec_used = "aac (mixed: system + microphone)".to_string();
+
+            let sys_filter = synced_audio_filter(1, "sys", system_audio_duration_seconds, target_duration);
+            let mic_filter = synced_audio_filter(2, "mic", mic_audio_duration_seconds, target_duration);
+            let filter = format!(
+                "{sys_filter};{mic_filter};[sys][mic]amix=inputs=2:duration=longest:dropout_transition=0,atrim=duration={target_duration:.9}[aout]"
+            );
+
+            args.extend([
+                "-filter_complex".to_string(), filter,
+                "-map".to_string(), "0:v:0".to_string(),
+                "-map".to_string(), "[aout]".to_string(),
+                "-c:v".to_string(), "copy".to_string(),
+                "-c:a".to_string(), "aac".to_string(),
+            ]);
+            audio_codec_used = format!(
+                "aac (system + microphone synchronized to {:.6}s master; system tempo {:.9}; microphone tempo {:.9}; video timestamp scale {:.9})",
+                target_duration,
+                duration_ratio(system_audio_duration_seconds, target_duration),
+                duration_ratio(mic_audio_duration_seconds, target_duration),
+                v_scale,
+            );
         }
     }
 
-    args.extend(["-movflags".to_string(), "+faststart".to_string(), output_path.to_string_lossy().to_string()]);
+    args.extend([
+        "-t".to_string(),
+        format!("{target_duration:.9}"),
+        "-movflags".to_string(),
+        "+faststart".to_string(),
+        output_path.to_string_lossy().to_string(),
+    ]);
 
     let output = sidecar.args(args).output().await;
 

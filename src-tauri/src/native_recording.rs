@@ -651,7 +651,7 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         mut system_audio_diagnostics,
         mic_audio,
         mut mic_audio_diagnostics,
-        recording_started_at,
+        recording_started_at: _recording_started_at,
         output_dir,
         pause_intervals,
         current_pause_started_at,
@@ -693,15 +693,17 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
     let pause_snapshot: Vec<(Instant, Instant)> = pause_intervals.lock().unwrap().clone();
 
     let mut system_audio_wav_path: Option<PathBuf> = None;
+    let mut system_audio_retained_frames: u64 = 0;
     if let (Some(source), Some(origin)) = (system_audio, first_frame_at) {
         if let Ok(chunks) = source.join_handle.join() {
             system_audio_diagnostics.buffers_captured = chunks.len() as u32;
             system_audio_diagnostics.frames_captured = chunks.iter().map(|c| c.frames as u64).sum();
             if !chunks.is_empty() {
                 let wav_path = output_dir.join(SOURCE_SYSTEM_AUDIO_FILE_NAME);
-                let (path, _retained_frames, _has_signal) =
+                let (path, retained_frames, _has_signal) =
                     trim_and_write_audio(&chunks, &system_audio_diagnostics, origin, source.capture_start, window_end, &pause_snapshot, &wav_path);
                 system_audio_wav_path = path;
+                system_audio_retained_frames = retained_frames;
             }
         }
     }
@@ -782,8 +784,64 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         }
     }
 
+    // One authoritative media timeline for the final file.
+    //
+    // The original implementation let three independent clocks determine
+    // duration: the video frame count, the system-audio device clock, and
+    // the microphone device clock. Small hardware/processing differences
+    // can accumulate into audible drift on longer recordings. The master
+    // duration below is real active wall-clock time from the first captured
+    // video frame through Stop, excluding pauses. At mux time each stream
+    // is conformed to this same duration.
+    let active_recording_duration_seconds = if let Some(origin) = first_frame_at {
+        let mut paused_inside_window = 0.0_f64;
+        for (pause_start, pause_end) in &pause_snapshot {
+            let clipped_start = if *pause_start < origin { origin } else { *pause_start };
+            let clipped_end = if *pause_end > stop_requested_at { stop_requested_at } else { *pause_end };
+            if clipped_end > clipped_start {
+                paused_inside_window += clipped_end.duration_since(clipped_start).as_secs_f64();
+            }
+        }
+        (window_end - paused_inside_window).max(0.0)
+    } else {
+        0.0
+    };
+
     let source_video_path = output_dir.join(SOURCE_VIDEO_FILE_NAME);
     let video_ok = video_clock_result.as_ref().map(|r| r.video_encode_success).unwrap_or(false);
+
+    let video_media_duration_seconds = video_clock_result
+        .as_ref()
+        .and_then(|result| {
+            if result.video_clock_fps > 0 && result.video_clock_frames_produced > 0 {
+                Some(result.video_clock_frames_produced as f64 / result.video_clock_fps as f64)
+            } else {
+                None
+            }
+        });
+
+    let system_audio_duration_seconds = system_audio_diagnostics
+        .mix_sample_rate
+        .filter(|rate| *rate > 0)
+        .map(|rate| system_audio_retained_frames as f64 / rate as f64)
+        .filter(|duration| *duration > 0.0);
+
+    let mic_audio_duration_seconds = mic_audio_diagnostics
+        .mix_sample_rate
+        .filter(|rate| *rate > 0)
+        .map(|rate| mic_retained_frames as f64 / rate as f64)
+        .filter(|duration| *duration > 0.0);
+
+    crate::debug_log::log(
+        &app,
+        &format!(
+            "recording sync plan: master={:.6}s, video={:?}s, system_audio={:?}s, microphone={:?}s",
+            active_recording_duration_seconds,
+            video_media_duration_seconds.map(|v| format!("{v:.6}")),
+            system_audio_duration_seconds.map(|v| format!("{v:.6}")),
+            mic_audio_duration_seconds.map(|v| format!("{v:.6}")),
+        ),
+    );
 
     let mut mux_result: Option<crate::native_mux::MuxResult> = None;
     let mut final_muxed_path: Option<String> = None;
@@ -799,6 +857,10 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
                 system_audio_wav_path.as_deref(),
                 mic_audio_wav_path.as_deref(),
                 &final_path,
+                active_recording_duration_seconds,
+                video_media_duration_seconds,
+                system_audio_duration_seconds,
+                mic_audio_duration_seconds,
             )
             .await;
             if result.muxing_success {
@@ -815,8 +877,10 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         }
     }
 
-    let total_paused_seconds: f64 = pause_snapshot.iter().map(|(start, end)| end.duration_since(*start).as_secs_f64()).sum();
-    let recording_duration_seconds = (stop_requested_at.duration_since(recording_started_at).as_secs_f64() - total_paused_seconds).max(0.0);
+    // Report the same master duration used for final stream synchronization.
+    // This starts at the first real captured video frame rather than at
+    // pre-capture initialization time.
+    let recording_duration_seconds = active_recording_duration_seconds;
 
     Ok(ProductionRecordingStopResult {
         recording_duration_seconds,
