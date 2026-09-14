@@ -254,7 +254,7 @@ fn register_one(app: &AppHandle, action: ShortcutAction, combo: &str) -> Result<
             if event.state() == ShortcutState::Pressed {
                 debug_log::log(
                     &app_handle,
-                    &format!("global shortcut RECEIVED: {}, dispatching event {}", action.key(), action_event_name(action)),
+                    &format!("WINDOWS GLOBAL SHORTCUT RECEIVED: action={}, event={}", action.key(), action_event_name(action)),
                 );
                 let _ = app_handle.emit(action_event_name(action), ());
             }
@@ -295,10 +295,12 @@ struct ShortcutsResponse {
 }
 
 #[tauri::command]
-fn get_shortcuts(app: AppHandle, state: State<ShortcutState_>) -> ShortcutsResponse {
+fn get_shortcuts(_app: AppHandle, state: State<ShortcutState_>) -> ShortcutsResponse {
+    // Read-only by design. Merely opening Settings must never tear down and
+    // recreate working Windows global shortcut registrations. Registration
+    // happens at startup, when a binding changes, or when defaults are reset.
     let bindings = state.bindings.lock().unwrap().clone();
-    let failures = register_all(&app, &bindings);
-    ShortcutsResponse { bindings, failures }
+    ShortcutsResponse { bindings, failures: Vec::new() }
 }
 
 #[derive(Serialize)]

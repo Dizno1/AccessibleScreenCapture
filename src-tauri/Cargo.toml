@@ -1,6 +1,6 @@
 [package]
 name = "accessible-screen-capture"
-version = "3.0.0-16"
+version = "3.0.0-17"
 description = "Professional screen capture designed from the ground up for keyboard and screen reader users."
 authors = ["Open Door Design"]
 edition = "2021"
@@ -46,6 +46,7 @@ windows = { version = "0.58", features = [
   "Win32_UI_Shell",
   "Win32_Media_Speech",
   "Win32_System_Com",
+  "Win32_System_SystemInformation",
 ] }
 # Native Windows Graphics Capture proof (src-tauri/src/native_capture.rs)
 # only - not wired into the working recorder. This crate depends on

@@ -573,9 +573,9 @@ microphoneSelect.addEventListener("change", async () => {
 function timestampForFilename() {
   const now = new Date();
   const date = [
-    now.getFullYear(),
     String(now.getMonth() + 1).padStart(2, "0"),
     String(now.getDate()).padStart(2, "0"),
+    now.getFullYear(),
   ].join("-");
   const time = [
     String(now.getHours()).padStart(2, "0"),
@@ -796,7 +796,7 @@ function buildRecordingPlaybackControls(video, capture) {
   editingHelp.hidden = true;
   editingHelpButton.setAttribute("aria-controls", editingHelpId);
   const editingHelpText = document.createElement("p");
-  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete or Apply Marked Edit applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use the 5-second or 30-second controls to move through the video. Edits are applied non-destructively and should be immediate. The original video is never changed. When you save an edited video, the app creates the finished file; larger or longer videos may take more time to save.";
+  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete or Apply Marked Edit applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use Left and Right Arrow for 5-second moves, Shift+Left and Shift+Right Arrow for 30-second moves, J and L for 5-minute moves, and Home or End to jump to the beginning or end. The visible transport controls remain available. Edits are applied non-destructively and should be immediate. The original video is never changed. When you save an edited video, the app creates the finished file; larger or longer videos may take more time to save.";
   editingHelp.appendChild(editingHelpText);
   editingHelpButton.addEventListener("click", () => {
     const expanded = editingHelpButton.getAttribute("aria-expanded") !== "true";
@@ -923,11 +923,28 @@ function buildRecordingPlaybackControls(video, capture) {
   return { container, playPauseButton };
 }
 
+function captureCalendarKey(value) {
+  const date = value ? new Date(value) : new Date();
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+
+function nextDailyQueueNumber(capture) {
+  const key = captureCalendarKey(capture.capturedAt);
+  const typeKey = capture.kind === "screenshot" ? "screenshot" : (capture.imported ? "imported" : "recording");
+  const sameDay = pendingCaptures.filter((item) => {
+    const itemType = item.kind === "screenshot" ? "screenshot" : (item.imported ? "imported" : "recording");
+    return itemType === typeKey && captureCalendarKey(item.capturedAt) === key;
+  });
+  return sameDay.reduce((max, item) => Math.max(max, Number(item.queueNumber) || 0), 0) + 1;
+}
+
 function captureLabel(capture) {
   const type = capture.kind === "screenshot" ? "Screenshot" : (capture.imported ? "Imported Video" : "Recording");
-  const when = capture.capturedAt ? new Date(capture.capturedAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : nowText();
+  const date = capture.capturedAt ? new Date(capture.capturedAt) : new Date();
+  const when = date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const dateText = `${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}-${date.getFullYear()}`;
   const duration = capture.kind === "recording" && capture.durationSeconds ? `, ${formatDuration(capture.durationSeconds)}` : "";
-  return `${type} ${capture.queueNumber}, captured ${when}${duration}`;
+  return `${type} ${capture.queueNumber}, captured ${dateText} at ${when}${duration}`;
 }
 
 function reviewItemNoun(capture) {
@@ -1262,6 +1279,30 @@ function handleRecordingEditKeydown(event) {
   const isLeftBracket = key === "[" || code === "BracketLeft";
   const isRightBracket = key === "]" || code === "BracketRight";
 
+  const duration = editableRecordingDuration(activeReviewCapture);
+  const logicalPosition = sourceToLogicalTime(activeReviewCapture, Number(activeReviewVideo.currentTime || 0));
+  const seekToLogical = (target) => {
+    const next = Math.max(0, Math.min(duration, target));
+    activeReviewVideo.currentTime = logicalToSourceTime(activeReviewCapture, next);
+    announceRaw(`Position ${formatEditPoint(next)}.`);
+  };
+
+  if (!event.ctrlKey && !event.altKey && (key === "ArrowLeft" || key === "ArrowRight")) {
+    event.preventDefault();
+    seekToLogical(logicalPosition + (key === "ArrowRight" ? 1 : -1) * (event.shiftKey ? 30 : 5));
+    return;
+  }
+  if (!event.ctrlKey && !event.altKey && !event.shiftKey && (key.toLowerCase() === "j" || key.toLowerCase() === "l")) {
+    event.preventDefault();
+    seekToLogical(logicalPosition + (key.toLowerCase() === "l" ? 300 : -300));
+    return;
+  }
+  if (!event.ctrlKey && !event.altKey && !event.shiftKey && (key === "Home" || key === "End")) {
+    event.preventDefault();
+    seekToLogical(key === "End" ? duration : 0);
+    return;
+  }
+
   if (event.ctrlKey && !event.altKey && !event.shiftKey && key.toLowerCase() === "z") {
     event.preventDefault();
     undoLastRecordingEdit();
@@ -1384,8 +1425,10 @@ async function restorePendingRecordings() {
       return;
     }
 
+    validRestored.sort((a, b) => new Date(a.capturedAt || 0) - new Date(b.capturedAt || 0));
     for (const capture of validRestored) {
-      capture.queueNumber = nextPendingCaptureId++;
+      capture.capturedAt = capture.capturedAt || new Date().toISOString();
+      capture.queueNumber = nextDailyQueueNumber(capture);
       pendingCaptures.push(capture);
     }
     pendingCapture = pendingCaptures[0];
@@ -1412,9 +1455,9 @@ async function restorePendingRecordings() {
 }
 
 function showReview(capture) {
-  capture.id = capture.id || `capture-${Date.now()}-${nextPendingCaptureId}`;
-  capture.queueNumber = nextPendingCaptureId++;
+  capture.id = capture.id || `capture-${Date.now()}-${nextPendingCaptureId++}`;
   capture.capturedAt = capture.capturedAt || new Date().toISOString();
+  capture.queueNumber = nextDailyQueueNumber(capture);
   pendingCaptures.push(capture);
   persistPendingRecordings();
   reviewSection.hidden = false;
@@ -2404,7 +2447,7 @@ function toggleRecording() {
 
 recordToggleButton.addEventListener("click", toggleRecording);
 if (pauseResumeButton) pauseResumeButton.addEventListener("click", togglePauseResume);
-registerShortcut({ ctrl: true, alt: true, key: "r", action: toggleRecording });
+if (!isTauri) registerShortcut({ ctrl: true, alt: true, key: "r", action: toggleRecording });
 
 if (!isTauri && (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia)) {
   recordToggleButton.disabled = true;
@@ -2438,11 +2481,9 @@ if (isTauri) {
     logDebug("app.js: global-shortcut-record-toggle event received by JS listener");
     diagnostics.lastGlobalShortcut = `Recording at ${nowText()}`;
     renderDiagnostics();
-    if (!isRecording && document.hidden) {
-      // Starting a recording needs the screen-share picker, which
-      // needs a visible window. Stopping an active recording does not.
-      await showMainWindow();
-    }
+    logDebug(`app.js: global record toggle dispatching ${isRecording ? "STOP" : "START"}; appFocused=${document.hasFocus()}; hidden=${document.hidden}`);
+    // Native recording has no screen-share picker. Do not move focus or
+    // restore the window merely to start recording from another app.
     toggleRecording();
   });
 

@@ -57,6 +57,23 @@ struct SaveSession {
     bytes_written: u64,
 }
 
+fn human_file_stamp() -> String {
+    use windows::Win32::System::SystemInformation::{GetLocalTime, SYSTEMTIME};
+    let mut st = SYSTEMTIME::default();
+    unsafe { GetLocalTime(&mut st); }
+    format!("{:02}-{:02}-{:04} {:02}-{:02}-{:02}", st.wMonth, st.wDay, st.wYear, st.wHour, st.wMinute, st.wSecond)
+}
+
+fn unique_pending_path(dir: &std::path::Path, base: &str, extension: &str) -> std::path::PathBuf {
+    let first = dir.join(format!("{base}.{extension}"));
+    if !first.exists() { return first; }
+    for n in 2..1000 {
+        let candidate = dir.join(format!("{base} ({n}).{extension}"));
+        if !candidate.exists() { return candidate; }
+    }
+    dir.join(format!("{base} - additional.{extension}"))
+}
+
 #[derive(Default)]
 pub struct RecordingSaveState {
     sessions: Mutex<HashMap<u64, SaveSession>>,
@@ -326,11 +343,7 @@ pub async fn edit_recording_file(
 
     let pending_dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");
     fs::create_dir_all(&pending_dir).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis();
-    let destination = pending_dir.join(format!("edited-{stamp}.mp4"));
+    let destination = unique_pending_path(&pending_dir, &format!("Edited Recording - {}", human_file_stamp()), "mp4");
 
     let start = start_seconds.max(0.0);
     let end = end_seconds.map(|v| v.max(0.0));
@@ -409,8 +422,7 @@ pub async fn render_recording_edit_plan(
 
     let pending_dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");
     fs::create_dir_all(&pending_dir).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
-    let destination = pending_dir.join(format!("rendered-{stamp}.mp4"));
+    let destination = unique_pending_path(&pending_dir, &format!("Rendered Edit - {}", human_file_stamp()), "mp4");
 
     let mut video_filters = Vec::new();
     let mut audio_filters = Vec::new();
@@ -496,11 +508,7 @@ pub async fn import_video_file(app: AppHandle) -> Result<ImportVideoResult, Stri
 
     let pending_dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");
     fs::create_dir_all(&pending_dir).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| e.to_string())?
-        .as_millis();
-    let destination = pending_dir.join(format!("imported-{stamp}.mp4"));
+    let destination = unique_pending_path(&pending_dir, &format!("Imported Video - {}", human_file_stamp()), "mp4");
     let stem = source.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported Video");
     let suggested_name = format!("{stem}.mp4");
     let extension = source.extension().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
@@ -553,8 +561,7 @@ pub async fn import_video_file(app: AppHandle) -> Result<ImportVideoResult, Stri
 pub async fn stage_pending_recording(app: AppHandle, source_path: String) -> Result<String, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?.join("pending-captures");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_millis();
-    let destination = dir.join(format!("recording-{stamp}.mp4"));
+    let destination = unique_pending_path(&dir, &format!("Recording - {}", human_file_stamp()), "mp4");
     let src = std::path::PathBuf::from(source_path);
     let dst = destination.clone();
     tauri::async_runtime::spawn_blocking(move || fs::rename(&src, &dst).or_else(|_| { fs::copy(&src, &dst)?; fs::remove_file(&src)?; Ok(()) })).await
