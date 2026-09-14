@@ -58,10 +58,7 @@ struct SaveSession {
 }
 
 fn human_file_stamp() -> String {
-    use windows::Win32::System::SystemInformation::{GetLocalTime, SYSTEMTIME};
-    let mut st = SYSTEMTIME::default();
-    unsafe { GetLocalTime(&mut st); }
-    format!("{:02}-{:02}-{:04} {:02}-{:02}-{:02}", st.wMonth, st.wDay, st.wYear, st.wHour, st.wMinute, st.wSecond)
+    chrono::Local::now().format("%m-%d-%Y %H-%M-%S").to_string()
 }
 
 fn unique_pending_path(dir: &std::path::Path, base: &str, extension: &str) -> std::path::PathBuf {

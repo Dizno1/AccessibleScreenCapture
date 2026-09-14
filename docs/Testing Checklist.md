@@ -250,9 +250,9 @@
 
 ## Beta 10 - build identity, stale capture cleanup, and edit commit
 
-- [ ] App footer reports Version 3.0.0 Beta 17.
-- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 17.
-- [ ] Installer/package version identifies 3.0.0-17.
+- [ ] App footer reports Version 3.0.0 Beta 18.
+- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 18.
+- [ ] Installer/package version identifies 3.0.0-18.
 - [ ] Stale recovered captures with missing backing files are automatically removed on startup.
 - [ ] Discard removes a pending capture immediately and it does not return after restart.
 - [ ] Apply Marked Edit is disabled until an edit mark exists.
@@ -262,7 +262,7 @@
 
 ## Beta 11 - Review Queue semantics and edit discoverability
 
-- [ ] Installer and app identify as 3.0.0 Beta 17 / 3.0.0-17.
+- [ ] Installer and app identify as 3.0.0 Beta 18 / 3.0.0-18.
 - [ ] With an empty Review Queue, Save and Discard are absent from Tab and screen-reader navigation.
 - [ ] An imported MP4 is announced as an imported video, not a capture.
 - [ ] Imported-video actions say Save Video and Discard Video.
@@ -275,7 +275,7 @@
 
 ## Beta 12 - non-destructive edit timeline
 
-- [ ] Installer and app identify as 3.0.0 Beta 17 / 3.0.0-17.
+- [ ] Installer and app identify as 3.0.0 Beta 18 / 3.0.0-18.
 - [ ] Applying a beginning trim, ending trim, or middle cut returns a completion announcement immediately without running FFmpeg.
 - [ ] Playback skips removed middle sections and uses the edited timeline for position announcements.
 - [ ] Rewind/Forward controls move through the edited timeline.
@@ -288,8 +288,8 @@
 ## Beta 13 - Build correction
 
 - [ ] Windows GitHub Actions build completes with the non-destructive edit-plan renderer.
-- [ ] Installer/package identifies as 3.0.0-17.
-- [ ] App footer identifies as Version 3.0.0 Beta 17.
+- [ ] Installer/package identifies as 3.0.0-18.
+- [ ] App footer identifies as Version 3.0.0 Beta 18.
 - [ ] Imported-video edits remain immediate and render only when Save Video is activated.
 
 
@@ -302,12 +302,12 @@
 - [ ] When rendering completes, the app announces that the edited video is ready and that Save As is opening.
 - [ ] Canceling Save As restores the controls and announces that saving was canceled.
 - [ ] Successful save restores the controls and announces completion.
-- [ ] Version is 3.0.0 Beta 17 / package 3.0.0-17.
+- [ ] Version is 3.0.0 Beta 18 / package 3.0.0-18.
 
 
 ## Beta 15 - Media synchronization and source protection
 
-- [ ] Application and installer identify as 3.0.0 Beta 17 / 3.0.0-17.
+- [ ] Application and installer identify as 3.0.0 Beta 18 / 3.0.0-18.
 - [ ] A recording with both system audio and microphone begins synchronized.
 - [ ] System audio and microphone remain synchronized after at least 10 minutes.
 - [ ] Video remains synchronized with both audio sources near the end of a longer recording.
@@ -319,7 +319,7 @@
 
 ## Beta 16 - Microphone recording level
 
-- [ ] Installer and application identify as 3.0.0-17 / 3.0.0 Beta 17.
+- [ ] Installer and application identify as 3.0.0-18 / 3.0.0 Beta 18.
 - [ ] Microphone recording level is available when microphone recording is enabled.
 - [ ] Default microphone recording level is 100 percent.
 - [ ] Selected microphone recording level persists between launches.
@@ -331,7 +331,7 @@
 
 ## Beta 17 - Reliability, navigation, identification, and data safety
 
-- [ ] Installer and application identify as 3.0.0-17 / 3.0.0 Beta 17.
+- [ ] Installer and application identify as 3.0.0-18 / 3.0.0 Beta 18.
 - [ ] Alt+Ctrl+R starts recording reliably while another application has focus.
 - [ ] Alt+Ctrl+R stops recording reliably while another application has focus.
 - [ ] Debug log distinguishes Windows global shortcut receipt, JavaScript event receipt, and recording start/stop dispatch.
@@ -346,3 +346,12 @@
 - [ ] Discard requires confirmation and Cancel leaves the source untouched.
 - [ ] Saving an edited native recording preserves the untouched original in Review Queue.
 - [ ] Beta 15 synchronization remains correct and Beta 16 microphone gain remains available.
+
+
+## Beta 18 - Build correction
+
+- [ ] GitHub Actions Windows build completes successfully.
+- [ ] Installer/package identifies as 3.0.0-18.
+- [ ] Application footer identifies as Version 3.0.0 Beta 18.
+- [ ] Human-readable pending filenames use local MM-DD-YYYY HH-MM-SS format.
+- [ ] Beta 17 shortcut, navigation, queue-label, data-protection, sync, and microphone-level changes remain intact.
