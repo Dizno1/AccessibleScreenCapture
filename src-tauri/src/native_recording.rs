@@ -340,6 +340,7 @@ struct RecordingSession {
     system_audio_diagnostics: AudioCaptureDiagnostics,
     mic_audio: Option<AudioSource>,
     mic_audio_diagnostics: AudioCaptureDiagnostics,
+    microphone_gain_percent: u32,
     recording_started_at: Instant,
     output_dir: PathBuf,
     // PAUSE/RESUME. Completed (start, end) pause intervals, shared
@@ -402,8 +403,19 @@ pub struct ProductionRecordingStopResult {
 /// genuinely underway; the caller does not block for the recording's
 /// duration - call stop_native_recording() later to end it.
 #[tauri::command]
-pub async fn start_native_recording(app: AppHandle, include_system_audio: bool, include_microphone: bool, microphone_device_id: Option<String>) -> Result<ProductionRecordingStartResult, String> {
+pub async fn start_native_recording(
+    app: AppHandle,
+    include_system_audio: bool,
+    include_microphone: bool,
+    microphone_device_id: Option<String>,
+    microphone_gain_percent: u32,
+) -> Result<ProductionRecordingStartResult, String> {
     let app = app.clone();
+    let microphone_gain_percent = microphone_gain_percent.clamp(100, 200);
+    crate::debug_log::log(
+        &app,
+        &format!("recording audio settings: microphone gain {} percent", microphone_gain_percent),
+    );
     tauri::async_runtime::spawn_blocking(move || {
         let mut session_slot = ACTIVE_SESSION.lock().unwrap();
         if session_slot.is_some() {
@@ -550,6 +562,7 @@ pub async fn start_native_recording(app: AppHandle, include_system_audio: bool, 
                     system_audio_diagnostics,
                     mic_audio,
                     mic_audio_diagnostics,
+                    microphone_gain_percent,
                     recording_started_at: Instant::now(),
                     output_dir,
                     pause_intervals: Arc::new(Mutex::new(Vec::new())),
@@ -651,6 +664,7 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         mut system_audio_diagnostics,
         mic_audio,
         mut mic_audio_diagnostics,
+        microphone_gain_percent,
         recording_started_at: _recording_started_at,
         output_dir,
         pause_intervals,
@@ -861,6 +875,7 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
                 video_media_duration_seconds,
                 system_audio_duration_seconds,
                 mic_audio_duration_seconds,
+                microphone_gain_percent,
             )
             .await;
             if result.muxing_success {

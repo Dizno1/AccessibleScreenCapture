@@ -152,6 +152,20 @@ fn synced_audio_filter(input_index: usize, label: &str, actual_duration: Option<
     )
 }
 
+fn synced_microphone_filter(
+    input_index: usize,
+    label: &str,
+    actual_duration: Option<f64>,
+    target: f64,
+    microphone_gain_percent: u32,
+) -> String {
+    let tempo = duration_ratio(actual_duration, target);
+    let gain = (microphone_gain_percent.clamp(100, 200) as f64) / 100.0;
+    format!(
+        "[{input_index}:a]asetpts=PTS-STARTPTS,atempo={tempo:.9},aresample=async=1000:first_pts=0,volume={gain:.3},alimiter=limit=0.95:attack=5:release=50,apad,atrim=duration={target:.9}[{label}]"
+    )
+}
+
 fn truncated_stderr(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     if text.chars().count() > MAX_STDERR_CHARS {
@@ -302,6 +316,7 @@ pub async fn mux_recording(
     video_duration_seconds: Option<f64>,
     system_audio_duration_seconds: Option<f64>,
     mic_audio_duration_seconds: Option<f64>,
+    microphone_gain_percent: u32,
 ) -> MuxResult {
     let video_stream_handling = "copy (no re-encode)".to_string();
     let muxing_method = "ffmpeg sidecar".to_string();
@@ -376,7 +391,13 @@ pub async fn mux_recording(
         }
         (None, Some(mic_path)) => {
             args.extend(["-i".to_string(), mic_path.to_string_lossy().to_string()]);
-            let filter = synced_audio_filter(1, "aout", mic_audio_duration_seconds, target_duration);
+            let filter = synced_microphone_filter(
+                1,
+                "aout",
+                mic_audio_duration_seconds,
+                target_duration,
+                microphone_gain_percent,
+            );
             args.extend([
                 "-filter_complex".to_string(), filter,
                 "-map".to_string(), "0:v:0".to_string(),
@@ -385,8 +406,9 @@ pub async fn mux_recording(
                 "-c:a".to_string(), "aac".to_string(),
             ]);
             audio_codec_used = format!(
-                "aac (microphone synchronized to master; tempo {:.9})",
-                duration_ratio(mic_audio_duration_seconds, target_duration)
+                "aac (microphone synchronized to master; tempo {:.9}; microphone gain {} percent; limiter 0.95)",
+                duration_ratio(mic_audio_duration_seconds, target_duration),
+                microphone_gain_percent
             );
         }
         (Some(sys_path), Some(mic_path)) => {
@@ -396,7 +418,13 @@ pub async fn mux_recording(
             ]);
 
             let sys_filter = synced_audio_filter(1, "sys", system_audio_duration_seconds, target_duration);
-            let mic_filter = synced_audio_filter(2, "mic", mic_audio_duration_seconds, target_duration);
+            let mic_filter = synced_microphone_filter(
+                2,
+                "mic",
+                mic_audio_duration_seconds,
+                target_duration,
+                microphone_gain_percent,
+            );
             let filter = format!(
                 "{sys_filter};{mic_filter};[sys][mic]amix=inputs=2:duration=longest:dropout_transition=0,atrim=duration={target_duration:.9}[aout]"
             );
@@ -409,10 +437,11 @@ pub async fn mux_recording(
                 "-c:a".to_string(), "aac".to_string(),
             ]);
             audio_codec_used = format!(
-                "aac (system + microphone synchronized to {:.6}s master; system tempo {:.9}; microphone tempo {:.9}; video timestamp scale {:.9})",
+                "aac (system + microphone synchronized to {:.6}s master; system tempo {:.9}; microphone tempo {:.9}; microphone gain {} percent; limiter 0.95; video timestamp scale {:.9})",
                 target_duration,
                 duration_ratio(system_audio_duration_seconds, target_duration),
                 duration_ratio(mic_audio_duration_seconds, target_duration),
+                microphone_gain_percent,
                 v_scale,
             );
         }

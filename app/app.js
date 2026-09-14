@@ -56,6 +56,19 @@ const systemAudioOption = document.getElementById("option-system-audio");
 const microphoneOption = document.getElementById("option-microphone");
 const microphoneSelectWrapper = document.getElementById("microphone-select-wrapper");
 const microphoneSelect = document.getElementById("microphone-select");
+const microphoneRecordingLevel = document.getElementById("microphone-recording-level");
+const MICROPHONE_LEVEL_KEY = "asc-pro-microphone-recording-level";
+if (microphoneRecordingLevel) {
+  const storedMicrophoneLevel = localStorage.getItem(MICROPHONE_LEVEL_KEY);
+  if (storedMicrophoneLevel && [...microphoneRecordingLevel.options].some((option) => option.value === storedMicrophoneLevel)) {
+    microphoneRecordingLevel.value = storedMicrophoneLevel;
+  }
+  microphoneRecordingLevel.addEventListener("change", () => {
+    localStorage.setItem(MICROPHONE_LEVEL_KEY, microphoneRecordingLevel.value);
+    announceRaw(`Microphone recording level ${microphoneRecordingLevel.value} percent.`);
+  });
+}
+
 const screenshotButton = document.getElementById("screenshot-button");
 const recordToggleButton = document.getElementById("record-toggle-button");
 const importVideoButton = document.getElementById("import-video-button");
@@ -2080,7 +2093,15 @@ async function startRecording() {
     // Native microphone selection is populated from real WASAPI
     // capture endpoints and the selected device ID is passed to Rust.
     try {
-      const result = await startNativeRecording(systemAudioOption.checked, microphoneOption.checked, microphoneOption.checked ? nativeMicrophoneDeviceId : null);
+      const microphoneGainPercent = microphoneOption.checked && microphoneRecordingLevel
+        ? Number(microphoneRecordingLevel.value || 100)
+        : 100;
+      const result = await startNativeRecording(
+        systemAudioOption.checked,
+        microphoneOption.checked,
+        microphoneOption.checked ? nativeMicrophoneDeviceId : null,
+        microphoneGainPercent
+      );
       if (!result.started) {
         console.error("Native recording could not start:", result.startError);
         logDebug(`app.js: native recording start FAILED: ${result.startError}`);
