@@ -166,6 +166,67 @@ fn synced_microphone_filter(
     )
 }
 
+#[derive(Debug, Clone)]
+pub struct AudioLevelMeasurement {
+    pub mean_db: Option<f64>,
+    pub max_db: Option<f64>,
+    pub error: Option<String>,
+}
+
+fn parse_volume_db(stderr: &str, label: &str) -> Option<f64> {
+    stderr.lines().rev().find_map(|line| {
+        let marker = format!("{label}: ");
+        let start = line.find(&marker)? + marker.len();
+        let value = line[start..].split_whitespace().next()?;
+        if value.eq_ignore_ascii_case("-inf") { None } else { value.parse::<f64>().ok() }
+    })
+}
+
+/// Measures a WAV independently before final mixing. When `gain_percent` is
+/// supplied, the same microphone gain and limiter used by the production mux
+/// are applied before volumedetect, giving us both pre- and post-processing
+/// evidence without changing the recording itself.
+pub async fn measure_audio_level(
+    app: &AppHandle,
+    audio_path: &Path,
+    gain_percent: Option<u32>,
+) -> AudioLevelMeasurement {
+    let sidecar = match app.shell().sidecar("ffmpeg") {
+        Ok(cmd) => cmd,
+        Err(e) => return AudioLevelMeasurement { mean_db: None, max_db: None, error: Some(format!("ffmpeg unavailable: {e}")) },
+    };
+
+    let filter = match gain_percent {
+        Some(percent) => {
+            let gain = (percent.clamp(100, 200) as f64) / 100.0;
+            format!("volume={gain:.3},alimiter=limit=0.95:attack=5:release=50,volumedetect")
+        }
+        None => "volumedetect".to_string(),
+    };
+
+    let args = vec![
+        "-hide_banner".to_string(), "-nostats".to_string(),
+        "-i".to_string(), audio_path.to_string_lossy().to_string(),
+        "-af".to_string(), filter,
+        "-f".to_string(), "null".to_string(), "NUL".to_string(),
+    ];
+
+    match sidecar.args(args).output().await {
+        Ok(result) => {
+            let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+            if !result.status.success() {
+                return AudioLevelMeasurement { mean_db: None, max_db: None, error: Some(truncated_stderr(&result.stderr)) };
+            }
+            AudioLevelMeasurement {
+                mean_db: parse_volume_db(&stderr, "mean_volume"),
+                max_db: parse_volume_db(&stderr, "max_volume"),
+                error: None,
+            }
+        }
+        Err(e) => AudioLevelMeasurement { mean_db: None, max_db: None, error: Some(format!("Could not run ffmpeg level analysis: {e}")) },
+    }
+}
+
 fn truncated_stderr(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr);
     if text.chars().count() > MAX_STDERR_CHARS {

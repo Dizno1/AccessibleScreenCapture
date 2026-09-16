@@ -857,6 +857,45 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         ),
     );
 
+    // Beta 19 audio-balance diagnostics. Measure the two captured sources
+    // independently before they are mixed, and measure the microphone again
+    // with the selected production gain/limiter. This is diagnostic only: it
+    // does not alter the proven synchronization or mux path.
+    if let Some(path) = system_audio_wav_path.as_deref() {
+        let level = crate::native_mux::measure_audio_level(&app, path, None).await;
+        crate::debug_log::log(
+            &app,
+            &format!(
+                "audio balance diagnostic: system pre-mix mean={:?} dB, max={:?} dB, error={:?}",
+                level.mean_db, level.max_db, level.error
+            ),
+        );
+    }
+    if let Some(path) = mic_audio_wav_path.as_deref() {
+        let pre = crate::native_mux::measure_audio_level(&app, path, None).await;
+        let post = crate::native_mux::measure_audio_level(&app, path, Some(microphone_gain_percent)).await;
+        crate::debug_log::log(
+            &app,
+            &format!(
+                "audio balance diagnostic: microphone pre-gain mean={:?} dB, max={:?} dB; post-gain {} percent mean={:?} dB, max={:?} dB; pre_error={:?}; post_error={:?}",
+                pre.mean_db, pre.max_db, microphone_gain_percent, post.mean_db, post.max_db, pre.error, post.error
+            ),
+        );
+    }
+    if let (Some(sys_path), Some(mic_path)) = (system_audio_wav_path.as_deref(), mic_audio_wav_path.as_deref()) {
+        let sys = crate::native_mux::measure_audio_level(&app, sys_path, None).await;
+        let mic = crate::native_mux::measure_audio_level(&app, mic_path, Some(microphone_gain_percent)).await;
+        if let (Some(sys_mean), Some(mic_mean)) = (sys.mean_db, mic.mean_db) {
+            crate::debug_log::log(
+                &app,
+                &format!(
+                    "audio balance diagnostic: post-gain microphone/system mean-level difference={:.1} dB (positive means microphone louder)",
+                    mic_mean - sys_mean
+                ),
+            );
+        }
+    }
+
     let mut mux_result: Option<crate::native_mux::MuxResult> = None;
     let mut final_muxed_path: Option<String> = None;
     let mut system_audio_included_in_final_mux = false;
