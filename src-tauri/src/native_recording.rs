@@ -386,6 +386,22 @@ pub struct ProductionRecordingStopResult {
     pub mic_wav_created: bool,
     #[serde(rename = "systemAudioIncludedInFinalMux")]
     pub system_audio_included_in_final_mux: bool,
+    #[serde(rename = "systemPreMixMeanDb")]
+    pub system_pre_mix_mean_db: Option<f64>,
+    #[serde(rename = "systemPreMixMaxDb")]
+    pub system_pre_mix_max_db: Option<f64>,
+    #[serde(rename = "micPreGainMeanDb")]
+    pub mic_pre_gain_mean_db: Option<f64>,
+    #[serde(rename = "micPreGainMaxDb")]
+    pub mic_pre_gain_max_db: Option<f64>,
+    #[serde(rename = "micPostGainMeanDb")]
+    pub mic_post_gain_mean_db: Option<f64>,
+    #[serde(rename = "micPostGainMaxDb")]
+    pub mic_post_gain_max_db: Option<f64>,
+    #[serde(rename = "micSystemMeanDifferenceDb")]
+    pub mic_system_mean_difference_db: Option<f64>,
+    #[serde(rename = "audioBalanceDiagnosticError")]
+    pub audio_balance_diagnostic_error: Option<String>,
     #[serde(rename = "finalMuxedPath")]
     pub final_muxed_path: Option<String>,
     #[serde(flatten)]
@@ -857,44 +873,43 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         ),
     );
 
-    // Beta 19 audio-balance diagnostics. Measure the two captured sources
-    // independently before they are mixed, and measure the microphone again
-    // with the selected production gain/limiter. This is diagnostic only: it
-    // does not alter the proven synchronization or mux path.
-    if let Some(path) = system_audio_wav_path.as_deref() {
-        let level = crate::native_mux::measure_audio_level(&app, path, None).await;
-        crate::debug_log::log(
-            &app,
-            &format!(
-                "audio balance diagnostic: system pre-mix mean={:?} dB, max={:?} dB, error={:?}",
-                level.mean_db, level.max_db, level.error
-            ),
-        );
-    }
-    if let Some(path) = mic_audio_wav_path.as_deref() {
-        let pre = crate::native_mux::measure_audio_level(&app, path, None).await;
-        let post = crate::native_mux::measure_audio_level(&app, path, Some(microphone_gain_percent)).await;
-        crate::debug_log::log(
-            &app,
-            &format!(
-                "audio balance diagnostic: microphone pre-gain mean={:?} dB, max={:?} dB; post-gain {} percent mean={:?} dB, max={:?} dB; pre_error={:?}; post_error={:?}",
-                pre.mean_db, pre.max_db, microphone_gain_percent, post.mean_db, post.max_db, pre.error, post.error
-            ),
-        );
-    }
-    if let (Some(sys_path), Some(mic_path)) = (system_audio_wav_path.as_deref(), mic_audio_wav_path.as_deref()) {
-        let sys = crate::native_mux::measure_audio_level(&app, sys_path, None).await;
-        let mic = crate::native_mux::measure_audio_level(&app, mic_path, Some(microphone_gain_percent)).await;
-        if let (Some(sys_mean), Some(mic_mean)) = (sys.mean_db, mic.mean_db) {
-            crate::debug_log::log(
-                &app,
-                &format!(
-                    "audio balance diagnostic: post-gain microphone/system mean-level difference={:.1} dB (positive means microphone louder)",
-                    mic_mean - sys_mean
-                ),
-            );
-        }
-    }
+    // Beta 20 audio-balance diagnostics. Measure each source once before
+    // production muxing. The values are both logged and returned to the
+    // frontend so Diagnostics can expose them even if the file log is
+    // unavailable or has been rotated. This does not alter either source.
+    let system_level = if let Some(path) = system_audio_wav_path.as_deref() {
+        Some(crate::native_mux::measure_audio_level(&app, path, None).await)
+    } else { None };
+    let mic_pre_level = if let Some(path) = mic_audio_wav_path.as_deref() {
+        Some(crate::native_mux::measure_audio_level(&app, path, None).await)
+    } else { None };
+    let mic_post_level = if let Some(path) = mic_audio_wav_path.as_deref() {
+        Some(crate::native_mux::measure_audio_level(&app, path, Some(microphone_gain_percent)).await)
+    } else { None };
+
+    let system_pre_mix_mean_db = system_level.as_ref().and_then(|v| v.mean_db);
+    let system_pre_mix_max_db = system_level.as_ref().and_then(|v| v.max_db);
+    let mic_pre_gain_mean_db = mic_pre_level.as_ref().and_then(|v| v.mean_db);
+    let mic_pre_gain_max_db = mic_pre_level.as_ref().and_then(|v| v.max_db);
+    let mic_post_gain_mean_db = mic_post_level.as_ref().and_then(|v| v.mean_db);
+    let mic_post_gain_max_db = mic_post_level.as_ref().and_then(|v| v.max_db);
+    let mic_system_mean_difference_db = match (system_pre_mix_mean_db, mic_post_gain_mean_db) {
+        (Some(sys), Some(mic)) => Some(mic - sys),
+        _ => None,
+    };
+    let diagnostic_errors: Vec<String> = [
+        system_level.as_ref().and_then(|v| v.error.as_ref()).map(|e| format!("system: {e}")),
+        mic_pre_level.as_ref().and_then(|v| v.error.as_ref()).map(|e| format!("microphone pre-gain: {e}")),
+        mic_post_level.as_ref().and_then(|v| v.error.as_ref()).map(|e| format!("microphone post-gain: {e}")),
+    ].into_iter().flatten().collect();
+    let audio_balance_diagnostic_error = if diagnostic_errors.is_empty() { None } else { Some(diagnostic_errors.join(" | ")) };
+
+    crate::debug_log::log(&app, &format!(
+        "audio balance diagnostic: system pre-mix mean={:?} dB, max={:?} dB; microphone pre-gain mean={:?} dB, max={:?} dB; microphone post-gain {} percent mean={:?} dB, max={:?} dB; post-gain microphone/system mean-level difference={:?} dB; error={:?}",
+        system_pre_mix_mean_db, system_pre_mix_max_db, mic_pre_gain_mean_db, mic_pre_gain_max_db,
+        microphone_gain_percent, mic_post_gain_mean_db, mic_post_gain_max_db,
+        mic_system_mean_difference_db, audio_balance_diagnostic_error
+    ));
 
     let mut mux_result: Option<crate::native_mux::MuxResult> = None;
     let mut final_muxed_path: Option<String> = None;
@@ -946,6 +961,14 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         mic_retained_frames,
         mic_wav_created: mic_audio_wav_path.is_some(),
         system_audio_included_in_final_mux,
+        system_pre_mix_mean_db,
+        system_pre_mix_max_db,
+        mic_pre_gain_mean_db,
+        mic_pre_gain_max_db,
+        mic_post_gain_mean_db,
+        mic_post_gain_max_db,
+        mic_system_mean_difference_db,
+        audio_balance_diagnostic_error,
         final_muxed_path,
         mux: mux_result,
         stop_error: capture_error,

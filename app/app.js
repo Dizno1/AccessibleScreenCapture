@@ -160,6 +160,11 @@ const diagnostics = {
   lastPauseResumeAction: "None yet",
   pauseResumeShortcutStatus: "Not checked yet",
   finalMuxStatus: "N/A",
+  audioBalanceSystem: "Not measured yet",
+  audioBalanceMicPre: "Not measured yet",
+  audioBalanceMicPost: "Not measured yet",
+  audioBalanceDifference: "Not measured yet",
+  audioBalanceError: "None",
 };
 
 function nowText() {
@@ -196,6 +201,11 @@ function renderDiagnostics() {
     pendingCaptureState: "diag-pending-state",
     lastPauseResumeAction: "diag-pause-resume-action",
     pauseResumeShortcutStatus: "diag-pause-resume-shortcut",
+    audioBalanceSystem: "diag-audio-balance-system",
+    audioBalanceMicPre: "diag-audio-balance-mic-pre",
+    audioBalanceMicPost: "diag-audio-balance-mic-post",
+    audioBalanceDifference: "diag-audio-balance-difference",
+    audioBalanceError: "diag-audio-balance-error",
   };
   for (const [key, id] of Object.entries(ids)) {
     const el = document.getElementById(id);
@@ -2377,6 +2387,17 @@ async function stopNativeRecordingAndReview() {
   try {
     const result = await stopNativeRecording();
     logDebug(`app.js: native recording stopped: ${JSON.stringify(result)}`);
+
+    const fmtDb = (value) => Number.isFinite(value) ? `${value.toFixed(1)} dB` : "Not available";
+    diagnostics.audioBalanceSystem = `Mean ${fmtDb(result.systemPreMixMeanDb)}, maximum ${fmtDb(result.systemPreMixMaxDb)}`;
+    diagnostics.audioBalanceMicPre = `Mean ${fmtDb(result.micPreGainMeanDb)}, maximum ${fmtDb(result.micPreGainMaxDb)}`;
+    diagnostics.audioBalanceMicPost = `Mean ${fmtDb(result.micPostGainMeanDb)}, maximum ${fmtDb(result.micPostGainMaxDb)}`;
+    diagnostics.audioBalanceDifference = Number.isFinite(result.micSystemMeanDifferenceDb)
+      ? `${result.micSystemMeanDifferenceDb.toFixed(1)} dB; positive means microphone louder`
+      : "Not available";
+    diagnostics.audioBalanceError = result.audioBalanceDiagnosticError || "None";
+    renderDiagnostics();
+    logDebug(`app.js: audio balance result: system=${diagnostics.audioBalanceSystem}; mic pre=${diagnostics.audioBalanceMicPre}; mic post=${diagnostics.audioBalanceMicPost}; difference=${diagnostics.audioBalanceDifference}; error=${diagnostics.audioBalanceError}`);
     setWorkflowLocked(false);
 
     // Same reasoning as the browser path: bring the app forward

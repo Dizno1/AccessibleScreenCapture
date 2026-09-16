@@ -24,7 +24,7 @@ use chrono::Local;
 use std::sync::LazyLock;
 
 const LOG_FILE: &str = "debug.log";
-const MAX_LOG_BYTES: u64 = 200_000;
+const MAX_LOG_BYTES: u64 = 2_000_000;
 
 static LOG_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static LOG_SESSION: LazyLock<String> = LazyLock::new(|| format!("{}-{}", std::process::id(), Local::now().format("%Y%m%d%H%M%S")));
