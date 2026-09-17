@@ -205,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 20**.
+The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 21**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -238,7 +238,7 @@ Native recordings are now file-backed in Review. The completed MP4 is staged in 
 
 The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.
 
-## AccessibleScreenCapture Pro 3.0.0 Beta 20
+## AccessibleScreenCapture Pro 3.0.0 Beta 21
 
 This release establishes the Pro product identity and applies the Open Door Design screen-reader-first structure to the main interface. Configuration is grouped near the top of the page in independent expandable buttons. All configuration sections are expanded on first launch and each section remembers its state after the user collapses or expands it.
 
@@ -254,3 +254,11 @@ Recording review keeps focus on the reviewed capture. Editing Instructions appea
 - MP4 files are copied into the protected workspace. MOV, M4V, WebM, AVI, and MKV files are normalized to MP4 with the bundled FFmpeg before review.
 - Imported videos use the same Review Queue, playback, and non-destructive bracket/Ctrl+Delete editing workflow as recordings made by the app.
 - Discard now reports success only after the persistent pending recording has actually been deleted. If deletion fails, the capture stays in Review Queue and an error is announced.
+
+
+## AccessibleScreenCapture Pro 3.0.0 Beta 21
+
+- Review Queue focus now moves to the Review button for the capture that just finished, even when older captures remain pending. Recovered captures at application startup retain the queue-heading behavior. Screenshots taken during an active recording remain non-disruptive.
+- Added Automatic microphone balance as the default for Beta 21. When both system and microphone audio are present, the recorder measures both pre-mix sources and raises the microphone toward 3 dB below the system mean, capped at +18 dB, while retaining the existing microphone limiter and synchronization pipeline.
+- Manual 100 through 200 percent microphone levels remain available for controlled comparison and testing.
+- Diagnostics now report the effective automatic microphone gain applied to the completed recording.

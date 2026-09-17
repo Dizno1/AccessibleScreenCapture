@@ -160,7 +160,7 @@ fn synced_microphone_filter(
     microphone_gain_percent: u32,
 ) -> String {
     let tempo = duration_ratio(actual_duration, target);
-    let gain = (microphone_gain_percent.clamp(100, 200) as f64) / 100.0;
+    let gain = (microphone_gain_percent.clamp(100, 800) as f64) / 100.0;
     format!(
         "[{input_index}:a]asetpts=PTS-STARTPTS,atempo={tempo:.9},aresample=async=1000:first_pts=0,volume={gain:.3},alimiter=limit=0.95:attack=5:release=50,apad,atrim=duration={target:.9}[{label}]"
     )
@@ -198,7 +198,7 @@ pub async fn measure_audio_level(
 
     let filter = match gain_percent {
         Some(percent) => {
-            let gain = (percent.clamp(100, 200) as f64) / 100.0;
+            let gain = (percent.clamp(100, 800) as f64) / 100.0;
             format!("volume={gain:.3},alimiter=limit=0.95:attack=5:release=50,volumedetect")
         }
         None => "volumedetect".to_string(),

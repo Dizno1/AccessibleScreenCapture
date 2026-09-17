@@ -250,9 +250,9 @@
 
 ## Beta 10 - build identity, stale capture cleanup, and edit commit
 
-- [ ] App footer reports Version 3.0.0 Beta 20.
-- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 20.
-- [ ] Installer/package version identifies 3.0.0-20.
+- [ ] App footer reports Version 3.0.0 Beta 21.
+- [ ] Diagnostics reports AccessibleScreenCapture Pro 3.0.0 Beta 21.
+- [ ] Installer/package version identifies 3.0.0-21.
 - [ ] Stale recovered captures with missing backing files are automatically removed on startup.
 - [ ] Discard removes a pending capture immediately and it does not return after restart.
 - [ ] Apply Marked Edit is disabled until an edit mark exists.
@@ -262,7 +262,7 @@
 
 ## Beta 11 - Review Queue semantics and edit discoverability
 
-- [ ] Installer and app identify as 3.0.0 Beta 20 / 3.0.0-20.
+- [ ] Installer and app identify as 3.0.0 Beta 21 / 3.0.0-21.
 - [ ] With an empty Review Queue, Save and Discard are absent from Tab and screen-reader navigation.
 - [ ] An imported MP4 is announced as an imported video, not a capture.
 - [ ] Imported-video actions say Save Video and Discard Video.
@@ -275,7 +275,7 @@
 
 ## Beta 12 - non-destructive edit timeline
 
-- [ ] Installer and app identify as 3.0.0 Beta 20 / 3.0.0-20.
+- [ ] Installer and app identify as 3.0.0 Beta 21 / 3.0.0-21.
 - [ ] Applying a beginning trim, ending trim, or middle cut returns a completion announcement immediately without running FFmpeg.
 - [ ] Playback skips removed middle sections and uses the edited timeline for position announcements.
 - [ ] Rewind/Forward controls move through the edited timeline.
@@ -288,8 +288,8 @@
 ## Beta 13 - Build correction
 
 - [ ] Windows GitHub Actions build completes with the non-destructive edit-plan renderer.
-- [ ] Installer/package identifies as 3.0.0-20.
-- [ ] App footer identifies as Version 3.0.0 Beta 20.
+- [ ] Installer/package identifies as 3.0.0-21.
+- [ ] App footer identifies as Version 3.0.0 Beta 21.
 - [ ] Imported-video edits remain immediate and render only when Save Video is activated.
 
 
@@ -302,12 +302,12 @@
 - [ ] When rendering completes, the app announces that the edited video is ready and that Save As is opening.
 - [ ] Canceling Save As restores the controls and announces that saving was canceled.
 - [ ] Successful save restores the controls and announces completion.
-- [ ] Version is 3.0.0 Beta 20 / package 3.0.0-20.
+- [ ] Version is 3.0.0 Beta 21 / package 3.0.0-21.
 
 
 ## Beta 15 - Media synchronization and source protection
 
-- [ ] Application and installer identify as 3.0.0 Beta 20 / 3.0.0-20.
+- [ ] Application and installer identify as 3.0.0 Beta 21 / 3.0.0-21.
 - [ ] A recording with both system audio and microphone begins synchronized.
 - [ ] System audio and microphone remain synchronized after at least 10 minutes.
 - [ ] Video remains synchronized with both audio sources near the end of a longer recording.
@@ -319,7 +319,7 @@
 
 ## Beta 16 - Microphone recording level
 
-- [ ] Installer and application identify as 3.0.0-20 / 3.0.0 Beta 20.
+- [ ] Installer and application identify as 3.0.0-21 / 3.0.0 Beta 21.
 - [ ] Microphone recording level is available when microphone recording is enabled.
 - [ ] Default microphone recording level is 100 percent.
 - [ ] Selected microphone recording level persists between launches.
@@ -331,7 +331,7 @@
 
 ## Beta 17 - Reliability, navigation, identification, and data safety
 
-- [ ] Installer and application identify as 3.0.0-20 / 3.0.0 Beta 20.
+- [ ] Installer and application identify as 3.0.0-21 / 3.0.0 Beta 21.
 - [ ] Alt+Ctrl+R starts recording reliably while another application has focus.
 - [ ] Alt+Ctrl+R stops recording reliably while another application has focus.
 - [ ] Debug log distinguishes Windows global shortcut receipt, JavaScript event receipt, and recording start/stop dispatch.
@@ -351,15 +351,15 @@
 ## Beta 18 - Build correction
 
 - [ ] GitHub Actions Windows build completes successfully.
-- [ ] Installer/package identifies as 3.0.0-20.
-- [ ] Application footer identifies as Version 3.0.0 Beta 20.
+- [ ] Installer/package identifies as 3.0.0-21.
+- [ ] Application footer identifies as Version 3.0.0 Beta 21.
 - [ ] Human-readable pending filenames use local MM-DD-YYYY HH-MM-SS format.
 - [ ] Beta 17 shortcut, navigation, queue-label, data-protection, sync, and microphone-level changes remain intact.
 
 
 ## Beta 19 - Audio Balance Diagnostics
 
-- [ ] Installer/package identifies as 3.0.0-20 and the app identifies as Version 3.0.0 Beta 20.
+- [ ] Installer/package identifies as 3.0.0-21 and the app identifies as Version 3.0.0 Beta 21.
 - [ ] Make a short recording with both microphone and system/meeting audio enabled.
 - [ ] Keep microphone recording level at the currently tested 200 percent for the first comparison.
 - [ ] Confirm microphone/system synchronization remains correct.
@@ -371,10 +371,25 @@
 
 ## Beta 20 - Audio Diagnostics Reliability
 
-- [ ] Installer/package identifies as 3.0.0-20 and the app identifies as Version 3.0.0 Beta 20.
+- [ ] Installer/package identifies as 3.0.0-21 and the app identifies as Version 3.0.0 Beta 21.
 - [ ] Make a short recording with microphone and system audio enabled.
 - [ ] After stopping, expand Diagnostics. Audio balance values must be present directly in the definition list without opening Debug Log.
 - [ ] View Debug Log and confirm one `audio balance diagnostic:` line plus the frontend `audio balance result:` line.
 - [ ] Confirm system pre-mix, microphone pre-gain, microphone post-gain, and microphone-versus-system difference are reported.
 - [ ] Confirm synchronization remains correct and the diagnostic pass does not change the recording.
 - [ ] Test Alt+Ctrl+R from another application and record whether it starts globally on the first attempt.
+
+
+## Beta 21 - Automatic Audio Balance and Current Capture Focus
+
+- [ ] Installer/package identifies as 3.0.0-21 and the app identifies as Version 3.0.0 Beta 21.
+- [ ] Microphone balance defaults to Automatic - balanced on first Beta 21 run.
+- [ ] With system and microphone audio enabled, make a short recording containing both sources.
+- [ ] Diagnostics reports an Automatic applied percentage and microphone post-gain level.
+- [ ] Confirm the microphone/system difference is materially closer than the Beta 20 manual 200 percent tests without audible clipping or pumping.
+- [ ] Confirm audio/video synchronization remains correct.
+- [ ] Leave several older items in Review Queue, make a new recording, and confirm focus lands on the new recording's Review button.
+- [ ] Take a normal screenshot and confirm focus lands on that new screenshot's Review button.
+- [ ] Take a screenshot while recording and confirm recording continues without disruptive focus movement.
+- [ ] Restart with recovered pending captures and confirm startup focus still goes to the Review Queue heading rather than an arbitrary recovered item.
+- [ ] Test Alt+Ctrl+R from another application and confirm START and STOP are received globally.

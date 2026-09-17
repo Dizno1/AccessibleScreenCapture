@@ -394,6 +394,10 @@ pub struct ProductionRecordingStopResult {
     pub mic_pre_gain_mean_db: Option<f64>,
     #[serde(rename = "micPreGainMaxDb")]
     pub mic_pre_gain_max_db: Option<f64>,
+    #[serde(rename = "automaticMicrophoneBalance")]
+    pub automatic_microphone_balance: bool,
+    #[serde(rename = "effectiveMicrophoneGainPercent")]
+    pub effective_microphone_gain_percent: u32,
     #[serde(rename = "micPostGainMeanDb")]
     pub mic_post_gain_mean_db: Option<f64>,
     #[serde(rename = "micPostGainMaxDb")]
@@ -427,10 +431,12 @@ pub async fn start_native_recording(
     microphone_gain_percent: u32,
 ) -> Result<ProductionRecordingStartResult, String> {
     let app = app.clone();
-    let microphone_gain_percent = microphone_gain_percent.clamp(100, 200);
+    // Zero is the Beta 21 Automatic balance mode. Manual values are retained
+    // for controlled comparison and backwards compatibility.
+    let microphone_gain_percent = if microphone_gain_percent == 0 { 0 } else { microphone_gain_percent.clamp(100, 800) };
     crate::debug_log::log(
         &app,
-        &format!("recording audio settings: microphone gain {} percent", microphone_gain_percent),
+        &format!("recording audio settings: {}", if microphone_gain_percent == 0 { "automatic microphone balance".to_string() } else { format!("microphone gain {} percent", microphone_gain_percent) }),
     );
     tauri::async_runtime::spawn_blocking(move || {
         let mut session_slot = ACTIVE_SESSION.lock().unwrap();
@@ -883,14 +889,35 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
     let mic_pre_level = if let Some(path) = mic_audio_wav_path.as_deref() {
         Some(crate::native_mux::measure_audio_level(&app, path, None).await)
     } else { None };
-    let mic_post_level = if let Some(path) = mic_audio_wav_path.as_deref() {
-        Some(crate::native_mux::measure_audio_level(&app, path, Some(microphone_gain_percent)).await)
-    } else { None };
-
     let system_pre_mix_mean_db = system_level.as_ref().and_then(|v| v.mean_db);
     let system_pre_mix_max_db = system_level.as_ref().and_then(|v| v.max_db);
     let mic_pre_gain_mean_db = mic_pre_level.as_ref().and_then(|v| v.mean_db);
     let mic_pre_gain_max_db = mic_pre_level.as_ref().and_then(|v| v.max_db);
+
+    // Automatic balance targets the microphone 3 dB below the system mean.
+    // The required gain is calculated from the two independent pre-mix
+    // measurements and capped at +18 dB. The existing microphone limiter
+    // remains in the production path, so peak protection is preserved.
+    let effective_microphone_gain_percent = if microphone_gain_percent == 0 {
+        match (system_pre_mix_mean_db, mic_pre_gain_mean_db) {
+            (Some(sys), Some(mic)) => {
+                let needed_db = (sys - 3.0 - mic).clamp(0.0, 18.0);
+                (100.0 * 10_f64.powf(needed_db / 20.0)).round().clamp(100.0, 794.0) as u32
+            }
+            _ => 100,
+        }
+    } else {
+        microphone_gain_percent
+    };
+    if microphone_gain_percent == 0 {
+        crate::debug_log::log(&app, &format!(
+            "automatic audio balance: system mean={:?} dB; microphone pre-gain mean={:?} dB; effective microphone gain={} percent",
+            system_pre_mix_mean_db, mic_pre_gain_mean_db, effective_microphone_gain_percent
+        ));
+    }
+    let mic_post_level = if let Some(path) = mic_audio_wav_path.as_deref() {
+        Some(crate::native_mux::measure_audio_level(&app, path, Some(effective_microphone_gain_percent)).await)
+    } else { None };
     let mic_post_gain_mean_db = mic_post_level.as_ref().and_then(|v| v.mean_db);
     let mic_post_gain_max_db = mic_post_level.as_ref().and_then(|v| v.max_db);
     let mic_system_mean_difference_db = match (system_pre_mix_mean_db, mic_post_gain_mean_db) {
@@ -907,7 +934,7 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
     crate::debug_log::log(&app, &format!(
         "audio balance diagnostic: system pre-mix mean={:?} dB, max={:?} dB; microphone pre-gain mean={:?} dB, max={:?} dB; microphone post-gain {} percent mean={:?} dB, max={:?} dB; post-gain microphone/system mean-level difference={:?} dB; error={:?}",
         system_pre_mix_mean_db, system_pre_mix_max_db, mic_pre_gain_mean_db, mic_pre_gain_max_db,
-        microphone_gain_percent, mic_post_gain_mean_db, mic_post_gain_max_db,
+        effective_microphone_gain_percent, mic_post_gain_mean_db, mic_post_gain_max_db,
         mic_system_mean_difference_db, audio_balance_diagnostic_error
     ));
 
@@ -929,7 +956,7 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
                 video_media_duration_seconds,
                 system_audio_duration_seconds,
                 mic_audio_duration_seconds,
-                microphone_gain_percent,
+                effective_microphone_gain_percent,
             )
             .await;
             if result.muxing_success {
@@ -965,6 +992,8 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
         system_pre_mix_max_db,
         mic_pre_gain_mean_db,
         mic_pre_gain_max_db,
+        automatic_microphone_balance: microphone_gain_percent == 0,
+        effective_microphone_gain_percent,
         mic_post_gain_mean_db,
         mic_post_gain_max_db,
         mic_system_mean_difference_db,

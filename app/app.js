@@ -57,7 +57,7 @@ const microphoneOption = document.getElementById("option-microphone");
 const microphoneSelectWrapper = document.getElementById("microphone-select-wrapper");
 const microphoneSelect = document.getElementById("microphone-select");
 const microphoneRecordingLevel = document.getElementById("microphone-recording-level");
-const MICROPHONE_LEVEL_KEY = "asc-pro-microphone-recording-level";
+const MICROPHONE_LEVEL_KEY = "asc-pro-microphone-balance-beta21";
 if (microphoneRecordingLevel) {
   const storedMicrophoneLevel = localStorage.getItem(MICROPHONE_LEVEL_KEY);
   if (storedMicrophoneLevel && [...microphoneRecordingLevel.options].some((option) => option.value === storedMicrophoneLevel)) {
@@ -65,7 +65,7 @@ if (microphoneRecordingLevel) {
   }
   microphoneRecordingLevel.addEventListener("change", () => {
     localStorage.setItem(MICROPHONE_LEVEL_KEY, microphoneRecordingLevel.value);
-    announceRaw(`Microphone recording level ${microphoneRecordingLevel.value} percent.`);
+    announceRaw(microphoneRecordingLevel.value === "0" ? "Microphone balance Automatic." : `Microphone recording level ${microphoneRecordingLevel.value} percent.`);
   });
 }
 
@@ -1472,15 +1472,16 @@ function showReview(capture) {
   persistPendingRecordings();
   reviewSection.hidden = false;
   renderReviewQueue();
-  // Build the newly added capture's review content without moving focus.
-  // When capture has finished and the app returns to Review Queue, focus
-  // belongs at the oldest pending item, not at the newest capture.
+  // Build the newly added capture's review content. After a normal capture
+  // finishes, the capture just created is the user's next task, even when
+  // older items remain in Review Queue. Focus therefore belongs on this
+  // capture's Review button, not the queue heading or oldest item.
   selectPendingCapture(capture.id, false);
   logDebug(`review queue: added ${captureLabel(capture)}; ${pendingCaptures.length} pending`);
   if (capture.suppressReviewFocus) {
     announceRaw(`${captureLabel(capture)} added to Review Queue. Recording continues.`);
   } else if (pendingCaptures.length) {
-    focusReviewButton(pendingCaptures[0].id);
+    focusReviewButton(capture.id);
   } else {
     focusReviewEmptyState();
   }
@@ -2391,7 +2392,7 @@ async function stopNativeRecordingAndReview() {
     const fmtDb = (value) => Number.isFinite(value) ? `${value.toFixed(1)} dB` : "Not available";
     diagnostics.audioBalanceSystem = `Mean ${fmtDb(result.systemPreMixMeanDb)}, maximum ${fmtDb(result.systemPreMixMaxDb)}`;
     diagnostics.audioBalanceMicPre = `Mean ${fmtDb(result.micPreGainMeanDb)}, maximum ${fmtDb(result.micPreGainMaxDb)}`;
-    diagnostics.audioBalanceMicPost = `Mean ${fmtDb(result.micPostGainMeanDb)}, maximum ${fmtDb(result.micPostGainMaxDb)}`;
+    diagnostics.audioBalanceMicPost = `${result.automaticMicrophoneBalance ? `Automatic applied ${result.effectiveMicrophoneGainPercent} percent; ` : ""}Mean ${fmtDb(result.micPostGainMeanDb)}, maximum ${fmtDb(result.micPostGainMaxDb)}`;
     diagnostics.audioBalanceDifference = Number.isFinite(result.micSystemMeanDifferenceDb)
       ? `${result.micSystemMeanDifferenceDb.toFixed(1)} dB; positive means microphone louder`
       : "Not available";
