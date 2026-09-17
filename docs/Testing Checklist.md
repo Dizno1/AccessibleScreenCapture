@@ -393,3 +393,17 @@
 - [ ] Take a screenshot while recording and confirm recording continues without disruptive focus movement.
 - [ ] Restart with recovered pending captures and confirm startup focus still goes to the Review Queue heading rather than an arbitrary recovered item.
 - [ ] Test Alt+Ctrl+R from another application and confirm START and STOP are received globally.
+
+
+## Beta 22 - UI and Navigation Refinement
+
+- [ ] Installer/package identifies as 3.0.0-22 and the app identifies as Version 3.0.0 Beta 22.
+- [ ] Diagnostics provides H3 headings for Build and Shortcut Status, Recording Status, Save and Capture Status, Audio Balance, Additional Capture Status, and Debug Log.
+- [ ] With Virtual Cursor off, Ctrl+PageDown and Ctrl+PageUp move among Configuration, Capture Controls, Video Editing, Review Queue, and Recent Captures headings.
+- [ ] Escape from within an expanded Configuration section collapses the nearest relevant section and returns focus to its disclosure button.
+- [ ] Saving or discarding an unedited Review Queue item returns focus to the Review Queue heading rather than another older capture.
+- [ ] A newly completed capture still receives focus on its own Review button.
+- [ ] Rewind/Forward 5-second and 30-second buttons are absent from recording review.
+- [ ] Left/Right, Shift+Left/Right, J/L, and Home/End playback navigation continues to work with Virtual Cursor off.
+- [ ] Play/Pause and Announce Playback Position remain available as fallback controls.
+- [ ] Automatic microphone balance and synchronization regressions pass.

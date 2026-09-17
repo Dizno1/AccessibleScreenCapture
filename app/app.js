@@ -396,16 +396,79 @@ function initConfigurationDisclosures() {
       setExpanded(button.getAttribute("aria-expanded") !== "true");
     });
 
-    content.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape" || button.getAttribute("aria-expanded") !== "true") return;
-      event.preventDefault();
-      setExpanded(false);
-      button.focus();
-    });
+  });
+
+  // Escape is a Configuration-level close command. If focus is inside an
+  // expanded disclosure, collapse that disclosure. If focus is on a
+  // Configuration control between disclosures, collapse the nearest expanded
+  // disclosure in document order. Native controls such as an open select get
+  // first opportunity to consume Escape before this bubble-phase handler.
+  const configuration = document.getElementById("configuration");
+  configuration?.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented) return;
+    const active = document.activeElement;
+    const wrappers = [...configuration.querySelectorAll(".configuration-disclosure[data-disclosure-key]")];
+    const containing = active?.closest?.(".configuration-disclosure[data-disclosure-key]");
+    let target = containing?.querySelector(":scope > .configuration-toggle[aria-expanded=\"true\"]") ? containing : null;
+
+    if (!target) {
+      const expanded = wrappers.filter((wrapper) => wrapper.querySelector(":scope > .configuration-toggle")?.getAttribute("aria-expanded") === "true");
+      if (!expanded.length) return;
+      const activeRect = active?.getBoundingClientRect?.();
+      target = expanded.reduce((best, wrapper) => {
+        if (!activeRect) return best || wrapper;
+        const rect = wrapper.getBoundingClientRect();
+        const distance = Math.min(Math.abs(rect.top - activeRect.top), Math.abs(rect.bottom - activeRect.bottom));
+        if (!best || distance < best.distance) return { wrapper, distance };
+        return best;
+      }, null);
+      target = target?.wrapper || target;
+    }
+
+    const targetButton = target?.querySelector(":scope > .configuration-toggle");
+    const targetContent = target?.querySelector(":scope > .configuration-content");
+    if (!targetButton || !targetContent || targetButton.getAttribute("aria-expanded") !== "true") return;
+    event.preventDefault();
+    targetButton.setAttribute("aria-expanded", "false");
+    targetContent.hidden = true;
+    localStorage.setItem(`asc-pro-disclosure-${target.dataset.disclosureKey}`, "false");
+    targetButton.focus();
   });
 }
 
 initConfigurationDisclosures();
+
+// With a screen reader's Virtual Cursor off, Ctrl+PageDown and Ctrl+PageUp
+// provide structural navigation among the application's major H2 sections.
+// Focus lands on the actual heading so the section name and heading semantics
+// remain available without adding extra regions or navigation buttons.
+function initApplicationSectionNavigation() {
+  const sectionHeadingIds = [
+    "configuration-heading",
+    "controls-heading",
+    "video-editing-heading",
+    "review-heading",
+    "recent-heading",
+  ];
+
+  window.addEventListener("keydown", (event) => {
+    if (!event.ctrlKey || event.altKey || event.shiftKey || !["PageDown", "PageUp"].includes(event.key)) return;
+    const headings = sectionHeadingIds
+      .map((id) => document.getElementById(id))
+      .filter((heading) => heading && !heading.closest("[hidden]"));
+    if (!headings.length) return;
+
+    const active = document.activeElement;
+    let currentIndex = headings.findIndex((heading) => heading === active || heading.parentElement?.contains(active));
+    if (currentIndex < 0) currentIndex = 0;
+    const delta = event.key === "PageDown" ? 1 : -1;
+    const nextIndex = (currentIndex + delta + headings.length) % headings.length;
+    event.preventDefault();
+    headings[nextIndex].focus({ preventScroll: false });
+  }, true);
+}
+
+initApplicationSectionNavigation();
 
 renderScreenshotHint();
 renderRecordToggleButton();
@@ -752,26 +815,6 @@ function buildRecordingPlaybackControls(video, capture) {
   playPauseButton.textContent = "Play";
   playPauseButton.setAttribute("aria-pressed", "false");
 
-  const rewindButton = document.createElement("button");
-  rewindButton.type = "button";
-  rewindButton.className = "secondary-button";
-  rewindButton.textContent = "Rewind 5 Seconds";
-
-  const forwardButton = document.createElement("button");
-  forwardButton.type = "button";
-  forwardButton.className = "secondary-button";
-  forwardButton.textContent = "Forward 5 Seconds";
-
-  const rewind30Button = document.createElement("button");
-  rewind30Button.type = "button";
-  rewind30Button.className = "secondary-button";
-  rewind30Button.textContent = "Rewind 30 Seconds";
-
-  const forward30Button = document.createElement("button");
-  forward30Button.type = "button";
-  forward30Button.className = "secondary-button";
-  forward30Button.textContent = "Forward 30 Seconds";
-
   const announceButton = document.createElement("button");
   announceButton.type = "button";
   announceButton.className = "secondary-button";
@@ -806,7 +849,7 @@ function buildRecordingPlaybackControls(video, capture) {
   editingHelp.hidden = true;
   editingHelpButton.setAttribute("aria-controls", editingHelpId);
   const editingHelpText = document.createElement("p");
-  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete or Apply Marked Edit applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use Left and Right Arrow for 5-second moves, Shift+Left and Shift+Right Arrow for 30-second moves, J and L for 5-minute moves, and Home or End to jump to the beginning or end. The visible transport controls remain available. Edits are applied non-destructively and should be immediate. The original video is never changed. When you save an edited video, the app creates the finished file; larger or longer videos may take more time to save.";
+  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete or Apply Marked Edit applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use Left and Right Arrow for 5-second moves, Shift+Left and Shift+Right Arrow for 30-second moves, J and L for 5-minute moves, and Home or End to jump to the beginning or end. Play/Pause and Announce Playback Position remain available as fallback controls. Edits are applied non-destructively and should be immediate. The original video is never changed. When you save an edited video, the app creates the finished file; larger or longer videos may take more time to save.";
   editingHelp.appendChild(editingHelpText);
   editingHelpButton.addEventListener("click", () => {
     const expanded = editingHelpButton.getAttribute("aria-expanded") !== "true";
@@ -814,7 +857,7 @@ function buildRecordingPlaybackControls(video, capture) {
     editingHelp.hidden = !expanded;
   });
 
-  container.append(editingHelpButton, applyEditButton, editStatus, editingHelp, playPauseButton, rewindButton, forwardButton, rewind30Button, forward30Button, announceButton, timeDisplay);
+  container.append(editingHelpButton, applyEditButton, editStatus, editingHelp, playPauseButton, announceButton, timeDisplay);
 
   function updateApplyEditButton() {
     if (editInProgress) {
@@ -860,19 +903,6 @@ function buildRecordingPlaybackControls(video, capture) {
   video.addEventListener("play", () => setPlayingState(true));
   video.addEventListener("pause", () => setPlayingState(false));
   video.addEventListener("ended", () => setPlayingState(false));
-
-  function seekBy(seconds) {
-    const duration = editableRecordingDuration(capture);
-    const logicalCurrent = sourceToLogicalTime(capture, video.currentTime || 0);
-    const target = Math.max(0, Math.min(duration, logicalCurrent + seconds));
-    video.currentTime = logicalToSourceTime(capture, target);
-    announceRaw(`Position ${formatDuration(target)}.`);
-  }
-
-  rewindButton.addEventListener("click", () => seekBy(-5));
-  forwardButton.addEventListener("click", () => seekBy(5));
-  rewind30Button.addEventListener("click", () => seekBy(-30));
-  forward30Button.addEventListener("click", () => seekBy(30));
 
   announceButton.addEventListener("click", () => {
     announceRaw(`${label}, ${currentPositionText()}.`);
@@ -1487,7 +1517,7 @@ function showReview(capture) {
   }
 }
 
-function removePendingCapture(capture) {
+function removePendingCapture(capture, focusAfterRemoval = "heading") {
   const removedIndex = pendingCaptures.findIndex((item) => item.id === capture.id);
   pendingCaptures = pendingCaptures.filter((item) => item.id !== capture.id);
   persistPendingRecordings();
@@ -1500,7 +1530,8 @@ function removePendingCapture(capture) {
   if (pendingCapture) {
     diagnostics.pendingCaptureState = `${pendingCapture.kind} ${pendingCapture.queueNumber} awaiting review`;
     selectPendingCapture(pendingCapture.id);
-    focusReviewButton(pendingCapture.id);
+    if (focusAfterRemoval === "nextCapture") focusReviewButton(pendingCapture.id);
+    else focusReviewEmptyState();
   } else {
     diagnostics.pendingCaptureState = "Empty";
     if (reviewActions) reviewActions.hidden = true;

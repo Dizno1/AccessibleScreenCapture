@@ -205,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 21**.
+The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 22**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -237,6 +237,17 @@ The Review area now supports multiple pending captures. Screenshots can be taken
 Native recordings are now file-backed in Review. The completed MP4 is staged in the app data pending-captures folder instead of being read back into a JavaScript Blob. This removes the large in-memory handoff that caused the August 19, 2026 long-recording crash. Pending native recordings are recorded in recovery metadata and restored to the Review Queue after an app restart. Starting another recording does not overwrite a staged pending recording.
 
 The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.
+
+
+## AccessibleScreenCapture Pro 3.0.0 Beta 22
+
+- Added structural H3 headings inside Diagnostics for Build and Shortcut Status, Recording Status, Save and Capture Status, Audio Balance, Additional Capture Status, and Debug Log.
+- Added Ctrl+PageDown and Ctrl+PageUp navigation among the major application H2 sections for efficient screen-reader navigation with Virtual Cursor off.
+- Escape in Configuration now collapses the expanded disclosure containing focus, or the nearest expanded Configuration disclosure, and returns focus to its toggle button.
+- After an unedited capture is saved or a capture is discarded, focus returns to the Review Queue heading instead of jumping to an unrelated older capture.
+- Removed the redundant 5-second and 30-second Rewind/Forward buttons from recording review. Keyboard navigation remains Left/Right for 5 seconds, Shift+Left/Right for 30 seconds, J/L for 5 minutes, and Home/End for beginning/end.
+- Retained Play/Pause and Announce Playback Position as fallback controls while the streamlined VC-off review workflow continues testing.
+- Preserved Beta 21 Automatic microphone balance and the existing synchronization pipeline.
 
 ## AccessibleScreenCapture Pro 3.0.0 Beta 21
 
