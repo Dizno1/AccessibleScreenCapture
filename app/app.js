@@ -848,16 +848,27 @@ function buildRecordingPlaybackControls(video, capture) {
   editingHelp.className = "editing-instructions";
   editingHelp.hidden = true;
   editingHelpButton.setAttribute("aria-controls", editingHelpId);
+  const editingHelpHeading = document.createElement("h4");
+  editingHelpHeading.tabIndex = -1;
+  editingHelpHeading.textContent = "Review and Editing Keyboard Instructions";
   const editingHelpText = document.createElement("p");
-  editingHelpText.textContent = "Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete or Apply Marked Edit applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use Left and Right Arrow for 5-second moves, Shift+Left and Shift+Right Arrow for 30-second moves, J and L for 5-minute moves, and Home or End to jump to the beginning or end. Play/Pause and Announce Playback Position remain available as fallback controls. Edits are applied non-destructively and should be immediate. The original video is never changed. When you save an edited video, the app creates the finished file; larger or longer videos may take more time to save.";
-  editingHelp.appendChild(editingHelpText);
+  editingHelpText.textContent = "For the most efficient Review Queue and editing experience, use VC off or Focus Mode. Use right bracket to mark a new beginning. Use left bracket to mark a new ending, or left bracket then right bracket to mark a middle section. Control+Delete or Apply Marked Edit applies the marked edit. Escape cancels the marks. Control+Z undoes the last edit. Use Left and Right Arrow for 5-second moves, Shift+Left and Shift+Right Arrow for 30-second moves, J and L for 5-minute moves, and Home or End to jump to the beginning or end. Play/Pause and Announce Playback Position remain available as fallback controls. Edits are applied non-destructively and should be immediate. The original video is never changed. When you save an edited video, the app creates the finished file; larger or longer videos may take more time to save.";
+  editingHelp.append(editingHelpHeading, editingHelpText);
   editingHelpButton.addEventListener("click", () => {
     const expanded = editingHelpButton.getAttribute("aria-expanded") !== "true";
     editingHelpButton.setAttribute("aria-expanded", expanded ? "true" : "false");
     editingHelp.hidden = !expanded;
+    if (expanded) editingHelpHeading.focus();
+  });
+  editingHelp.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    event.preventDefault();
+    editingHelpButton.setAttribute("aria-expanded", "false");
+    editingHelp.hidden = true;
+    editingHelpButton.focus();
   });
 
-  container.append(editingHelpButton, applyEditButton, editStatus, editingHelp, playPauseButton, announceButton, timeDisplay);
+  container.append(editingHelpButton, editingHelp, applyEditButton, editStatus, playPauseButton, announceButton, timeDisplay);
 
   function updateApplyEditButton() {
     if (editInProgress) {

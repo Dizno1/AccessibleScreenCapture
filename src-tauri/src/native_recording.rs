@@ -66,7 +66,6 @@ use crate::native_audio::{AudioCaptureDiagnostics, AudioChunk};
 use crate::native_video_encode::{new_shared_frame, run_video_clock, OwnedFrame, SharedFrame, VideoClockResult};
 
 const VIDEO_CLOCK_FPS: u32 = 30;
-const TARGET_UPDATE_INTERVAL_MS: u64 = 33;
 const FIRST_FRAME_TIMEOUT_SECS: u64 = 10;
 const SOURCE_VIDEO_FILE_NAME: &str = "recording-source.mp4";
 const SOURCE_SYSTEM_AUDIO_FILE_NAME: &str = "recording-source-audio.wav";
@@ -521,12 +520,17 @@ pub async fn start_native_recording(
         let (first_frame_tx, first_frame_rx) = mpsc::channel::<Instant>();
         let shared_frame = new_shared_frame();
 
+        // Keep optional WGC session properties at their OS defaults. In particular,
+        // MinUpdateInterval is not available on every Windows 10 build; requesting
+        // a custom value makes windows-capture reject the entire session there.
+        // Our independent 30 fps video clock already supplies a fixed output cadence,
+        // so the custom WGC throttle is unnecessary for production recording.
         let settings = Settings::new(
             primary_monitor,
             CursorCaptureSettings::Default,
             DrawBorderSettings::Default,
             SecondaryWindowSettings::Default,
-            MinimumUpdateIntervalSettings::Custom(Duration::from_millis(TARGET_UPDATE_INTERVAL_MS)),
+            MinimumUpdateIntervalSettings::Default,
             DirtyRegionSettings::Default,
             ColorFormat::Rgba8,
             CaptureFlags {

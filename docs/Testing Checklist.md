@@ -407,3 +407,20 @@
 - [ ] Left/Right, Shift+Left/Right, J/L, and Home/End playback navigation continues to work with Virtual Cursor off.
 - [ ] Play/Pause and Announce Playback Position remain available as fallback controls.
 - [ ] Automatic microphone balance and synchronization regressions pass.
+
+## Beta 23 - Feature-Complete Testing Build
+
+- [ ] Confirm the app and installer identify as Version 3.0.0 Beta 23 / 3.0.0-23.
+- [ ] On Windows 11, confirm recording start/stop, video, system audio, microphone audio, synchronization, and Automatic microphone balance still work.
+- [ ] On Windows 10, confirm screen recording starts successfully and produces a reviewable recording. This build leaves the optional WGC MinUpdateInterval setting at the Windows default for compatibility.
+- [ ] Expand Editing Instructions and confirm focus moves to the Review and Editing Keyboard Instructions heading.
+- [ ] Confirm the first guidance states that VC off or Focus Mode is recommended for Review Queue and editing.
+- [ ] From inside expanded Editing Instructions, press Escape and confirm the section collapses and focus returns to Editing Instructions.
+- [ ] Confirm Apply Marked Edit is outside the expanded instruction content and remains easy to locate.
+- [ ] Confirm Left/Right, Shift+Left/Right, J/L, Home/End, marking, Apply Marked Edit, Undo, and playback continue to work with VC off / Focus Mode.
+- [ ] Confirm a newly completed capture receives focus even when older captures remain in Review Queue.
+- [ ] Confirm Save and Discard return focus predictably to Review Queue rather than an unrelated old capture.
+- [ ] Confirm Diagnostics retains its internal headings and Escape-to-collapse behavior in Configuration.
+- [ ] Confirm global Alt+Ctrl+R works from outside the application; record any intermittent failure in Diagnostics/Debug Log.
+- [ ] Confirm human-readable capture names and Save As filenames remain correct.
+- [ ] Confirm imported-video editing and original-file protection still work.

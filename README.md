@@ -205,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 22**.
+The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 23**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -239,7 +239,7 @@ Native recordings are now file-backed in Review. The completed MP4 is staged in 
 The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.
 
 
-## AccessibleScreenCapture Pro 3.0.0 Beta 22
+## AccessibleScreenCapture Pro 3.0.0 Beta 23
 
 - Added structural H3 headings inside Diagnostics for Build and Shortcut Status, Recording Status, Save and Capture Status, Audio Balance, Additional Capture Status, and Debug Log.
 - Added Ctrl+PageDown and Ctrl+PageUp navigation among the major application H2 sections for efficient screen-reader navigation with Virtual Cursor off.
@@ -273,3 +273,10 @@ Recording review keeps focus on the reviewed capture. Editing Instructions appea
 - Added Automatic microphone balance as the default for Beta 21. When both system and microphone audio are present, the recorder measures both pre-mix sources and raises the microphone toward 3 dB below the system mean, capped at +18 dB, while retaining the existing microphone limiter and synchronization pipeline.
 - Manual 100 through 200 percent microphone levels remain available for controlled comparison and testing.
 - Diagnostics now report the effective automatic microphone gain applied to the completed recording.
+
+## Beta 23 feature-complete testing build
+
+- Review and Editing instructions now identify VC off / Focus Mode as the recommended keyboard workflow, open on a real heading, and collapse with Escape back to the Editing Instructions button.
+- Production recording no longer requests a custom Windows Graphics Capture minimum update interval. The application already creates its own 30 fps output clock, and leaving this optional WGC property at the Windows default improves compatibility with Windows 10 builds that do not expose MinUpdateInterval.
+- Beta 22 Diagnostics headings, Review Queue focus behavior, Automatic microphone balance, human-readable capture names, and simplified transport controls are retained.
+- This is a feature-complete testing build. New major features are deferred while regression and compatibility testing continue.
