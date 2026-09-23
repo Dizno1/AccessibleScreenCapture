@@ -446,7 +446,7 @@
 
 ## Beta 24.1 - Safety and Focus Patch
 
-- [ ] Confirm the app identifies as Version 3.0.0 Beta 24.1 / 3.0.0-24.1.
+- [ ] Confirm the app identifies as Version 3.0.0 Beta 24.1 / package version 3.0.0-241.
 - [ ] Activate Discard on a pending screenshot. Confirm an alert dialog opens instead of discarding immediately.
 - [ ] Confirm Cancel receives initial focus.
 - [ ] Confirm Escape cancels the discard and returns focus to the original Discard button.
