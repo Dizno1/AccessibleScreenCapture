@@ -35,6 +35,7 @@ import {
   setSpeechVolume,
   setRecordingStatusFeedback,
   listNativeMicrophones,
+  listNativeAudioApplications,
   setMicrophoneDevice,
   testSpeechVoice,
   startNativeRecording,
@@ -53,6 +54,10 @@ import {
 } from "./tauri-bridge.js";
 
 const systemAudioOption = document.getElementById("option-system-audio");
+const applicationAudioOption = document.getElementById("option-application-audio");
+const applicationAudioSelectWrapper = document.getElementById("application-audio-select-wrapper");
+const applicationAudioSelect = document.getElementById("application-audio-select");
+const refreshApplicationAudioButton = document.getElementById("refresh-application-audio");
 const microphoneOption = document.getElementById("option-microphone");
 const microphoneSelectWrapper = document.getElementById("microphone-select-wrapper");
 const microphoneSelect = document.getElementById("microphone-select");
@@ -219,6 +224,9 @@ setTimeout(restorePendingRecordings, 0);
 
 function setWorkflowLocked(locked) {
   systemAudioOption.disabled = locked;
+  applicationAudioOption.disabled = locked;
+  applicationAudioSelect.disabled = locked;
+  refreshApplicationAudioButton.disabled = locked;
   microphoneOption.disabled = locked;
   microphoneSelect.disabled = locked;
   screenshotButton.disabled = false;
@@ -585,6 +593,49 @@ async function populateNativeMicrophoneList(persistedId, persistedName) {
     microphoneSelectWrapper.hidden = true;
   }
 }
+
+async function populateApplicationAudioList() {
+  if (!isTauri) return;
+  const previous = applicationAudioSelect.value;
+  applicationAudioSelect.innerHTML = '<option value="">Select an application</option>';
+  try {
+    const apps = await listNativeAudioApplications();
+    for (const app of apps) {
+      const option = document.createElement("option");
+      option.value = String(app.process_id);
+      option.textContent = `${app.name} (process ${app.process_id})`;
+      applicationAudioSelect.appendChild(option);
+    }
+    if (previous && apps.some((app) => String(app.process_id) === previous)) {
+      applicationAudioSelect.value = previous;
+    }
+    if (apps.length === 0) announceRaw("No applications with an active Windows audio session were found.");
+  } catch (error) {
+    console.error("Could not list application audio sources:", error);
+    announceRaw(`Could not list application audio sources: ${error}`);
+  }
+}
+
+systemAudioOption.addEventListener("change", () => {
+  if (systemAudioOption.checked && applicationAudioOption.checked) {
+    applicationAudioOption.checked = false;
+    applicationAudioSelectWrapper.hidden = true;
+    announceRaw("System audio selected. Selected application audio turned off.");
+  }
+});
+
+applicationAudioOption.addEventListener("change", async () => {
+  applicationAudioSelectWrapper.hidden = !applicationAudioOption.checked;
+  if (applicationAudioOption.checked) {
+    if (systemAudioOption.checked) {
+      systemAudioOption.checked = false;
+      announceRaw("Selected application audio turned on. System audio turned off.");
+    }
+    await populateApplicationAudioList();
+  }
+});
+
+refreshApplicationAudioButton.addEventListener("click", populateApplicationAudioList);
 
 microphoneOption.addEventListener("change", async () => {
   if (!microphoneOption.checked) {
@@ -2192,8 +2243,18 @@ async function startRecording() {
       const microphoneGainPercent = microphoneOption.checked && microphoneRecordingLevel
         ? Number(microphoneRecordingLevel.value || 100)
         : 100;
+      const applicationAudioProcessId = applicationAudioOption.checked && applicationAudioSelect.value
+        ? Number(applicationAudioSelect.value)
+        : null;
+      if (applicationAudioOption.checked && !applicationAudioProcessId) {
+        announceRaw("Selected application audio is on, but no application is selected.");
+        setWorkflowLocked(false);
+        isStartingCapture = false;
+        return;
+      }
       const result = await startNativeRecording(
         systemAudioOption.checked,
+        applicationAudioProcessId,
         microphoneOption.checked,
         microphoneOption.checked ? nativeMicrophoneDeviceId : null,
         microphoneGainPercent
@@ -3074,6 +3135,16 @@ function composeReadinessText(context) {
   }
 
   parts.push("Screenshot target: entire primary monitor.");
+  if (applicationAudioOption.checked) {
+    const appLabel = applicationAudioSelect.options[applicationAudioSelect.selectedIndex]?.textContent || "no application selected";
+    parts.push(`Recording audio source: selected application only, ${appLabel}.`);
+  } else {
+    parts.push(`System audio ${systemAudioOption.checked ? "on" : "off"}.`);
+  }
+  const micLabel = microphoneOption.checked
+    ? microphoneSelect.options[microphoneSelect.selectedIndex]?.textContent || "Default microphone"
+    : "off";
+  parts.push(`Microphone ${micLabel}.`);
   return parts.join(" ");
 }
 

@@ -186,6 +186,10 @@ export async function setRecordingStatusFeedback(value) {
   return invoke("set_recording_status_feedback", { value });
 }
 
+export async function listNativeAudioApplications() {
+  return invoke("list_native_audio_applications");
+}
+
 export async function listNativeMicrophones() {
   return invoke("list_native_microphones");
 }
@@ -212,9 +216,10 @@ export async function testNativeCapture(includeSystemAudio) {
   return invoke("test_native_capture", { includeSystemAudio });
 }
 
-export async function startNativeRecording(includeSystemAudio, includeMicrophone, microphoneDeviceId, microphoneGainPercent = 100) {
+export async function startNativeRecording(includeSystemAudio, applicationAudioProcessId, includeMicrophone, microphoneDeviceId, microphoneGainPercent = 100) {
   return invoke("start_native_recording", {
     includeSystemAudio,
+    applicationAudioProcessId,
     includeMicrophone,
     microphoneDeviceId,
     microphoneGainPercent,

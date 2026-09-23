@@ -37,7 +37,7 @@ use descriptor::{get_context_and_mark_reported, get_descriptor_enabled, set_desc
 use native_capture::test_native_capture;
 use native_recording::{pause_native_recording, resume_native_recording, start_native_recording, stop_native_recording};
 use native_speech::{get_speech_voices, speak_status, test_speech_voice};
-use native_audio::list_native_microphones;
+use native_audio::{list_native_audio_applications, list_native_microphones};
 use output_settings::{get_output_settings, set_instructions_expanded, set_microphone_device, set_recording_status_feedback, set_show_notifications, set_speak_outside_app, set_speech_rate, set_speech_voice, set_speech_volume};
 use screenshot_confirmation::confirm_screenshot_local;
 use recording_save::{
@@ -739,6 +739,7 @@ pub fn run() {
             set_speech_volume,
             set_recording_status_feedback,
             list_native_microphones,
+            list_native_audio_applications,
             set_microphone_device,
             set_instructions_expanded,
             get_speech_voices,

@@ -205,7 +205,7 @@ Current 2.0.0 functionality includes:
 
 ## Release status
 
-The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 23**.
+The current release candidate is **AccessibleScreenCapture Pro 3.0.0 Beta 24**.
 
 This README describes the 2.0.0 application as implemented. Historical 1.x sections above are retained only as a development record.
 
@@ -239,7 +239,7 @@ Native recordings are now file-backed in Review. The completed MP4 is staged in 
 The debug log now includes a local date/time timestamp, a per-process session identifier, and the existing sequence number on every line.
 
 
-## AccessibleScreenCapture Pro 3.0.0 Beta 23
+## AccessibleScreenCapture Pro 3.0.0 Beta 24
 
 - Added structural H3 headings inside Diagnostics for Build and Shortcut Status, Recording Status, Save and Capture Status, Audio Balance, Additional Capture Status, and Debug Log.
 - Added Ctrl+PageDown and Ctrl+PageUp navigation among the major application H2 sections for efficient screen-reader navigation with Virtual Cursor off.
@@ -280,3 +280,8 @@ Recording review keeps focus on the reviewed capture. Editing Instructions appea
 - Production recording no longer requests a custom Windows Graphics Capture minimum update interval. The application already creates its own 30 fps output clock, and leaving this optional WGC property at the Windows default improves compatibility with Windows 10 builds that do not expose MinUpdateInterval.
 - Beta 22 Diagnostics headings, Review Queue focus behavior, Automatic microphone balance, human-readable capture names, and simplified transport controls are retained.
 - This is a feature-complete testing build. New major features are deferred while regression and compatibility testing continue.
+
+
+## AccessibleScreenCapture Pro 3.0.0 Beta 24
+
+Beta 24 adds separate controls for full System Audio, Selected Application Audio, and Microphone Audio. System Audio and Selected Application Audio are mutually exclusive acquisition modes; Microphone Audio remains independently selectable. Selected Application Audio uses Windows process-loopback capture so a meeting application can be recorded without unrelated application audio such as screen-reader speech. Google Meet in Chrome is a primary validation case. Existing system-audio capture, synchronization, Automatic microphone balance, and non-destructive editing remain preserved.

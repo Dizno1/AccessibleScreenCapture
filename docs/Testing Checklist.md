@@ -410,7 +410,7 @@
 
 ## Beta 23 - Feature-Complete Testing Build
 
-- [ ] Confirm the app and installer identify as Version 3.0.0 Beta 23 / 3.0.0-23.
+- [ ] Confirm the app and installer identify as Version 3.0.0 Beta 24 / 3.0.0-24.
 - [ ] On Windows 11, confirm recording start/stop, video, system audio, microphone audio, synchronization, and Automatic microphone balance still work.
 - [ ] On Windows 10, confirm screen recording starts successfully and produces a reviewable recording. This build leaves the optional WGC MinUpdateInterval setting at the Windows default for compatibility.
 - [ ] Expand Editing Instructions and confirm focus moves to the Review and Editing Keyboard Instructions heading.
@@ -424,3 +424,21 @@
 - [ ] Confirm global Alt+Ctrl+R works from outside the application; record any intermittent failure in Diagnostics/Debug Log.
 - [ ] Confirm human-readable capture names and Save As filenames remain correct.
 - [ ] Confirm imported-video editing and original-file protection still work.
+
+
+## Beta 24 - Selected Application Audio
+
+- [ ] Confirm Version 3.0.0 Beta 24 / 3.0.0-24.
+- [ ] System Audio and Selected Application Audio have separate controls.
+- [ ] Microphone Audio can be enabled or disabled independently of either computer-audio mode.
+- [ ] Turning on Selected Application Audio turns off System Audio.
+- [ ] Turning on System Audio turns off Selected Application Audio.
+- [ ] Join a Google Meet in Chrome, refresh the application list, and select the Chrome audio session.
+- [ ] With Selected Application Audio plus Microphone enabled, remote Meet participants and the local microphone are present in the finished recording.
+- [ ] Screen-reader speech from a separate process is absent from Selected Application Audio.
+- [ ] With Microphone disabled, remote participants remain recorded but the local microphone is absent.
+- [ ] With Selected Application Audio disabled and Microphone enabled, only microphone audio is recorded.
+- [ ] Existing full System Audio mode still records normal Windows playback.
+- [ ] Automatic microphone balance remains functional with Selected Application Audio.
+- [ ] Audio/video synchronization remains correct.
+- [ ] Check Capture Readiness reports the selected audio mode, application, and microphone state.

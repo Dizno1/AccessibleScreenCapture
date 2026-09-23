@@ -74,7 +74,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use wasapi::{initialize_mta, DeviceEnumerator, Direction, StreamMode};
+use wasapi::{initialize_mta, AudioClient, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat};
 
 pub struct AudioChunk {
     pub pcm: Vec<u8>,
@@ -160,6 +160,10 @@ enum CaptureKind {
     /// direction - captures system audio, per Microsoft's own
     /// documented guidance.
     SystemLoopback,
+    /// Process-scoped loopback. Captures audio rendered by the selected
+    /// application process and its child processes, excluding unrelated
+    /// system audio such as screen-reader speech from another process.
+    ApplicationProcess(u32),
     /// A genuine capture/input endpoint (a real microphone or other
     /// recording device) - opened directly in the CAPTURE direction,
     /// no loopback trick needed since the device already is a capture
@@ -199,110 +203,99 @@ fn start_capture(kind: CaptureKind) -> Result<(Receiver<AudioChunk>, Arc<AtomicB
             return;
         }
 
-        let enumerator = match DeviceEnumerator::new() {
-            Ok(enumerator) => enumerator,
-            Err(e) => {
-                let _ = init_tx.send(Err(format!("Could not create a device enumerator: {e}")));
-                return;
-            }
-        };
-
-        // The one real difference between the two capture kinds: which
-        // endpoint direction to fetch from the enumerator. Both then
-        // initialize the client in Direction::Capture below - for
-        // loopback that's the documented trick (render endpoint,
-        // capture-direction client); for a real microphone, that's
-        // simply correct, since the device already is a capture
-        // endpoint.
-        let enumerator_direction = match &kind {
-            CaptureKind::SystemLoopback => Direction::Render,
-            CaptureKind::Microphone(_) => Direction::Capture,
-        };
-        let device_kind_label = match &kind {
-            CaptureKind::SystemLoopback => "playback",
-            CaptureKind::Microphone(_) => "microphone",
-        };
-
-        // MICROPHONE DEVICE SELECTION. If a specific device ID was
-        // requested, resolve it via DeviceEnumerator::get_device() -
-        // confirmed real API (docs.rs/wasapi's own DeviceEnumerator
-        // page). If that device can't be resolved (unplugged,
-        // disabled since it was selected), this fails explicitly with
-        // a clear error rather than silently falling back to the
-        // default device - the caller surfaces this to the user
-        // rather than recording from an unexpected device unannounced.
-        let selected_device_id = match &kind {
-            CaptureKind::Microphone(Some(id)) => Some(id.clone()),
-            _ => None,
-        };
-        let device = if let Some(id) = &selected_device_id {
-            match enumerator.get_device(id) {
-                Ok(device) => device,
-                Err(e) => {
-                    let _ = init_tx.send(Err(format!("The selected microphone device is unavailable: {e}")));
-                    return;
+        // Beta 24 adds Windows process-loopback capture for a selected application.
+        // Unlike ordinary endpoint loopback, process loopback does not expose a usable
+        // MixFormat or device period, so it uses an explicit 48 kHz, stereo, 32-bit
+        // float format with WASAPI autoconversion. The existing endpoint paths remain
+        // unchanged.
+        let (mut audio_client, mix_format, endpoint_name, device_kind_label, buffer_duration_hns) =
+            match &kind {
+                CaptureKind::ApplicationProcess(pid) => {
+                    let client = match AudioClient::new_application_loopback_client(*pid, true) {
+                        Ok(client) => client,
+                        Err(e) => {
+                            let _ = init_tx.send(Err(format!("Could not open selected application audio for process {pid}: {e}")));
+                            return;
+                        }
+                    };
+                    let format = WaveFormat::new(32, 32, &SampleType::Float, 48_000, 2, None);
+                    (client, format, Some(format!("Selected application process {pid}")), "selected application", 200_000)
                 }
-            }
-        } else {
-            match enumerator.get_default_device(&enumerator_direction) {
-                Ok(device) => device,
-                Err(e) => {
-                    let _ = init_tx.send(Err(format!("Could not get the default {device_kind_label} device: {e}")));
-                    return;
+                CaptureKind::SystemLoopback | CaptureKind::Microphone(_) => {
+                    let enumerator = match DeviceEnumerator::new() {
+                        Ok(enumerator) => enumerator,
+                        Err(e) => {
+                            let _ = init_tx.send(Err(format!("Could not create a device enumerator: {e}")));
+                            return;
+                        }
+                    };
+                    let enumerator_direction = match &kind {
+                        CaptureKind::SystemLoopback => Direction::Render,
+                        CaptureKind::Microphone(_) => Direction::Capture,
+                        CaptureKind::ApplicationProcess(_) => unreachable!(),
+                    };
+                    let label = match &kind {
+                        CaptureKind::SystemLoopback => "playback",
+                        CaptureKind::Microphone(_) => "microphone",
+                        CaptureKind::ApplicationProcess(_) => unreachable!(),
+                    };
+                    let selected_device_id = match &kind {
+                        CaptureKind::Microphone(Some(id)) => Some(id.clone()),
+                        _ => None,
+                    };
+                    let device = if let Some(id) = &selected_device_id {
+                        match enumerator.get_device(id) {
+                            Ok(device) => device,
+                            Err(e) => {
+                                let _ = init_tx.send(Err(format!("The selected microphone device is unavailable: {e}")));
+                                return;
+                            }
+                        }
+                    } else {
+                        match enumerator.get_default_device(&enumerator_direction) {
+                            Ok(device) => device,
+                            Err(e) => {
+                                let _ = init_tx.send(Err(format!("Could not get the default {label} device: {e}")));
+                                return;
+                            }
+                        }
+                    };
+                    let endpoint_name = device.get_friendlyname().ok();
+                    let client = match device.get_iaudioclient() {
+                        Ok(client) => client,
+                        Err(e) => {
+                            let _ = init_tx.send(Err(format!("Could not open an audio client on the default {label} device: {e}")));
+                            return;
+                        }
+                    };
+                    let format = match client.get_mixformat() {
+                        Ok(format) => format,
+                        Err(e) => {
+                            let _ = init_tx.send(Err(format!("Could not read the device's mix format: {e}")));
+                            return;
+                        }
+                    };
+                    let (_default_period, min_period) = match client.get_device_period() {
+                        Ok(periods) => periods,
+                        Err(e) => {
+                            let _ = init_tx.send(Err(format!("Could not read the device's audio period: {e}")));
+                            return;
+                        }
+                    };
+                    (client, format, endpoint_name, label, min_period)
                 }
-            }
-        };
-        let endpoint_name = device.get_friendlyname().ok();
-
-        let mut audio_client = match device.get_iaudioclient() {
-            Ok(client) => client,
-            Err(e) => {
-                let _ = init_tx.send(Err(format!("Could not open an audio client on the default {device_kind_label} device: {e}")));
-                return;
-            }
-        };
-
-        // The device's own mix format, used directly and unmodified -
-        // "should always be accepted" in shared mode per wasapi's own
-        // documentation. No format conversion in this pass.
-        let mix_format = match audio_client.get_mixformat() {
-            Ok(format) => format,
-            Err(e) => {
-                let _ = init_tx.send(Err(format!("Could not read the device's mix format: {e}")));
-                return;
-            }
-        };
+            };
 
         let sample_rate = mix_format.get_samplespersec();
         let channels = mix_format.get_nchannels();
         let bits_per_sample = mix_format.get_bitspersample();
         let block_align = mix_format.get_blockalign();
 
-        let (_default_period, min_period) = match audio_client.get_device_period() {
-            Ok(periods) => periods,
-            Err(e) => {
-                let _ = init_tx.send(Err(format!("Could not read the device's audio period: {e}")));
-                return;
-            }
-        };
-
-        // PollingShared, not EventsShared: EventsShared is
-        // event-driven and requires AudioClient::set_get_eventhandle()
-        // followed by waiting on the returned handle - neither of
-        // which this capture loop does. The loop below is a plain
-        // poll (get_next_packet_size/read_from_device/sleep), which
-        // is exactly what PollingShared is for. No event-handle
-        // machinery is introduced in this pass.
         let mode = StreamMode::PollingShared {
             autoconvert: true,
-            buffer_duration_hns: min_period,
+            buffer_duration_hns,
         };
 
-        // Direction::Capture in both cases - for loopback this is the
-        // documented trick (render endpoint, capture-direction
-        // client); for a real microphone endpoint, initializing in
-        // the capture direction is simply the normal, correct way to
-        // record from it.
         if let Err(e) = audio_client.initialize_client(&mix_format, &Direction::Capture, &mode) {
             let _ = init_tx.send(Err(format!("Could not initialize the {device_kind_label} capture stream: {e}")));
             return;
@@ -466,6 +459,13 @@ pub fn start_loopback_capture() -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>
 /// for how to obtain a real device ID), or the Windows default
 /// recording device if None. See `start_capture` for the shared
 /// implementation.
+/// Starts process-scoped loopback capture for one selected application.
+/// The process tree is included so browser/application helper processes that
+/// belong beneath the selected audio process can be captured as well.
+pub fn start_application_capture(process_id: u32) -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
+    start_capture(CaptureKind::ApplicationProcess(process_id))
+}
+
 pub fn start_microphone_capture(device_id: Option<String>) -> Result<(Receiver<AudioChunk>, Arc<AtomicBool>, AudioCaptureDiagnostics, Instant), String> {
     start_capture(CaptureKind::Microphone(device_id))
 }
@@ -532,3 +532,58 @@ pub fn list_microphone_devices() -> Result<Vec<MicrophoneDeviceInfo>, String> {
 pub fn list_native_microphones() -> Result<Vec<MicrophoneDeviceInfo>, String> {
     list_microphone_devices()
 }
+
+#[derive(Clone, serde::Serialize)]
+pub struct NativeAudioApplication {
+    pub process_id: u32,
+    pub name: String,
+}
+
+#[cfg(target_os = "windows")]
+fn process_name_for_pid(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let mut buffer = vec![0u16; 32768];
+        let mut size = buffer.len() as u32;
+        let result = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR(buffer.as_mut_ptr()), &mut size);
+        let _ = CloseHandle(handle);
+        if result.is_err() || size == 0 { return None; }
+        let path = String::from_utf16_lossy(&buffer[..size as usize]);
+        let name = std::path::Path::new(&path).file_name()?.to_string_lossy().to_string();
+        Some(name.trim_end_matches(".exe").to_string())
+    }
+}
+
+/// Lists applications that currently own an audio session on the default
+/// Windows playback endpoint. This intentionally follows the Windows audio
+/// session list rather than enumerating every running process, keeping the
+/// selector short and relevant for Meet, Teams, Zoom, browsers, and media apps.
+#[tauri::command]
+pub fn list_native_audio_applications() -> Result<Vec<NativeAudioApplication>, String> {
+    std::thread::spawn(|| -> Result<Vec<NativeAudioApplication>, String> {
+        if let Err(e) = initialize_mta().ok() {
+            return Err(format!("Could not initialize Windows audio application discovery: {e}"));
+        }
+        let enumerator = DeviceEnumerator::new().map_err(|e| format!("Could not create audio device enumerator: {e}"))?;
+        let device = enumerator.get_default_device(&Direction::Render).map_err(|e| format!("Could not get default playback device: {e}"))?;
+        let manager = device.get_iaudiosessionmanager().map_err(|e| format!("Could not open Windows audio session manager: {e}"))?;
+        let sessions = manager.get_audiosessionenumerator().map_err(|e| format!("Could not enumerate Windows audio sessions: {e}"))?;
+        let count = sessions.get_count().map_err(|e| format!("Could not count Windows audio sessions: {e}"))?;
+        let mut apps = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for index in 0..count {
+            let session = match sessions.get_session(index) { Ok(v) => v, Err(_) => continue };
+            let pid = match session.get_process_id() { Ok(v) if v != 0 => v, _ => continue };
+            if !seen.insert(pid) { continue; }
+            let display = session.get_display_name().ok().filter(|v| !v.trim().is_empty());
+            let name = display.or_else(|| process_name_for_pid(pid)).unwrap_or_else(|| format!("Process {pid}"));
+            apps.push(NativeAudioApplication { process_id: pid, name });
+        }
+        apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()).then(a.process_id.cmp(&b.process_id)));
+        Ok(apps)
+    }).join().map_err(|_| "Windows audio application discovery thread failed.".to_string())?
+}
+

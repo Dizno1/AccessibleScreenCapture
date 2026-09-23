@@ -425,6 +425,7 @@ pub struct ProductionRecordingStopResult {
 pub async fn start_native_recording(
     app: AppHandle,
     include_system_audio: bool,
+    application_audio_process_id: Option<u32>,
     include_microphone: bool,
     microphone_device_id: Option<String>,
     microphone_gain_percent: u32,
@@ -470,10 +471,36 @@ pub async fn start_native_recording(
         // Start both requested audio sources before video acquisition
         // begins, exactly as the diagnostic path already does for
         // system audio - so neither misses real content at the start.
-        let (system_audio_diagnostics, system_audio) = start_and_accumulate_audio(include_system_audio, crate::native_audio::start_loopback_capture);
+        if include_system_audio && application_audio_process_id.is_some() {
+            return Ok(ProductionRecordingStartResult {
+                started: false,
+                start_error: Some("Choose either System Audio or Selected Application Audio, not both.".to_string()),
+            });
+        }
+
+        // System Audio and Selected Application Audio are separate user controls,
+        // but they intentionally feed the same proven downstream sync/balance/mux
+        // path. Only the acquisition source changes.
+        let computer_audio_requested = include_system_audio || application_audio_process_id.is_some();
+        let app_pid_for_start = application_audio_process_id;
+        let (system_audio_diagnostics, system_audio) = if let Some(pid) = app_pid_for_start {
+            start_and_accumulate_audio(true, move || crate::native_audio::start_application_capture(pid))
+        } else {
+            start_and_accumulate_audio(include_system_audio, crate::native_audio::start_loopback_capture)
+        };
         let mic_device_id_for_start = microphone_device_id.clone();
         let (mic_audio_diagnostics, mic_audio) =
             start_and_accumulate_audio(include_microphone, move || crate::native_audio::start_microphone_capture(mic_device_id_for_start));
+
+        if computer_audio_requested && system_audio.is_none() && app_pid_for_start.is_some() {
+            return Ok(ProductionRecordingStartResult {
+                started: false,
+                start_error: Some(format!(
+                    "The selected application audio could not be started: {}",
+                    system_audio_diagnostics.audio_error.as_deref().unwrap_or("unknown error")
+                )),
+            });
+        }
 
         // THE CORE FIX. start_and_accumulate_audio absorbs a failed
         // microphone start into diagnostics.audio_error and returns
