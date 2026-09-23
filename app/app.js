@@ -1927,11 +1927,81 @@ importVideoButton?.addEventListener("click", async () => {
   }
 });
 
+function confirmDiscardCapture(capture) {
+  return new Promise((resolve) => {
+    const noun = reviewItemNoun(capture).toLowerCase();
+    const overlay = document.createElement("div");
+    overlay.className = "discard-confirmation-overlay";
+
+    const dialog = document.createElement("div");
+    dialog.className = "discard-confirmation-dialog";
+    dialog.setAttribute("role", "alertdialog");
+    dialog.setAttribute("aria-modal", "true");
+    dialog.setAttribute("aria-labelledby", "discard-confirmation-heading");
+    dialog.setAttribute("aria-describedby", "discard-confirmation-message");
+
+    const heading = document.createElement("h3");
+    heading.id = "discard-confirmation-heading";
+    heading.textContent = `Discard ${reviewItemNoun(capture)}?`;
+
+    const message = document.createElement("p");
+    message.id = "discard-confirmation-message";
+    message.textContent = `This will permanently discard the pending ${noun}. This cannot be undone.`;
+
+    const actions = document.createElement("div");
+    actions.className = "review-actions";
+
+    const cancelButton = document.createElement("button");
+    cancelButton.type = "button";
+    cancelButton.className = "primary-button";
+    cancelButton.textContent = "Cancel";
+
+    const confirmButton = document.createElement("button");
+    confirmButton.type = "button";
+    confirmButton.className = "secondary-button";
+    confirmButton.textContent = `Discard ${reviewItemNoun(capture)}`;
+
+    actions.append(cancelButton, confirmButton);
+    dialog.append(heading, message, actions);
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const finish = (confirmed) => {
+      document.removeEventListener("keydown", handleKeydown, true);
+      overlay.remove();
+      if (!confirmed && document.body.contains(discardButton)) discardButton.focus();
+      resolve(confirmed);
+    };
+    const handleKeydown = (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        finish(false);
+        return;
+      }
+      if (event.key === "Tab") {
+        const first = cancelButton;
+        const last = confirmButton;
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      }
+    };
+    document.addEventListener("keydown", handleKeydown, true);
+    cancelButton.addEventListener("click", () => finish(false));
+    confirmButton.addEventListener("click", () => finish(true));
+    cancelButton.focus();
+  });
+}
+
 discardButton.addEventListener("click", async () => {
   if (!pendingCapture) return;
   const capture = pendingCapture;
-  const noun = reviewItemNoun(capture).toLowerCase();
-  const confirmed = window.confirm(`Discard this ${noun}? This cannot be undone.`);
+  const confirmed = await confirmDiscardCapture(capture);
   if (!confirmed) return;
   discardButton.disabled = true;
 
@@ -2008,7 +2078,7 @@ function addRecentCapture(capture, focusHeading = true) {
     item.remove();
     if (recentList.children.length === 0) {
       recentEmptyMessage.hidden = false;
-      focusCaptureControl();
+      document.getElementById("recent-heading")?.focus();
     } else if (nextFocus) {
       nextFocus.focus();
     }

@@ -442,3 +442,16 @@
 - [ ] Automatic microphone balance remains functional with Selected Application Audio.
 - [ ] Audio/video synchronization remains correct.
 - [ ] Check Capture Readiness reports the selected audio mode, application, and microphone state.
+
+
+## Beta 24.1 - Safety and Focus Patch
+
+- [ ] Confirm the app identifies as Version 3.0.0 Beta 24.1 / 3.0.0-24.1.
+- [ ] Activate Discard on a pending screenshot. Confirm an alert dialog opens instead of discarding immediately.
+- [ ] Confirm Cancel receives initial focus.
+- [ ] Confirm Escape cancels the discard and returns focus to the original Discard button.
+- [ ] Confirm activating Discard in the confirmation permanently discards the screenshot.
+- [ ] Repeat the same discard-confirmation tests for a recording and an imported video.
+- [ ] In Recent Captures, remove an item when another item remains. Confirm focus moves to an adjacent remaining capture heading.
+- [ ] Remove the last Recent Captures item. Confirm focus moves to the Recent Captures heading and the empty-state message is available immediately after it.
+- [ ] Recheck System Audio, Selected Application Audio, Microphone Audio, synchronization, and Automatic Balance for regression.

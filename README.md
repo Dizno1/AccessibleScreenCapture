@@ -285,3 +285,8 @@ Recording review keeps focus on the reviewed capture. Editing Instructions appea
 ## AccessibleScreenCapture Pro 3.0.0 Beta 24
 
 Beta 24 adds separate controls for full System Audio, Selected Application Audio, and Microphone Audio. System Audio and Selected Application Audio are mutually exclusive acquisition modes; Microphone Audio remains independently selectable. Selected Application Audio uses Windows process-loopback capture so a meeting application can be recorded without unrelated application audio such as screen-reader speech. Google Meet in Chrome is a primary validation case. Existing system-audio capture, synchronization, Automatic microphone balance, and non-destructive editing remain preserved.
+
+
+## AccessibleScreenCapture Pro 3.0.0 Beta 24.1
+
+Beta 24.1 is a focused safety and focus-management patch for Beta 24. Review Queue Discard actions now require an accessible confirmation dialog for screenshots, recordings, and imported videos. Cancel receives initial focus, Escape cancels and returns focus to the original Discard button, and permanent removal occurs only after explicit confirmation. Recent Captures removal now keeps focus within Recent Captures: an adjacent remaining capture receives focus when available, and removing the last item moves focus to the Recent Captures heading. Selected Application Audio and the Beta 24 capture/audio pipeline are otherwise unchanged.
