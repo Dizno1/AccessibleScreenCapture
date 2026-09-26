@@ -335,7 +335,7 @@ struct RecordingSession {
     video_pause_flag: Arc<AtomicBool>,
     video_thread: std::thread::JoinHandle<VideoClockResult>,
     capture_control: CaptureControl<AcquisitionHandler, Box<dyn std::error::Error + Send + Sync>>,
-    system_audio: Option<AudioSource>,
+    system_audio: Vec<AudioSource>,
     system_audio_diagnostics: AudioCaptureDiagnostics,
     mic_audio: Option<AudioSource>,
     mic_audio_diagnostics: AudioCaptureDiagnostics,
@@ -425,7 +425,7 @@ pub struct ProductionRecordingStopResult {
 pub async fn start_native_recording(
     app: AppHandle,
     include_system_audio: bool,
-    application_audio_process_id: Option<u32>,
+    application_audio_process_ids: Vec<u32>,
     include_microphone: bool,
     microphone_device_id: Option<String>,
     microphone_gain_percent: u32,
@@ -471,36 +471,39 @@ pub async fn start_native_recording(
         // Start both requested audio sources before video acquisition
         // begins, exactly as the diagnostic path already does for
         // system audio - so neither misses real content at the start.
-        if include_system_audio && application_audio_process_id.is_some() {
+        if include_system_audio && !application_audio_process_ids.is_empty() {
             return Ok(ProductionRecordingStartResult {
                 started: false,
-                start_error: Some("Choose either System Audio or Selected Application Audio, not both.".to_string()),
+                start_error: Some("Choose either All System Audio or Selected Applications, not both.".to_string()),
             });
         }
 
-        // System Audio and Selected Application Audio are separate user controls,
-        // but they intentionally feed the same proven downstream sync/balance/mux
-        // path. Only the acquisition source changes.
-        let computer_audio_requested = include_system_audio || application_audio_process_id.is_some();
-        let app_pid_for_start = application_audio_process_id;
-        let (system_audio_diagnostics, system_audio) = if let Some(pid) = app_pid_for_start {
-            start_and_accumulate_audio(true, move || crate::native_audio::start_application_capture(pid))
+        // All selected application process trees are captured independently, then
+        // combined to one computer-audio stream before the existing sync/balance mux.
+        let selected_application_mode = !application_audio_process_ids.is_empty();
+        let mut system_audio: Vec<AudioSource> = Vec::new();
+        let mut system_audio_diagnostics = AudioCaptureDiagnostics::default();
+        if include_system_audio {
+            let (diag, source) = start_and_accumulate_audio(true, crate::native_audio::start_loopback_capture);
+            system_audio_diagnostics = diag;
+            if let Some(source) = source { system_audio.push(source); }
         } else {
-            start_and_accumulate_audio(include_system_audio, crate::native_audio::start_loopback_capture)
-        };
+            system_audio_diagnostics.audio_requested = selected_application_mode;
+            for pid in application_audio_process_ids.iter().copied() {
+                let (diag, source) = start_and_accumulate_audio(true, move || crate::native_audio::start_application_capture(pid));
+                if let Some(source) = source {
+                    if system_audio_diagnostics.render_endpoint_name.is_none() { system_audio_diagnostics = diag.clone(); }
+                    system_audio.push(source);
+                } else {
+                    for active in &system_audio { active.stop_flag.store(true, Ordering::SeqCst); }
+                    return Ok(ProductionRecordingStartResult { started: false, start_error: Some(format!("Selected application audio process {pid} could not be started: {}", diag.audio_error.as_deref().unwrap_or("unknown error"))) });
+                }
+            }
+        }
         let mic_device_id_for_start = microphone_device_id.clone();
         let (mic_audio_diagnostics, mic_audio) =
             start_and_accumulate_audio(include_microphone, move || crate::native_audio::start_microphone_capture(mic_device_id_for_start));
 
-        if computer_audio_requested && system_audio.is_none() && app_pid_for_start.is_some() {
-            return Ok(ProductionRecordingStartResult {
-                started: false,
-                start_error: Some(format!(
-                    "The selected application audio could not be started: {}",
-                    system_audio_diagnostics.audio_error.as_deref().unwrap_or("unknown error")
-                )),
-            });
-        }
 
         // THE CORE FIX. start_and_accumulate_audio absorbs a failed
         // microphone start into diagnostics.audio_error and returns
@@ -512,9 +515,7 @@ pub async fn start_native_recording(
         // acquisition even begins, rather than starting a recording
         // that will not contain what the user asked for.
         if include_microphone && mic_audio.is_none() {
-            if let Some(s) = &system_audio {
-                s.stop_flag.store(true, Ordering::SeqCst);
-            }
+            for source in &system_audio { source.stop_flag.store(true, Ordering::SeqCst); }
             let device_context = microphone_device_id
                 .as_ref()
                 .map(|id| format!(" (device ID {id})"))
@@ -531,9 +532,7 @@ pub async fn start_native_recording(
         let primary_monitor = match Monitor::primary() {
             Ok(m) => m,
             Err(e) => {
-                if let Some(s) = &system_audio {
-                    s.stop_flag.store(true, Ordering::SeqCst);
-                }
+                for source in &system_audio { source.stop_flag.store(true, Ordering::SeqCst); }
                 if let Some(m) = &mic_audio {
                     m.stop_flag.store(true, Ordering::SeqCst);
                 }
@@ -569,9 +568,7 @@ pub async fn start_native_recording(
         let capture_control = match AcquisitionHandler::start_free_threaded(settings) {
             Ok(control) => control,
             Err(e) => {
-                if let Some(s) = &system_audio {
-                    s.stop_flag.store(true, Ordering::SeqCst);
-                }
+                for source in &system_audio { source.stop_flag.store(true, Ordering::SeqCst); }
                 if let Some(m) = &mic_audio {
                     m.stop_flag.store(true, Ordering::SeqCst);
                 }
@@ -629,9 +626,7 @@ pub async fn start_native_recording(
             }
             Err(_) => {
                 let _ = capture_control.stop();
-                if let Some(s) = &system_audio {
-                    s.stop_flag.store(true, Ordering::SeqCst);
-                }
+                for source in &system_audio { source.stop_flag.store(true, Ordering::SeqCst); }
                 if let Some(m) = &mic_audio {
                     m.stop_flag.store(true, Ordering::SeqCst);
                 }
@@ -746,9 +741,7 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
 
     let stop_requested_at = Instant::now();
 
-    if let Some(s) = &system_audio {
-        s.stop_flag.store(true, Ordering::SeqCst);
-    }
+    for source in &system_audio { source.stop_flag.store(true, Ordering::SeqCst); }
     if let Some(m) = &mic_audio {
         m.stop_flag.store(true, Ordering::SeqCst);
     }
@@ -761,16 +754,26 @@ pub async fn stop_native_recording(app: AppHandle) -> Result<ProductionRecording
 
     let mut system_audio_wav_path: Option<PathBuf> = None;
     let mut system_audio_retained_frames: u64 = 0;
-    if let (Some(source), Some(origin)) = (system_audio, first_frame_at) {
-        if let Ok(chunks) = source.join_handle.join() {
-            system_audio_diagnostics.buffers_captured = chunks.len() as u32;
-            system_audio_diagnostics.frames_captured = chunks.iter().map(|c| c.frames as u64).sum();
-            if !chunks.is_empty() {
-                let wav_path = output_dir.join(SOURCE_SYSTEM_AUDIO_FILE_NAME);
-                let (path, retained_frames, _has_signal) =
-                    trim_and_write_audio(&chunks, &system_audio_diagnostics, origin, source.capture_start, window_end, &pause_snapshot, &wav_path);
-                system_audio_wav_path = path;
-                system_audio_retained_frames = retained_frames;
+    let mut application_wavs: Vec<PathBuf> = Vec::new();
+    if let Some(origin) = first_frame_at {
+        let source_count = system_audio.len();
+        for (index, source) in system_audio.into_iter().enumerate() {
+            if let Ok(chunks) = source.join_handle.join() {
+                system_audio_diagnostics.buffers_captured += chunks.len() as u32;
+                system_audio_diagnostics.frames_captured += chunks.iter().map(|c| c.frames as u64).sum::<u64>();
+                if !chunks.is_empty() {
+                    let wav_path = if source_count == 1 { output_dir.join(SOURCE_SYSTEM_AUDIO_FILE_NAME) } else { output_dir.join(format!("selected-application-audio-{index}.wav")) };
+                    let (path, retained_frames, _has_signal) = trim_and_write_audio(&chunks, &system_audio_diagnostics, origin, source.capture_start, window_end, &pause_snapshot, &wav_path);
+                    if let Some(path) = path { application_wavs.push(path); system_audio_retained_frames = system_audio_retained_frames.max(retained_frames); }
+                }
+            }
+        }
+        if application_wavs.len() == 1 { system_audio_wav_path = application_wavs.first().cloned(); }
+        else if application_wavs.len() > 1 {
+            let mixed = output_dir.join(SOURCE_SYSTEM_AUDIO_FILE_NAME);
+            match crate::native_mux::mix_application_audio_wavs(&app, &application_wavs, &mixed).await {
+                Ok(()) => system_audio_wav_path = Some(mixed),
+                Err(error) => system_audio_diagnostics.audio_error = Some(error),
             }
         }
     }

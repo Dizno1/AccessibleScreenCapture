@@ -216,10 +216,10 @@ export async function testNativeCapture(includeSystemAudio) {
   return invoke("test_native_capture", { includeSystemAudio });
 }
 
-export async function startNativeRecording(includeSystemAudio, applicationAudioProcessId, includeMicrophone, microphoneDeviceId, microphoneGainPercent = 100) {
+export async function startNativeRecording(includeSystemAudio, applicationAudioProcessIds, includeMicrophone, microphoneDeviceId, microphoneGainPercent = 100) {
   return invoke("start_native_recording", {
     includeSystemAudio,
-    applicationAudioProcessId,
+    applicationAudioProcessIds,
     includeMicrophone,
     microphoneDeviceId,
     microphoneGainPercent,

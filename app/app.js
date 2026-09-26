@@ -53,10 +53,11 @@ import {
   nativeFileUrl,
 } from "./tauri-bridge.js";
 
-const systemAudioOption = document.getElementById("option-system-audio");
-const applicationAudioOption = document.getElementById("option-application-audio");
+const audioModeRadios = [...document.querySelectorAll('input[name="computer-audio-mode"]')];
+const audioModeSystem = document.getElementById("audio-mode-system");
+const audioModeApplications = document.getElementById("audio-mode-applications");
 const applicationAudioSelectWrapper = document.getElementById("application-audio-select-wrapper");
-const applicationAudioSelect = document.getElementById("application-audio-select");
+const applicationAudioList = document.getElementById("application-audio-list");
 const refreshApplicationAudioButton = document.getElementById("refresh-application-audio");
 const microphoneOption = document.getElementById("option-microphone");
 const microphoneSelectWrapper = document.getElementById("microphone-select-wrapper");
@@ -155,6 +156,7 @@ const diagnostics = {
   saveFailed: "No",
   savedFilePath: "Not available (native save does not report the chosen path back to the app)",
   recentCapturesUpdated: "No",
+  computerAudioSelection: "All system audio",
   currentMicSelection: "Default microphone",
   resolvedMicDevice: "N/A",
   lastSaveError: "N/A",
@@ -196,6 +198,7 @@ function renderDiagnostics() {
     saveFailed: "diag-save-failed",
     savedFilePath: "diag-saved-path",
     recentCapturesUpdated: "diag-recent-updated",
+    computerAudioSelection: "diag-computer-audio",
     currentMicSelection: "diag-mic-selection",
     resolvedMicDevice: "diag-mic-resolved",
     finalMuxStatus: "diag-final-mux-status",
@@ -223,9 +226,8 @@ initShortcuts();
 setTimeout(restorePendingRecordings, 0);
 
 function setWorkflowLocked(locked) {
-  systemAudioOption.disabled = locked;
-  applicationAudioOption.disabled = locked;
-  applicationAudioSelect.disabled = locked;
+  for (const radio of audioModeRadios) radio.disabled = locked;
+  for (const checkbox of applicationAudioList.querySelectorAll("input[type=checkbox]")) checkbox.disabled = locked;
   refreshApplicationAudioButton.disabled = locked;
   microphoneOption.disabled = locked;
   microphoneSelect.disabled = locked;
@@ -594,48 +596,74 @@ async function populateNativeMicrophoneList(persistedId, persistedName) {
   }
 }
 
+function selectedApplicationAudioIds() {
+  return [...applicationAudioList.querySelectorAll('input[type="checkbox"]:checked')]
+    .flatMap((input) => String(input.value).split(",").map(Number))
+    .filter(Number.isFinite);
+}
+
+function selectedApplicationAudioLabels() {
+  return [...applicationAudioList.querySelectorAll('input[type="checkbox"]:checked')].map((input) => input.dataset.label || `process ${input.value}`);
+}
+
+function updateComputerAudioDiagnostics() {
+  if (audioModeApplications.checked) {
+    const labels = selectedApplicationAudioLabels();
+    diagnostics.computerAudioSelection = labels.length ? `Selected applications: ${labels.join(", ")}` : "Selected applications: none selected";
+  } else if (audioModeSystem.checked) diagnostics.computerAudioSelection = "All system audio";
+  else diagnostics.computerAudioSelection = "No computer audio";
+  renderDiagnostics();
+}
+
 async function populateApplicationAudioList() {
   if (!isTauri) return;
-  const previous = applicationAudioSelect.value;
-  applicationAudioSelect.innerHTML = '<option value="">Select an application</option>';
+  const previous = new Set(selectedApplicationAudioIds().map(String));
+  applicationAudioList.innerHTML = "";
   try {
     const apps = await listNativeAudioApplications();
+    const groups = new Map();
     for (const app of apps) {
-      const option = document.createElement("option");
-      option.value = String(app.process_id);
-      option.textContent = `${app.name} (process ${app.process_id})`;
-      applicationAudioSelect.appendChild(option);
+      const key = app.name.trim().toLowerCase();
+      if (!groups.has(key)) groups.set(key, { name: app.name, ids: [] });
+      groups.get(key).ids.push(app.process_id);
     }
-    if (previous && apps.some((app) => String(app.process_id) === previous)) {
-      applicationAudioSelect.value = previous;
+    for (const group of groups.values()) {
+      const label = document.createElement("label");
+      label.className = "checkbox-option";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      // Preserve Beta 24's proven single-process behavior for each named
+      // application. Multiple distinct applications can now be selected
+      // without stacking several same-application process-loopback streams.
+      checkbox.value = String(group.ids[0]);
+      checkbox.dataset.label = group.name;
+      checkbox.checked = group.ids.some((id) => previous.has(String(id)));
+      label.append(checkbox, document.createTextNode(` ${checkbox.dataset.label}`));
+      checkbox.addEventListener("change", updateComputerAudioDiagnostics);
+      applicationAudioList.appendChild(label);
     }
-    if (apps.length === 0) announceRaw("No applications with an active Windows audio session were found.");
+    if (apps.length === 0) {
+      const empty = document.createElement("p");
+      empty.className = "section-hint";
+      empty.textContent = "No applications with an active Windows audio session were found.";
+      applicationAudioList.appendChild(empty);
+      announceRaw(empty.textContent);
+    }
   } catch (error) {
     console.error("Could not list application audio sources:", error);
     announceRaw(`Could not list application audio sources: ${error}`);
   }
 }
 
-systemAudioOption.addEventListener("change", () => {
-  if (systemAudioOption.checked && applicationAudioOption.checked) {
-    applicationAudioOption.checked = false;
-    applicationAudioSelectWrapper.hidden = true;
-    announceRaw("System audio selected. Selected application audio turned off.");
-  }
-});
+for (const radio of audioModeRadios) {
+  radio.addEventListener("change", async () => {
+    applicationAudioSelectWrapper.hidden = !audioModeApplications.checked;
+    if (audioModeApplications.checked) await populateApplicationAudioList();
+    updateComputerAudioDiagnostics();
+  });
+}
 
-applicationAudioOption.addEventListener("change", async () => {
-  applicationAudioSelectWrapper.hidden = !applicationAudioOption.checked;
-  if (applicationAudioOption.checked) {
-    if (systemAudioOption.checked) {
-      systemAudioOption.checked = false;
-      announceRaw("Selected application audio turned on. System audio turned off.");
-    }
-    await populateApplicationAudioList();
-  }
-});
-
-refreshApplicationAudioButton.addEventListener("click", populateApplicationAudioList);
+refreshApplicationAudioButton.addEventListener("click", async () => { await populateApplicationAudioList(); updateComputerAudioDiagnostics(); });
 
 microphoneOption.addEventListener("change", async () => {
   if (!microphoneOption.checked) {
@@ -701,12 +729,15 @@ function timestampForFilename() {
     String(now.getDate()).padStart(2, "0"),
     now.getFullYear(),
   ].join("-");
+  const hour24 = now.getHours();
+  const suffix = hour24 >= 12 ? "PM" : "AM";
+  const hour12 = hour24 % 12 || 12;
   const time = [
-    String(now.getHours()).padStart(2, "0"),
+    String(hour12),
     String(now.getMinutes()).padStart(2, "0"),
     String(now.getSeconds()).padStart(2, "0"),
   ].join("-");
-  return `${date} ${time}`;
+  return `${date} ${time} ${suffix}`;
 }
 
 function readableTimestamp() {
@@ -887,6 +918,15 @@ function buildRecordingPlaybackControls(video, capture) {
   timeDisplay.setAttribute("aria-hidden", "true");
   timeDisplay.textContent = "0 seconds of 0 seconds";
 
+  const positionSlider = document.createElement("input");
+  positionSlider.type = "range";
+  positionSlider.className = "playback-position-slider";
+  positionSlider.min = "0";
+  positionSlider.max = "0";
+  positionSlider.step = "0.1";
+  positionSlider.value = "0";
+  positionSlider.setAttribute("aria-label", "Playback position");
+
   const editingHelpButton = document.createElement("button");
   editingHelpButton.type = "button";
   editingHelpButton.className = "secondary-button editing-instructions-toggle";
@@ -919,7 +959,7 @@ function buildRecordingPlaybackControls(video, capture) {
     editingHelpButton.focus();
   });
 
-  container.append(editingHelpButton, editingHelp, applyEditButton, editStatus, playPauseButton, announceButton, timeDisplay);
+  container.append(editingHelpButton, editingHelp, applyEditButton, editStatus, playPauseButton, positionSlider, announceButton, timeDisplay);
 
   function updateApplyEditButton() {
     if (editInProgress) {
@@ -944,9 +984,24 @@ function buildRecordingPlaybackControls(video, capture) {
     return `${current} of ${total}`;
   }
 
+  function updateSliderAccessibleValue() {
+    const logical = sourceToLogicalTime(capture, video.currentTime || 0);
+    const total = editableRecordingDuration(capture);
+    positionSlider.max = String(Math.max(0, total));
+    positionSlider.value = String(Math.min(Math.max(0, logical), Math.max(0, total)));
+    positionSlider.setAttribute("aria-valuetext", `${formatDuration(logical)} of ${formatDuration(total)}`);
+  }
+
   function updateTimeDisplay() {
     timeDisplay.textContent = currentPositionText();
+    updateSliderAccessibleValue();
   }
+
+  positionSlider.addEventListener("input", () => {
+    const logical = Number(positionSlider.value || 0);
+    video.currentTime = logicalToSourceTime(capture, logical);
+    updateTimeDisplay();
+  });
 
   function setPlayingState(isPlaying) {
     playPauseButton.textContent = isPlaying ? "Pause" : "Play";
@@ -1711,6 +1766,7 @@ async function confirmPendingScreenshot() {
     screenshotConfirmationText.textContent = description;
     screenshotConfirmationResult.hidden = false;
     screenshotConfirmationHeading.focus();
+    announceRaw(`Screenshot Confirmation complete. ${description}`);
   } catch (error) {
     console.error("Screenshot Confirmation failed:", error);
     const message = String(error?.message || error || "Screenshot Confirmation failed.");
@@ -2313,18 +2369,16 @@ async function startRecording() {
       const microphoneGainPercent = microphoneOption.checked && microphoneRecordingLevel
         ? Number(microphoneRecordingLevel.value || 100)
         : 100;
-      const applicationAudioProcessId = applicationAudioOption.checked && applicationAudioSelect.value
-        ? Number(applicationAudioSelect.value)
-        : null;
-      if (applicationAudioOption.checked && !applicationAudioProcessId) {
-        announceRaw("Selected application audio is on, but no application is selected.");
+      const applicationAudioProcessIds = audioModeApplications.checked ? selectedApplicationAudioIds() : [];
+      if (audioModeApplications.checked && applicationAudioProcessIds.length === 0) {
+        announceRaw("Selected applications audio is on, but no applications are selected.");
         setWorkflowLocked(false);
         isStartingCapture = false;
         return;
       }
       const result = await startNativeRecording(
-        systemAudioOption.checked,
-        applicationAudioProcessId,
+        audioModeSystem.checked,
+        applicationAudioProcessIds,
         microphoneOption.checked,
         microphoneOption.checked ? nativeMicrophoneDeviceId : null,
         microphoneGainPercent
@@ -2372,7 +2426,7 @@ async function startRecording() {
   // quick succession - covers what Check Capture Readiness already
   // knows how to report (target, system audio, microphone) plus the
   // sharing-dialog guidance, built from the same state the rest of
-  // the app already tracks (systemAudioOption/microphoneOption), not
+  // the app already tracks (audioModeSystem/microphoneOption), not
   // hard-coded independently of it.
   const micLabel = microphoneOption.checked
     ? microphoneSelect.options[microphoneSelect.selectedIndex]?.textContent || "Default microphone"
@@ -2380,10 +2434,10 @@ async function startRecording() {
   const readinessParts = [
     "Recording requested.",
     "Primary monitor.",
-    `System audio ${systemAudioOption.checked ? "on" : "off"}.`,
+    `System audio ${audioModeSystem.checked ? "on" : "off"}.`,
     `Microphone: ${micLabel}.`,
   ];
-  if (systemAudioOption.checked) {
+  if (audioModeSystem.checked) {
     readinessParts.push('Windows will separately ask to share system audio - turn on "Also share system audio" to include it.');
   }
   readinessParts.push("Complete the screen sharing dialog to begin.");
@@ -2397,7 +2451,7 @@ async function startRecording() {
     renderDiagnostics();
     displayStream = await navigator.mediaDevices.getDisplayMedia({
       video: true,
-      audio: systemAudioOption.checked,
+      audio: audioModeSystem.checked,
     });
 
     if (microphoneOption.checked) {
@@ -3205,11 +3259,13 @@ function composeReadinessText(context) {
   }
 
   parts.push("Screenshot target: entire primary monitor.");
-  if (applicationAudioOption.checked) {
-    const appLabel = applicationAudioSelect.options[applicationAudioSelect.selectedIndex]?.textContent || "no application selected";
-    parts.push(`Recording audio source: selected application only, ${appLabel}.`);
+  if (audioModeApplications.checked) {
+    const labels = selectedApplicationAudioLabels();
+    parts.push(`Computer audio: selected applications${labels.length ? `, ${labels.join(", ")}` : ", none selected"}.`);
+  } else if (audioModeSystem.checked) {
+    parts.push("Computer audio: all system audio.");
   } else {
-    parts.push(`System audio ${systemAudioOption.checked ? "on" : "off"}.`);
+    parts.push("Computer audio: none.");
   }
   const micLabel = microphoneOption.checked
     ? microphoneSelect.options[microphoneSelect.selectedIndex]?.textContent || "Default microphone"

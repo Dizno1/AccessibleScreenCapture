@@ -570,3 +570,26 @@ pub async fn mux_recording(
         },
     }
 }
+
+/// Mixes multiple application-audio WAV files into one PCM WAV before the
+/// existing synchronization/balance mux pipeline. Inputs are never modified.
+pub async fn mix_application_audio_wavs(app: &AppHandle, inputs: &[std::path::PathBuf], output_path: &Path) -> Result<(), String> {
+    if inputs.is_empty() { return Err("No application audio inputs were supplied.".to_string()); }
+    if inputs.len() == 1 {
+        std::fs::copy(&inputs[0], output_path).map_err(|e| format!("Could not prepare selected application audio: {e}"))?;
+        return Ok(());
+    }
+    let sidecar = app.shell().sidecar("ffmpeg").map_err(|e| format!("ffmpeg unavailable: {e}"))?;
+    let _ = std::fs::remove_file(output_path);
+    let mut args: Vec<String> = vec!["-y".into(), "-hide_banner".into(), "-nostats".into()];
+    for input in inputs { args.push("-i".into()); args.push(input.to_string_lossy().to_string()); }
+    let labels = (0..inputs.len()).map(|i| format!("[{i}:a]")).collect::<String>();
+    args.push("-filter_complex".into());
+    args.push(format!("{labels}amix=inputs={}:duration=longest:normalize=0[aout]", inputs.len()));
+    args.extend(["-map".into(), "[aout]".into(), "-c:a".into(), "pcm_s16le".into(), output_path.to_string_lossy().to_string()]);
+    let result = sidecar.args(args).output().await.map_err(|e| format!("Could not mix selected application audio: {e}"))?;
+    if !result.status.success() || !output_path.exists() {
+        return Err(format!("Selected application audio mix failed: {}", truncated_stderr(&result.stderr)));
+    }
+    Ok(())
+}

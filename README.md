@@ -290,3 +290,11 @@ Beta 24 adds separate controls for full System Audio, Selected Application Audio
 ## AccessibleScreenCapture Pro 3.0.0 Beta 24.1
 
 Beta 24.1 is a focused safety and focus-management patch for Beta 24. Review Queue Discard actions now require an accessible confirmation dialog for screenshots, recordings, and imported videos. Cancel receives initial focus, Escape cancels and returns focus to the original Discard button, and permanent removal occurs only after explicit confirmation. Recent Captures removal now keeps focus within Recent Captures: an adjacent remaining capture receives focus when available, and removing the last item moves focus to the Recent Captures heading. Selected Application Audio and the Beta 24 capture/audio pipeline are otherwise unchanged.
+
+## AccessibleScreenCapture Pro 3.0.0 Beta 25 - Final Feature Build
+
+Beta 25 is the planned final feature build before RC1. Computer audio is now a radio group with three mutually exclusive modes: No computer audio, All system audio, and Selected applications. Selected applications supports choosing more than one named application while Microphone Audio remains an independent checkbox. Multiple selected application streams are combined before entering the existing synchronization, Automatic microphone balance, and final mux pipeline.
+
+Review playback now includes a mouse- and keyboard-accessible Playback Position slider while preserving the existing VC off / Focus Mode editing shortcuts. The slider exposes meaningful elapsed and total time through its accessible value. Screenshot Confirmation now announces the completed private description once so it can be reviewed without turning VC back on. Generated capture filenames now use 12-hour time with AM/PM rather than 24-hour time.
+
+Beta 24.1 discard confirmation, focus restoration, Recent Captures focus behavior, non-destructive editing, synchronization, Automatic Balance, global shortcuts, and Review Queue behavior are preserved.

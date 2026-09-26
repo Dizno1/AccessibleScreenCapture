@@ -352,3 +352,6 @@ a:focus-visible,
   background: Canvas;
   color: CanvasText;
 }
+
+.playback-position-slider { width: min(42rem, 100%); margin: 0.75rem 0; }
+#application-audio-list .checkbox-option { display: block; margin: 0.35rem 0; }

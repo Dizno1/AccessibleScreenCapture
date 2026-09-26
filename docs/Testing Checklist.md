@@ -455,3 +455,33 @@
 - [ ] In Recent Captures, remove an item when another item remains. Confirm focus moves to an adjacent remaining capture heading.
 - [ ] Remove the last Recent Captures item. Confirm focus moves to the Recent Captures heading and the empty-state message is available immediately after it.
 - [ ] Recheck System Audio, Selected Application Audio, Microphone Audio, synchronization, and Automatic Balance for regression.
+
+## Beta 25 - Final Feature Build
+
+- [ ] Confirm the app identifies as Version 3.0.0 Beta 25 and package version 3.0.25.
+- [ ] Computer Audio is a radio group: No computer audio, All system audio, Selected applications.
+- [ ] Microphone Audio remains independently selectable in every Computer Audio mode.
+- [ ] Selected applications exposes a checkbox list and allows more than one named application to be selected.
+- [ ] Refresh application list updates the available Windows audio applications.
+- [ ] Starting Selected applications mode with nothing selected is prevented with an accessible message.
+- [ ] A recording with two selected applications contains audio from both selected applications.
+- [ ] Audio from an unselected application is excluded in Selected applications mode.
+- [ ] Google Meet/Chrome remains recordable without unrelated screen-reader speech when Chrome is selected and All system audio is not selected.
+- [ ] Automatic microphone balance still works with selected-application audio.
+- [ ] Audio/video synchronization remains correct.
+- [ ] Check Capture Readiness reports the selected computer-audio mode and selected applications.
+- [ ] Diagnostics reports the selected computer-audio mode and selected applications.
+- [ ] Review playback exposes a Playback Position slider.
+- [ ] A mouse user can click or drag the slider to seek.
+- [ ] A keyboard user can operate the focused slider.
+- [ ] The slider exposes meaningful time such as elapsed time of total time, not only a percentage.
+- [ ] Existing VC off / Focus Mode playback and editing shortcuts still work.
+- [ ] Screenshot Confirmation announces the completed description once while VC is off / Focus Mode is active.
+- [ ] Screenshot Confirmation remains readable as ordinary page content with VC on.
+- [ ] Recording filenames use 12-hour time with AM/PM.
+- [ ] Screenshot filenames use 12-hour time with AM/PM.
+- [ ] Edited filenames retain the human-readable source filename and Edited suffix.
+- [ ] Discard confirmation still appears for screenshots, recordings, and imported videos.
+- [ ] Cancel and Escape from Discard return focus to the original Discard button.
+- [ ] Recent Captures removal keeps focus in Recent Captures.
+- [ ] Long-video editing, rendering, saving, and original-file protection still pass regression testing.
