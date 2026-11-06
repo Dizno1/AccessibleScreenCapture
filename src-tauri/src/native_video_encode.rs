@@ -85,7 +85,7 @@ const MAX_STDERR_CHARS: usize = 2000;
 pub struct OwnedFrame {
     pub width: u32,
     pub height: u32,
-    pub pixels: Vec<u8>,
+    pub pixels: Arc<[u8]>, // immutable shared ownership avoids per-tick full-frame copies
 }
 
 pub type SharedFrame = Arc<Mutex<Option<OwnedFrame>>>;
@@ -247,9 +247,12 @@ pub fn run_video_clock(
             std::thread::sleep(target_time - now);
         }
 
+        // Clone only the Arc handle, not the full RGBA frame. This keeps
+        // the capture callback free to publish newer frames while ffmpeg
+        // consumes the previous immutable buffer.
         let frame_bytes = {
             let guard = shared_frame.lock().unwrap();
-            guard.as_ref().map(|f| f.pixels.clone())
+            guard.as_ref().map(|f| Arc::clone(&f.pixels))
         };
 
         match frame_bytes {

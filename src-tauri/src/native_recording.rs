@@ -121,7 +121,7 @@ impl GraphicsCaptureApiHandler for AcquisitionHandler {
                         let end = start + tight_row_bytes;
                         pixels.extend_from_slice(&raw[start..end]);
                     }
-                    *self.shared_frame.lock().unwrap() = Some(OwnedFrame { width, height, pixels });
+                    *self.shared_frame.lock().unwrap() = Some(OwnedFrame { width, height, pixels: pixels.into() });
 
                     let mut size = FIRST_FRAME_SIZE.lock().unwrap();
                     if size.is_none() {

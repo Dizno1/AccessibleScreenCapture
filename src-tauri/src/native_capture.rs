@@ -234,7 +234,7 @@ impl GraphicsCaptureApiHandler for ProofHandler {
                         let end = start + tight_row_bytes;
                         pixels.extend_from_slice(&raw[start..end]);
                     }
-                    *self.shared_frame.lock().unwrap() = Some(OwnedFrame { width, height, pixels });
+                    *self.shared_frame.lock().unwrap() = Some(OwnedFrame { width, height, pixels: pixels.into() });
 
                     // Only now, after a real OwnedFrame has actually
                     // been published, is it safe to tell the

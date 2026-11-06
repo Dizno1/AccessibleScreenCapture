@@ -1,0 +1,13 @@
+AccessibleScreenCapture Pro - Beta 26 Frame Sharing Trial
+
+Base: 3.0.0 Beta 25 Final Feature Build. Original ZIP remains unchanged.
+
+Change: the latest RGBA frame is now shared using an immutable Arc<[u8]> instead of copying the entire frame into a new Vec<u8> at every 30 FPS clock tick. The WGC callback still copies pixels out of the acquired frame once, as required to own the memory safely.
+
+Why: at 3200x2000, each frame is 25,600,000 bytes. This removes an additional approximately 768 MB/sec of application-side frame copying when running at 30 FPS. It does NOT remove the large FFmpeg stdin transfer, change the MPEG-4 Part 2 codec, or guarantee that Bookshare errors are resolved.
+
+Preserved: fixed 30 FPS clock for static screens, pause/resume, video/audio muxing, microphone, system audio, shortcuts and UI.
+
+Status: source-level patch; not compiled or tested on Windows. Do NOT distribute as a validated release. Test on a Windows development machine first, including static screen, long screen recording, pause/resume, audio modes, and Bookshare.
+
+Rollback: restore the original AccessibleScreenCapturePro3.0.0Beta25FinalFeatureBuild.zip.
